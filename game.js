@@ -191,7 +191,11 @@ function genMap(seed) {
   [[4, -1], [4, 0], [5, -1]].forEach(([a, b]) => set(a, b, 'bush'));
   [[-4, -2], [-5, -2], [-4, -1], [-5, -1], [-5, 0], [-6, -1]].forEach(([a, b]) => set(a, b, 'tree'));
   [[1, 5], [2, 5], [2, 6]].forEach(([a, b]) => set(a, b, 'rock'));
-  MAP = { node, g };
+  // every tree / bush / rock holds a random number of trips
+  const ra = rng(seed ^ 0x2545f491), amt = new Array(W * H).fill(0);
+  for (let k = 0; k < W * H; k++) { const n = node[k], r = ra(); if (n === 'tree') amt[k] = 6 + Math.floor(r * 10); else if (n === 'bush') amt[k] = 3 + Math.floor(r * 6); else if (n === 'rock') amt[k] = 8 + Math.floor(r * 13); }
+  MAP = { node, g, amt }; layerDirty = true;
+  if (S && S.used) for (const k in S.used) if (S.used[k] >= amt[k]) node[k] = null;
   const rd = rng(seed ^ 0x5bd1e995);
   DEER = [];
   for (let k = 0; k < 7; k++) {
@@ -266,11 +270,19 @@ function finishTask(w, quiet) {
   for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
   if (!quiet && view === 'village') sfx('gather', 0, 250);
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
+  // deplete the resource node that was worked
+  const NT = TASKS[t.kind].node;
+  let tgt = t.target;
+  if ((NT === 'tree' || NT === 'bush' || NT === 'rock') && tgt) {
+    const k = tgt[1] * W + mod(tgt[0], W);
+    if (MAP.node[k] === NT) { const st0 = stageOf(tgt[0], tgt[1]); S.used = S.used || {}; S.used[k] = (S.used[k] || 0) + 1; if (stageOf(tgt[0], tgt[1]) !== st0) layerDirty = true; if (S.used[k] >= MAP.amt[k]) { MAP.node[k] = null; layerDirty = true; if (!quiet) toast(`${NODE_NAME[NT]} used up`); } }
+    if (MAP.node[k] !== NT) tgt = null;
+  }
   const carry = t.prog - t.dur;
   const TC = TASKS[t.kind].cost;
   if (w.repeat && taskOpen(t.kind) && (!TC || canPay(TC))) {
     if (TC) pay(TC);
-    w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: TASKS[t.kind].node === 'deer' ? pickTarget(t.kind) : t.target };
+    w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: (NT === 'deer' || !tgt) ? pickTarget(t.kind) : tgt };
   } else w.task = null;
 }
 function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || hasB(T.req)) && !!pickTarget(kind); }
@@ -319,7 +331,7 @@ function startBuild(type) {
   const slot = findSlot(); if (!slot) return toast('No room near the Town Center');
   pay(c);
   const b = { id: S.nextId++, type, i: slot[0], j: slot[1], done: false };
-  S.buildings.push(b); MAP.node[b.j * W + b.i] = null;
+  S.buildings.push(b); MAP.node[b.j * W + b.i] = null; layerDirty = true;
   w.task = { kind: 'build', bid: b.id, dur: D.time, prog: 0, target: [unwrapNear(b.i, TCI), b.j] };
   w.repeat = false;
   toast(`${w.name} is building a ${D.n}`);
@@ -662,7 +674,28 @@ function tileSheet(i, j) {
 
 // ---------------------------------------------------------------- village rendering
 const TW = 64, TH = 32;
-const mapC = $('#map'), mx = mapC.getContext('2d');
+const mapC = $('#map');
+let mx = mapC.getContext('2d');
+// pre-rendered sprites: shaded art is drawn once, then copied each frame
+const SPR = new Map();
+function sprite(key, w, h, ox, oy, draw) {
+  let c = SPR.get(key);
+  if (!c) {
+    c = document.createElement('canvas'); c.width = Math.ceil(w * DPR); c.height = Math.ceil(h * DPR);
+    const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const old = mx; mx = g; try { draw(ox, oy); } finally { mx = old; }
+    SPR.set(key, c);
+  }
+  return c;
+}
+function leftOf(i, j) { const k = j * W + mod(i, W); return Math.max(0, MAP.amt[k] - ((S.used && S.used[k]) || 0)); }
+function stageOf(i, j) { const k = j * W + mod(i, W), f = leftOf(i, j) / (MAP.amt[k] || 1); return f > .66 ? 2 : f > .33 ? 1 : 0; }
+function nodeSprite(n, x, y, g, st) {
+  const sc = [.62, .82, 1][st];
+  if (n === 'tree') { const gq = Math.round(g * 5); const c = sprite(`t${gq}${st}`, 60, 90, 28, 78, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawTree(0, 0, gq / 5); }); mx.drawImage(c, x - 28, y - 78, 60, 90); }
+  else if (n === 'bush') { const c = sprite(`b${st}`, 44, 34, 20, 24, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawBush(0, 0, st); }); mx.drawImage(c, x - 20, y - 24, 44, 34); }
+  else { const c = sprite(`r${st}`, 44, 34, 20, 26, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawRock(0, 0); }); mx.drawImage(c, x - 20, y - 26, 44, 34); }
+}
 let cw = 0, ch = 0, camX = (TCI - TCJ) * TW / 2, camY = (TCI + TCJ) * TH / 2;
 function sizeMap() {
   const r = mapC.getBoundingClientRect(); if (!r.width) return;
@@ -671,7 +704,7 @@ function sizeMap() {
 const iso = (i, j) => [(i - j) * TW / 2 - camX + cw / 2, (i + j) * TH / 2 - camY + ch / 2];
 
 function grassColor(i, j) {
-  const g = MAP.g[j * W + mod(i, W)];
+  const g = Math.round(MAP.g[j * W + mod(i, W)] * 8) / 8;
   const near = Math.hypot(unwrapNear(i, TCI) - TCI, j - TCJ);
   if (near < 2.2) return `hsl(36,${32 + g * 10}%,${50 + g * 6}%)`;
   return `hsl(${92 + g * 18},${46 + g * 10}%,${36 + g * 8}%)`;
@@ -681,6 +714,10 @@ function diamond(x, y, fill) {
   mx.fillStyle = fill; mx.fill();
 }
 function groundTile(x, y, fill) {
+  const c = sprite('g' + fill, TW + 2, TH + 2, TW / 2 + 1, TH / 2 + 1, (a, b) => groundTileRaw(a, b, fill));
+  mx.drawImage(c, x - TW / 2 - 1, y - TH / 2 - 1, TW + 2, TH + 2);
+}
+function groundTileRaw(x, y, fill) {
   diamond(x, y, fill);
   mx.fillStyle = lg(mx, x, y - TH / 2, x, y + TH / 2, [[0, 'rgba(255,255,255,.10)'], [.5, 'rgba(255,255,255,0)'], [1, 'rgba(0,0,0,.12)']]); mx.fill();
   mx.strokeStyle = 'rgba(0,0,0,.06)'; mx.lineWidth = 1; mx.stroke();
@@ -695,10 +732,10 @@ function drawTree(x, y, g) {
   layer(y - 56 * s, y - 28 * s, 13 * s, '#4caf50', '#2b6a2c');
   layer(y - 64 * s, y - 42 * s, 9 * s, '#66c06a', '#2f7a33');
 }
-function drawBush(x, y) {
+function drawBush(x, y, st = 2) {
   shadow(x, y, 15, 5);
   mx.fillStyle = rg(mx, x, y - 9, 16, '#5cb85c', '#2f6b2b', '#173d16'); mx.beginPath(); mx.ellipse(x, y - 8, 16, 10.5, 0, 0, 7); mx.fill();
-  [[-7, -10], [3, -13], [8, -6], [-2, -5], [-9, -4]].forEach(([a, b]) => { mx.fillStyle = rg(mx, x + a, y + b, 3, '#ff8fa3', '#e11d48', '#7f1028'); mx.beginPath(); mx.arc(x + a, y + b, 2.8, 0, 7); mx.fill(); });
+  [[-7, -10], [3, -13], [8, -6], [-2, -5], [-9, -4]].slice(0, [2, 3, 5][st]).forEach(([a, b]) => { mx.fillStyle = rg(mx, x + a, y + b, 3, '#ff8fa3', '#e11d48', '#7f1028'); mx.beginPath(); mx.arc(x + a, y + b, 2.8, 0, 7); mx.fill(); });
 }
 function drawRock(x, y) {
   shadow(x, y, 16, 5);
@@ -843,43 +880,64 @@ function updateDeer(dt) {
     const s = Math.min(L, dt * .5); d.i += dx / L * s; d.j += dy / L * s;
   }
 }
-let WSCR = [];
+let WSCR = [], LAYER = null, layerDirty = true;
+function worldLayer() {
+  if (LAYER && !layerDirty) return LAYER;
+  layerDirty = false;
+  const ox = H * TW / 2 + TW, oy = 90, w = (W + H) * TW / 2 + TW * 2, h = (W + H) * TH / 2 + 130, LD = Math.min(DPR, 1.5);
+  const c = (LAYER && LAYER.c) || document.createElement('canvas'); c.width = Math.ceil(w * LD); c.height = Math.ceil(h * LD);
+  const g = c.getContext('2d'); g.setTransform(LD, 0, 0, LD, 0, 0); g.clearRect(0, 0, w, h);
+  const old = mx; mx = g;
+  try {
+    const P = (i, j) => [(i - j) * TW / 2 + ox, (i + j) * TH / 2 + oy];
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const [x, y] = P(i, j); groundTile(x, y, grassColor(i, j)); }
+    const list = [];
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const n = MAP.node[j * W + i]; if ((n === 'tree' || n === 'bush' || n === 'rock') && !bAt(i, j)) list.push([i, j, n]); }
+    list.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1])).forEach(([i, j, n]) => { const [x, y] = P(i, j); nodeSprite(n, x, y, MAP.g[j * W + i], stageOf(i, j)); });
+  } finally { mx = old; }
+  LAYER = { c, ox, oy, w, h }; return LAYER;
+}
 function drawMap(now) {
   const t = now / 1000; WSCR = [];
   mx.setTransform(DPR, 0, 0, DPR, 0, 0);
   mx.fillStyle = lg(mx, 0, 0, 0, ch, [[0, '#0e5aa8'], [1, '#08356b']]); mx.fillRect(0, 0, cw, ch);
   mx.strokeStyle = 'rgba(255,255,255,.07)'; mx.lineWidth = 2;
   for (let k = 0; k < 14; k++) { const yy = (k * 53 + t * 8) % (ch + 40) - 20, xx = (k * 137) % cw; mx.beginPath(); mx.moveTo(xx - 30, yy); mx.quadraticCurveTo(xx, yy - 6, xx + 30, yy); mx.stroke(); }
-  const objs = [];
+  const objs = [], front = new Set();
   const cI = (camX / (TW / 2) + camY / (TH / 2)) / 2;
-  for (let j = 0; j < H; j++) {
-    const lo = Math.ceil(Math.max(j + (camX - cw / 2 - TW) / (TW / 2), (camY - ch / 2 - TH * 3) / (TH / 2) - j));
-    const hi = Math.floor(Math.min(j + (camX + cw / 2 + TW) / (TW / 2), (camY + ch / 2 + TH * 4) / (TH / 2) - j));
-    for (let i = lo; i <= hi; i++) {
-      const [x, y] = iso(i, j);
-      groundTile(x, y, grassColor(i, j));
-      const b = bAt(i, j), n = nodeAt(i, j), g = MAP.g[j * W + mod(i, W)];
-      if (b) objs.push({ d: i + j, f: () => drawBuilding(b, x, y, t) });
-      else if (n === 'tree') objs.push({ d: i + j, f: () => drawTree(x, y, g) });
-      else if (n === 'bush') objs.push({ d: i + j, f: () => drawBush(x, y) });
-      else if (n === 'rock') objs.push({ d: i + j, f: () => drawRock(x, y) });
-    }
+  // static ground + resources: one pre-rendered layer, copied once per wrap
+  const L = worldLayer(), sx = cw / 2 - camX - L.ox, sy = ch / 2 - camY - L.oy;
+  for (let k = -2; k <= 2; k++) {
+    const dx = sx + k * W * TW / 2, dy = sy + k * W * TH / 2;
+    if (dx > cw || dy > ch || dx + L.w < 0 || dy + L.h < 0) continue;
+    mx.drawImage(L.c, dx, dy, L.w, L.h);
+  }
+  const markFront = (fi, fj) => { for (let a = 0; a <= 2; a++) for (let b = 0; b <= 2; b++) if (a + b) { const j = fj + b; if (j >= 0 && j < H) front.add((fi + a) + ',' + j); } };
+  for (const b of S.buildings) {
+    const ui = unwrapNear(b.i, cI), [x, y] = iso(ui, b.j);
+    if (x < -120 || x > cw + 120 || y < -140 || y > ch + 60) continue;
+    objs.push({ d: ui + b.j, f: () => drawBuilding(b, x, y, t) }); markFront(ui, b.j);
   }
   // world edge (poles of the orb)
   mx.fillStyle = 'rgba(29,59,82,.0)';
   for (const d of DEER) {
     const ui = unwrapNear(d.i, cI);
     const [x, y] = iso(ui - .5, d.j - .5);
-    objs.push({ d: ui + d.j, f: () => drawDeer(x, y, t) });
+    objs.push({ d: ui + d.j, f: () => drawDeer(x, y, t) }); markFront(Math.floor(ui), Math.floor(d.j));
   }
   S.workers.forEach((w, k) => {
     if (w.task && w.task.kind === 'raid') return; // off across the orb
     const { p, working } = workerPos(w, k);
     const ui = unwrapNear(p[0], cI);
     const [x, y] = iso(ui - .5, p[1] - .5);
-    objs.push({ d: ui + p[1] - .4, f: () => drawWorker(x, y, w, t, working) });
+    objs.push({ d: ui + p[1] - .4, f: () => drawWorker(x, y, w, t, working) }); markFront(Math.floor(ui), Math.floor(p[1]));
   });
   objs.sort((a, b) => a.d - b.d).forEach(o => o.f());
+  // resources standing in front of anything that moved get drawn again on top (keeps depth correct)
+  [...front].map(k => k.split(',').map(Number)).sort((a, b) => (a[0] + a[1]) - (b[0] + b[1])).forEach(([i, j]) => {
+    const n = nodeAt(i, j); if (n !== 'tree' && n !== 'bush' && n !== 'rock') return;
+    const [x, y] = iso(i, j); nodeSprite(n, x, y, MAP.g[j * W + mod(i, W)], stageOf(i, j));
+  });
   mx.textAlign = 'center'; mx.font = 'bold 13px Georgia';
   floaters = floaters.filter(f => f.age < 1.6);
   for (const f of floaters) {
@@ -947,7 +1005,7 @@ function tipHTML(cx, cy) {
   }
   const kind = deer ? 'deer' : nodeAt(i, j); if (!kind) return null;
   const tk = NODE_TASK[kind], T = TASKS[tk], locked = T.req && !hasB(T.req);
-  return `<b>${NODE_NAME[kind]}</b><br>${T.n}: ${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} every ${fmt(T.time)}<br>${locked ? `<span class="warn">Requires ${BLD[T.req].n}</span>` : '<i>Click to send the closest worker</i>'}`;
+  return `<b>${NODE_NAME[kind]}</b>${kind !== 'deer' ? ` <span class="small">${leftOf(i, j)} trips left</span>` : ''}<br>${T.n}: ${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} every ${fmt(T.time)}<br>${locked ? `<span class="warn">Requires ${BLD[T.req].n}</span>` : '<i>Click to send the closest worker</i>'}`;
 }
 function showTip(e) {
   const h = tipHTML(e.clientX, e.clientY);
@@ -1456,6 +1514,24 @@ function drawFx(now) {
   }
   bx.restore();
 }
+let BG = null, ICONS = {};
+function boardBg() {
+  if (BG && BG.cs === CS) return BG.c;
+  const c = document.createElement('canvas'); c.width = c.height = CS * N * DPR; const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.fillStyle = '#0f1b3d'; g.fillRect(0, 0, CS * N, CS * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const X = x * CS + CS * .04, Y = y * CS + CS * .04, w = CS * .92;
+    g.fillStyle = lg(g, X, Y, X, Y + w, (x + y) % 2 ? [[0, '#16234a'], [1, '#22336a']] : [[0, '#1b2a57'], [1, '#2a3e7a']]);
+    g.beginPath(); g.roundRect(X, Y, w, w, CS * .14); g.fill();
+    g.strokeStyle = 'rgba(255,255,255,.06)'; g.lineWidth = 1; g.beginPath(); g.moveTo(X + CS * .12, Y + w - .5); g.lineTo(X + w - CS * .12, Y + w - .5); g.stroke();
+  }
+  BG = { cs: CS, c }; ICONS = {}; return c;
+}
+function iconSprite(t) {
+  if (ICONS[t]) return ICONS[t];
+  const c = document.createElement('canvas'); c.width = c.height = Math.ceil(CS * DPR); const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  drawIcon(g, t, CS / 2, CS / 2, CS * .42); return (ICONS[t] = c);
+}
 function drawBoard() {
   if (!P) return;
   const t = performance.now() / 1000;
@@ -1464,13 +1540,7 @@ function drawBoard() {
   const sx = shake > .3 ? (Math.random() - .5) * shake : 0, sy = shake > .3 ? (Math.random() - .5) * shake : 0;
   bx.setTransform(DPR, 0, 0, DPR, sx * DPR, sy * DPR);
   bx.clearRect(-20, -20, CS * N + 40, CS * N + 40);
-  bx.fillStyle = '#0f1b3d'; bx.fillRect(0, 0, CS * N, CS * N);
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    const X = x * CS + CS * .04, Y = y * CS + CS * .04, w = CS * .92;
-    bx.fillStyle = lg(bx, X, Y, X, Y + w, (x + y) % 2 ? [[0, '#16234a'], [1, '#22336a']] : [[0, '#1b2a57'], [1, '#2a3e7a']]);
-    bx.beginPath(); bx.roundRect(X, Y, w, w, CS * .14); bx.fill();
-    bx.strokeStyle = 'rgba(255,255,255,.06)'; bx.lineWidth = 1; bx.beginPath(); bx.moveTo(X + CS * .12, Y + w - .5); bx.lineTo(X + w - CS * .12, Y + w - .5); bx.stroke();
-  }
+  bx.drawImage(boardBg(), 0, 0, CS * N, CS * N);
   if (P.tool && P.hover) {
     const [hx, hy] = P.hover; bx.fillStyle = 'rgba(253,224,71,.28)';
     if (P.tool === 'pick') bx.fillRect(hx * CS, hy * CS, CS, CS);
@@ -1483,7 +1553,7 @@ function drawBoard() {
     const c = P.b[y][x]; if (!c) continue;
     const px = (x + c.ox + .5) * CS, py = (y + c.oy + .5) * CS, r = CS * .42 * c.sc;
     bx.globalAlpha = c.a;
-    if (c.t >= 0) drawIcon(bx, c.t, px, py, r);
+    if (c.t >= 0) { const R = CS * .42, ic = iconSprite(c.t); const k = r / R; bx.drawImage(ic, px - CS / 2 * k, py - CS / 2 * k, CS * k, CS * k); }
     if (c.s) drawSpecial(bx, c.s, px, py, r, t);
     bx.globalAlpha = 1;
   }
