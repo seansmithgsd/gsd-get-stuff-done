@@ -77,6 +77,7 @@ const countB = t => S.buildings.filter(b => b.type === t).length;
 const housing = () => S.buildings.reduce((a, b) => a + (b.done ? (BLD[b.type].house || 0) : 0), 0);
 const starving = () => S.workers.length > 0 && S.res.food <= 0;
 const idle = () => S.workers.filter(w => !w.task);
+const free = () => S.workers.filter(w => !w.task || w.task.kind !== 'build'); // can be pulled onto a build
 const wallet = () => S.res.copper + 3 * S.res.silver + 10 * S.res.gold;
 
 function costOf(type) {
@@ -238,11 +239,11 @@ function assign(kind) {
   save(); refresh();
 }
 function startBuild(type) {
-  const D = BLD[type], c = costOf(type), w = idle()[0];
+  const D = BLD[type], c = costOf(type), w = idle()[0] || free()[0];
   if (!D.repeat && countB(type)) return;
   if (D.req && !D.req.every(hasB)) return toast('Locked');
   if (!canPay(c)) return toast('Not enough resources');
-  if (!w) return toast('No idle AI worker to build it');
+  if (!w) return toast('All AI workers are already building');
   const slot = findSlot(); if (!slot) return toast('No room near the Town Center');
   pay(c);
   const b = { id: S.nextId++, type, i: slot[0], j: slot[1], done: false };
@@ -335,7 +336,7 @@ function renderHint(force) {
 $('#hint').addEventListener('click', e => { const b = e.target.closest('[data-go]'); if (b) setView(b.dataset.go); });
 
 function renderBuild(force) {
-  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done), idle().length]);
+  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done), free().length]);
   if (s === sig && !force) return; sig = s;
   let html = '<h2>Tech Tree</h2>';
   for (let tier = 1; tier <= 5; tier++) {
@@ -346,7 +347,7 @@ function renderBuild(force) {
       const doneOnce = !D.repeat && built;
       let btn;
       if (doneOnce) btn = `<button class="btn sm alt" disabled>${hasB(k) ? 'Built' : 'Building'}</button>`;
-      else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !idle().length ? 'disabled' : ''}>Build</button>`;
+      else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !free().length ? 'disabled' : ''}>Build</button>`;
       html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
         <div class="cost">${locked ? 'Requires ' + D.req.map(r => BLD[r].n).join(', ') : costHTML(c) + ` · ${fmt(D.time)}`}</div></div>${btn}</div></div>`;
     }
@@ -354,7 +355,7 @@ function renderBuild(force) {
       html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div></div><span class="small">Coming soon</span></div></div>`;
     }
   }
-  if (!idle().length) html += `<div class="foot">Building needs an idle AI worker.</div>`;
+  if (!free().length) html += `<div class="foot">Building needs an AI worker that isn't already building.</div>`;
   $('#v-build').innerHTML = html;
 }
 $('#v-build').addEventListener('click', e => { const b = e.target.closest('[data-build]'); if (b && !b.disabled) startBuild(b.dataset.build); });
@@ -584,7 +585,7 @@ function updateDeer(dt) {
 function drawMap(now) {
   const t = now / 1000;
   mx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  mx.fillStyle = '#1d3b52'; mx.fillRect(0, 0, cw, ch);
+  mx.fillStyle = '#0b4a8f'; mx.fillRect(0, 0, cw, ch);
   const objs = [];
   const cI = (camX / (TW / 2) + camY / (TH / 2)) / 2;
   for (let j = 0; j < H; j++) {
@@ -744,7 +745,7 @@ function hasMoves(b) {
     for (const [dx, dy] of [[1, 0], [0, 1]]) {
       const x2 = x + dx, y2 = y + dy; if (x2 >= N || y2 >= N) continue;
       const A = b[y][x], B = b[y2][x2];
-      if (A.s === 'c' || B.s === 'c' || A.s === 'p' || B.s === 'p' || (A.s && B.s)) return true;
+      if (A.s || B.s) return true;
       sw(x, y, x2, y2); const ok = findRuns(b).length > 0; sw(x, y, x2, y2);
       if (ok) return true;
     }
@@ -877,9 +878,13 @@ async function trySwap(a, b) {
     if (B.s === 'p') { if (A.s && A.s !== 'p') { B.carry = A.s; A.s = null; } start.push(a[0] + ',' + a[1]); }
     await clearCells(start);
     await gravity(); await resolve(null);
-  } else if (A.s && B.s) {
+  } else if (A.s || B.s) {
+    // any special fires when moved — no match needed
     P.moves--;
-    await clearCells([a[0] + ',' + a[1], b[0] + ',' + b[1]]);
+    const start = [];
+    if (A.s) start.push(b[0] + ',' + b[1]);
+    if (B.s) start.push(a[0] + ',' + a[1]);
+    await clearCells(start);
     await gravity(); await resolve(null);
   } else if (!findRuns(P.b).length) {
     await animSwap(b, a);
@@ -977,13 +982,13 @@ function drawSpecial(ctx, s, x, y, r, t) {
     ctx.strokeStyle = '#ffde59'; ctx.lineWidth = r * .14; ctx.beginPath(); ctx.arc(0, 0, r * .88, 0, 7); ctx.stroke();
     ctx.fillStyle = '#ffde59'; ctx.beginPath(); ctx.arc(r * .6, -r * .6, r * .16 + Math.sin(t * 10) * r * .05, 0, 7); ctx.fill();
   } else if (s === 'p') {
-    ctx.fillStyle = '#22160c'; ctx.beginPath(); ctx.arc(0, 0, r * .8, 0, 7); ctx.fill();
+    ctx.fillStyle = '#0f1b3d'; ctx.beginPath(); ctx.arc(0, 0, r * .8, 0, 7); ctx.fill();
     ctx.rotate(t * 9);
     ctx.fillStyle = '#e8b923';
     for (let k = 0; k < 2; k++) { ctx.save(); ctx.rotate(k * Math.PI / 2); ctx.beginPath(); ctx.ellipse(0, 0, r * .72, r * .17, 0, 0, 7); ctx.fill(); ctx.restore(); }
     ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(0, 0, r * .18, 0, 7); ctx.fill();
   } else if (s === 'c') {
-    ctx.fillStyle = '#22160c'; ctx.beginPath(); ctx.arc(0, 0, r * .8, 0, 7); ctx.fill();
+    ctx.fillStyle = '#0f1b3d'; ctx.beginPath(); ctx.arc(0, 0, r * .8, 0, 7); ctx.fill();
     const cols = ['#d0263a', '#c87a2a', '#c3cacf', '#f2c43d', '#4caf3a'];
     for (let k = 0; k < 10; k++) { const a = k / 10 * Math.PI * 2 + t * 1.5; ctx.fillStyle = cols[k % 5]; ctx.beginPath(); ctx.arc(Math.cos(a) * r * .5, Math.sin(a) * r * .5, r * .14, 0, 7); ctx.fill(); }
     ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, r * .18, 0, 7); ctx.fill();
@@ -995,7 +1000,7 @@ function drawBoard() {
   const t = performance.now() / 1000;
   bx.setTransform(DPR, 0, 0, DPR, 0, 0);
   bx.clearRect(0, 0, CS * N, CS * N);
-  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { bx.fillStyle = (x + y) % 2 ? '#3a2816' : '#45301b'; bx.fillRect(x * CS, y * CS, CS, CS); }
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { bx.fillStyle = (x + y) % 2 ? '#1f2f5c' : '#263970'; bx.fillRect(x * CS, y * CS, CS, CS); }
   if (P.sel) { bx.fillStyle = 'rgba(255,222,89,.35)'; bx.fillRect(P.sel[0] * CS, P.sel[1] * CS, CS, CS); }
   bx.save(); bx.beginPath(); bx.rect(0, 0, CS * N, CS * N); bx.clip();
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
@@ -1014,8 +1019,8 @@ function drawBoard() {
   bx.restore();
 }
 const LEGEND = [
-  { s: 'h', t: 1, n: 'Row Clear', how: 'Match 4 in a row (side to side)', does: 'Clears its whole row when matched or swapped.' },
-  { s: 'v', t: 2, n: 'Column Clear', how: 'Match 4 in a column (up and down)', does: 'Clears its whole column when matched or swapped.' },
+  { s: 'h', t: 1, n: 'Row Clear', how: 'Match 4 in a row (side to side)', does: 'Clears its whole row.' },
+  { s: 'v', t: 2, n: 'Column Clear', how: 'Match 4 in a column (up and down)', does: 'Clears its whole column.' },
   { s: 'b', t: 0, n: 'Bomb', how: 'Match an L or T shape', does: 'Clears the 3×3 area around it.' },
   { s: 'p', t: -1, n: 'Propeller', how: 'Match a 2×2 square', does: 'Clears the 4 tiles around it, then flies to the spot that helps your goals most. Swap it with another special to carry that special there.' },
   { s: 'c', t: -1, n: 'Color Bomb', how: 'Match 5 in a line', does: 'Swap it with any tile to clear every tile of that type.' },
@@ -1025,10 +1030,10 @@ function renderLegend() {
   if (legendDone) return; legendDone = true;
   $('#pz-legend').innerHTML = '<div class="lg-h">Specials</div>' + LEGEND.map((L, k) => `<div class="lg"><canvas data-lg="${k}" width="${40 * DPR}" height="${40 * DPR}"></canvas>
     <div><b>${L.n}</b><div class="how">${L.how}</div><div>${L.does}</div></div></div>`).join('') +
-    `<div class="lg-note"><b>Double-tap any special to fire it</b> (uses a move).<br>Swap two specials together → both fire.<br>Two Color Bombs → clears the board.</div>`;
+    `<div class="lg-note"><b>Double-tap or swap any special to fire it</b> — no match needed (uses a move).<br>Swap two specials together → both fire.<br>Two Color Bombs → clears the board.</div>`;
   document.querySelectorAll('#pz-legend canvas[data-lg]').forEach(c => {
     const L = LEGEND[+c.dataset.lg], x = c.getContext('2d');
-    x.setTransform(DPR, 0, 0, DPR, 0, 0); x.fillStyle = '#45301b'; x.fillRect(0, 0, 40, 40);
+    x.setTransform(DPR, 0, 0, DPR, 0, 0); x.fillStyle = '#263970'; x.fillRect(0, 0, 40, 40);
     if (L.t >= 0) drawIcon(x, L.t, 20, 20, 16);
     drawSpecial(x, L.s, 20, 20, 16, 0);
   });
