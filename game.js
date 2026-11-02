@@ -61,7 +61,7 @@ const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings worker
 // ---------------------------------------------------------------- state
 const SAVE_KEY = 'gsd-get-stuff-done-v1';
 const W = 32, H = 24, TCI = 16, TCJ = 12;
-let S;
+let S, ME = null, dirty = false, applied = [];
 
 function newState() {
   return {
@@ -75,7 +75,7 @@ function load() {
   try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) { for (const k of ['iron', 'coal', 'steel']) if (s.res[k] == null) s.res[k] = 0; return s; } } } catch (e) {}
   return newState();
 }
-function save() { S.t = Date.now(); try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
+function save() { S.t = Date.now(); dirty = true; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
 
 const hasB = t => S.buildings.some(b => b.type === t && b.done);
 const countB = t => S.buildings.filter(b => b.type === t).length;
@@ -200,6 +200,7 @@ function finishTask(w, quiet) {
     if (b) { b.done = true; if (!quiet) toast(`${BLD[b.type].n} complete`); }
     w.task = null; return;
   }
+  if (t.kind === 'raid') { w.task = null; resolveRaid(w, t); return; }
   const y = taskYield(t.kind);
   if (t.kind === 'mine') { w.mineN = (w.mineN || 0) + 1; if (w.mineN % 3 === 0) y.silver = 1; }
   for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
@@ -299,6 +300,7 @@ function setView(v) {
   if (v === 'puzzle' && !P) startLevel();
   if (v === 'puzzle') sizeBoard();
   if (v === 'village') sizeMap();
+  if (v === 'orb') loadOrb();
   refresh(true);
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => setView(b.dataset.v)));
@@ -328,6 +330,7 @@ function refresh(force) {
   if (view === 'village') renderHint(force);
   if (view === 'build') renderBuild(force);
   if (view === 'workers') renderWorkers(force);
+  if (view === 'orb') renderOrb(force);
   if (view === 'puzzle') renderPuzzleHead();
 }
 function renderHint(force) {
@@ -370,7 +373,7 @@ function renderBuild(force) {
 }
 $('#v-build').addEventListener('click', e => { const b = e.target.closest('[data-build]'); if (b && !b.disabled) startBuild(b.dataset.build); });
 
-function taskLabel(t) { if (t.kind === 'build') { const b = S.buildings.find(x => x.id === t.bid); return 'Building ' + (b ? BLD[b.type].n : ''); } return TASKS[t.kind].n; }
+function taskLabel(t) { if (t.kind === 'raid') return 'Harvesting ' + t.name + "'s village"; if (t.kind === 'build') { const b = S.buildings.find(x => x.id === t.bid); return 'Building ' + (b ? BLD[b.type].n : ''); } return TASKS[t.kind].n; }
 function renderWorkers(force) {
   const s = 'w' + JSON.stringify([S.workers.map(w => [w.id, w.task && w.task.kind, w.repeat]), S.bank > 0, starving(), S.waiting, housing(), S.recruit]);
   if (s !== sig || force) {
@@ -392,8 +395,8 @@ function renderWorkers(force) {
         </div>`;
     }
     if (!S.workers.length) html += `<div class="card"><div class="d">No AI workers yet. Win ${WINS_PER_WORKER} puzzles to recruit one.</div></div>`;
-    html += `<div class="foot">Guest save on this device. Accounts and the shared 100-player orb are next.<br>
-      <a href="https://gsdconsultantsllc.com" target="_blank" rel="noopener">GSD Consultants, LLC</a> · v0.1<br><br>
+    html += `<div class="foot">${ME ? `Signed in as <b>${esc(ME.name)}</b> — progress saves to your account.` : 'Guest save on this device only. Sign in on the Orb tab to keep it.'}<br>
+      <a href="https://gsdconsultantsllc.com" target="_blank" rel="noopener">GSD Consultants, LLC</a> · v0.2<br><br>
       <button class="btn sm alt" data-reset>Reset progress</button></div>`;
     $('#v-workers').innerHTML = html;
   }
@@ -437,7 +440,7 @@ function sendClosest(i, j) {
   const target = deer ? [unwrapNear(deer.i, TCI), deer.j] : [unwrapNear(i, TCI), j];
   let best = null, bd = 1e9;
   S.workers.forEach((w, k) => {
-    if (w.task && w.task.kind === 'build') return;
+    if (w.task && (w.task.kind === 'build' || w.task.kind === 'raid')) return;
     const p = workerPos(w, k).p, d = Math.hypot(unwrapNear(p[0], target[0]) - target[0], p[1] - target[1]);
     if (d < bd) { bd = d; best = w; }
   });
@@ -651,6 +654,7 @@ function drawMap(now) {
     objs.push({ d: ui + d.j, f: () => drawDeer(x, y, t) });
   }
   S.workers.forEach((w, k) => {
+    if (w.task && w.task.kind === 'raid') return; // off across the orb
     const { p, working } = workerPos(w, k);
     const ui = unwrapNear(p[0], cI);
     const [x, y] = iso(ui - .5, p[1] - .5);
@@ -1002,7 +1006,7 @@ const ACTS = {
   more: () => { if (!P || wallet() < MORE_MOVES_COST) return; pay({ money: MORE_MOVES_COST }); P.moves += 5; P.over = false; save(); refresh(); renderPuzzleHead(); drawBoard(); toast('+5 moves'); },
   next: () => { startLevel(); },
   village: () => { P = null; setView('village'); },
-  reset: () => { localStorage.removeItem(SAVE_KEY); S = newState(); genMap(S.seed); P = null; save(); setView('village'); toast('Progress reset'); },
+  reset: () => { localStorage.removeItem(SAVE_KEY); S = newState(); if (ME) S.owner = ME.id; genMap(S.seed); P = null; save(); setView('village'); toast('Progress reset'); },
 };
 
 function drawIcon(ctx, t, x, y, r) {
@@ -1140,6 +1144,169 @@ function renderPuzzleHead() {
   });
 })();
 
+// ---------------------------------------------------------------- accounts, saves, orb (multiplayer)
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+async function api(path, opts = {}) {
+  try {
+    const r = await fetch('/api/' + path, { credentials: 'same-origin', headers: { 'content-type': 'application/json' }, ...opts });
+    const j = await r.json().catch(() => ({ ok: false, error: 'HTTP ' + r.status }));
+    if (r.status === 401) { j.auth = false; }
+    return j;
+  } catch (e) { return { ok: false, error: 'offline' }; }
+}
+function loadSave(sv) {
+  S = sv; for (const k of ['iron', 'coal', 'steel']) if (S.res[k] == null) S.res[k] = 0;
+  genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
+  catchUp((Date.now() - S.t) / 1000, true); idle().forEach(autoAssign);
+}
+async function syncLogin() {
+  const q = new URLSearchParams(location.search).get('login');
+  if (q) { history.replaceState(null, '', location.pathname); if (q === 'ok') toast('Signed in'); if (q === 'expired') toast('That login link expired — request a new one'); }
+  const r = await api('me');
+  if (!r.ok) { ME = null; refresh(true); return; }
+  ME = r.player;
+  const sv = r.save;
+  if (!sv) { S.owner = ME.id; save(); await pushSave(); toast('Your village is now saved to your account'); }
+  else if (S.owner === ME.id && (S.t || 0) > (sv.t || 0)) { await pushSave(); }   // this device is ahead
+  else { loadSave(sv); S.owner = ME.id; save(); dirty = false; }
+  if (r.losses && r.losses.length) applyLosses(r.losses);
+  refresh(true);
+}
+async function pushSave(beacon) {
+  if (!ME) return;
+  S.owner = ME.id;
+  const body = JSON.stringify({ save: S, applied });
+  if (beacon && navigator.sendBeacon) { navigator.sendBeacon('/api/save', new Blob([body], { type: 'application/json' })); return; }
+  const r = await api('save', { method: 'PUT', body });
+  if (r.ok) { dirty = false; applied = []; }
+  else if (r.auth === false) { ME = null; refresh(true); }
+}
+async function pollLosses() { const r = await api('losses'); if (r.ok && r.losses.length) applyLosses(r.losses); }
+function applyLosses(list) {
+  for (const L of list) {
+    if (applied.includes(L.id)) continue;
+    const b = S.buildings.find(x => x.id === L.building_id);
+    if (b) {
+      S.buildings = S.buildings.filter(x => x !== b);
+      for (const w of S.workers) if (w.task && ((w.task.kind === 'build' && w.task.bid === b.id) || (BNODE.includes(b.type) && TASKS[w.task.kind] && TASKS[w.task.kind].node === b.type))) w.task = null;
+      toast(`${L.attacker}'s workers dismantled your ${BLD[b.type] ? BLD[b.type].n : b.type}`);
+    }
+    applied.push(L.id);
+  }
+  while (S.waiting >= 0 && S.workers.length > housing()) { S.workers.pop(); S.waiting++; }
+  idle().forEach(autoAssign);
+  save(); pushSave(); refresh(true);
+}
+// harvesting: a worker crosses the orb to another village
+function raidTime(slotA, slotB, size) { const d = Math.abs(slotA - slotB), r = Math.min(d, size - d); return Math.min(600, 60 + r * 15); }
+function startRaid(pl) {
+  if (!ME || !ORB) return;
+  const w = idle()[0] || free().find(x => !x.task || x.task.kind !== 'raid');
+  if (!w) return toast('No free AI worker');
+  const dur = raidTime(ORB.me.slot, pl.slot, ORB.size);
+  w.task = { kind: 'raid', target: null, pid: pl.id, name: pl.name, dur, prog: 0 }; w.repeat = false;
+  toast(`${w.name} heads to ${pl.name}'s village (${fmt(dur)})`); closeSheet(); save(); refresh(true);
+}
+async function resolveRaid(w, t) {
+  const r = await api('harvest', { method: 'POST', body: JSON.stringify({ target: t.pid }) });
+  if (!r.ok) { toast(`${w.name} came back empty: ${r.error}`); return; }
+  if (r.empty) { toast(`${t.name} had nothing left to dismantle`); return; }
+  for (const [k, v] of Object.entries(r.gained)) S.res[k] = (S.res[k] || 0) + v;
+  toast(`${w.name} dismantled ${r.from}'s ${BLD[r.building] ? BLD[r.building].n : r.building}: ` + Object.entries(r.gained).map(([k, v]) => `+${v} ${k}`).join(', '));
+  idle().forEach(autoAssign); save(); pushSave(); refresh(true);
+}
+// orb view
+let ORB = null, orbLoading = false;
+async function loadOrb() {
+  if (!ME || orbLoading) return; orbLoading = true;
+  const r = await api('orb'); orbLoading = false;
+  if (r.ok) { ORB = r; ME = r.me; refresh(true); }
+}
+function renderOrb(force) {
+  const el = $('#v-orb');
+  const s = 'o' + JSON.stringify([!!ME, ORB && ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB && ORB.teams, S.workers.filter(w => w.task && w.task.kind === 'raid').length]);
+  if (s === sig && !force) return; sig = s;
+  if (!ME) {
+    el.innerHTML = `<h2>The Orb</h2>
+      <div class="card"><div class="t">Sign in to save your village and join a 100-player orb</div>
+      <div class="d">We email you a one-time login link. No password. Your current progress carries over.</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <input id="lg-name" maxlength="20" placeholder="Village name (shown to other players)" class="inp">
+        <input id="lg-email" type="email" placeholder="Email" class="inp" autocomplete="email">
+        <button class="btn go" data-login>Email me a login link</button>
+        <div id="lg-msg" class="small"></div></div></div>
+      <div class="card"><div class="t">What happens on the orb</div><div class="d">Up to 100 players share one world. Climb the leaderboard, form teams of up to 13, and send AI workers to dismantle rival villages for 33% of what they cost. New players are protected for 24 hours; teammates can't harvest each other.</div></div>`;
+    return;
+  }
+  if (!ORB) { el.innerHTML = '<h2>The Orb</h2><div class="small">Loading…</div>'; loadOrb(); return; }
+  const tName = id => { const t = ORB.teams.find(x => x.id === id); return t ? t.name : ''; };
+  const myRank = ORB.players.findIndex(p => p.id === ME.id) + 1;
+  let html = `<h2>Orb #${ORB.orb} <span class="small">${ORB.players.length}/${ORB.size} players · you are #${myRank}</span></h2>
+    <canvas id="orbc" style="width:100%;max-width:420px;aspect-ratio:1;display:block;margin:0 auto"></canvas>
+    <div class="small" style="text-align:center">Gold ring = you · green = teammates · tap a village below to send a harvest crew</div>
+    <h3>Leaderboard</h3>
+    <table class="lb"><tr><th>#</th><th>Village</th><th>Team</th><th>Lvl</th><th>Bldgs</th><th>Score</th></tr>
+    ${ORB.players.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${esc(p.name)}${p.shield ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}
+    </table>
+    <h3>Teams <span class="small">${ORB.teams.length}/${ORB.limits.teams}</span></h3>`;
+  if (ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(tName(ME.team))}</div><div class="d">Your team</div></div><button class="btn sm alt" data-team="leave">Leave</button></div></div>`;
+  for (const t of ORB.teams) if (t.id !== ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(t.name)}</div><div class="d">${t.members}/${ORB.limits.teamMax} members · ${t.score} pts</div></div>
+    <button class="btn sm" data-team="join" data-id="${t.id}" ${t.members >= ORB.limits.teamMax ? 'disabled' : ''}>Join</button></div></div>`;
+  if (!ME.team && ORB.teams.length < ORB.limits.teams) html += `<div class="card"><div class="t">Start a team</div><div style="display:flex;gap:6px;margin-top:6px"><input id="tm-name" maxlength="20" placeholder="Team name" class="inp" style="flex:1"><button class="btn sm go" data-team="create">Create</button></div></div>`;
+  html += `<div class="foot">Signed in as ${esc(ME.name)} (${esc(ME.email)}) · <button class="btn sm alt" data-logout>Sign out</button></div>`;
+  el.innerHTML = html;
+  drawOrb();
+}
+function drawOrb() {
+  const c = $('#orbc'); if (!c || !ORB) return;
+  const sz = c.getBoundingClientRect().width; if (!sz) return;
+  c.width = c.height = sz * DPR; const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const R = sz / 2, cx = R, cy = R;
+  const grd = g.createRadialGradient(cx - R * .3, cy - R * .3, R * .1, cx, cy, R * .95);
+  grd.addColorStop(0, '#4ade80'); grd.addColorStop(.6, '#15803d'); grd.addColorStop(1, '#0b4a8f');
+  g.fillStyle = grd; g.beginPath(); g.arc(cx, cy, R * .92, 0, 7); g.fill();
+  g.strokeStyle = 'rgba(255,255,255,.25)'; g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, R * .72, 0, 7); g.stroke();
+  for (const p of ORB.players) {
+    const a = p.slot / ORB.size * Math.PI * 2 - Math.PI / 2, x = cx + Math.cos(a) * R * .72, y = cy + Math.sin(a) * R * .72;
+    const mine = p.id === ME.id, mate = ME.team && p.team === ME.team;
+    g.fillStyle = mine ? '#fbbf24' : mate ? '#86efac' : '#f8fafc';
+    g.beginPath(); g.arc(x, y, mine ? 8 : 5 + Math.min(4, p.bcount / 3), 0, 7); g.fill();
+    if (mine) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.stroke(); }
+  }
+  g.fillStyle = '#fff'; g.font = 'bold 14px system-ui'; g.textAlign = 'center'; g.fillText(`Orb #${ORB.orb}`, cx, cy + 5);
+}
+$('#v-orb').addEventListener('click', async e => {
+  const t = e.target;
+  if (t.dataset.login !== undefined) {
+    const email = $('#lg-email').value.trim(), name = $('#lg-name').value.trim(), msg = $('#lg-msg');
+    t.disabled = true; msg.textContent = 'Sending…';
+    const r = await api('login', { method: 'POST', body: JSON.stringify({ email, name }) });
+    t.disabled = false;
+    if (r.ok && r.devLink) { msg.innerHTML = `Dev link: <a href="${r.devLink}">${r.devLink}</a>`; return; }
+    msg.textContent = r.ok ? `Check ${email} for your login link (it expires in 30 minutes).` : r.error;
+    return;
+  }
+  if (t.dataset.logout !== undefined) { await pushSave(); await api('logout', { method: 'POST' }); ME = null; ORB = null; S.owner = null; save(); refresh(true); toast('Signed out — playing as guest on this device'); return; }
+  if (t.dataset.team) {
+    const body = { action: t.dataset.team };
+    if (t.dataset.team === 'create') body.name = $('#tm-name').value;
+    if (t.dataset.team === 'join') body.id = +t.dataset.id;
+    const r = await api('team', { method: 'POST', body: JSON.stringify(body) });
+    if (!r.ok) toast(r.error); loadOrb(); return;
+  }
+  const row = t.closest('tr[data-pl]');
+  if (row) {
+    const pl = ORB.players.find(p => p.id === +row.dataset.pl); if (!pl) return;
+    if (pl.id === ME.id) return openSheet(`<div class="t">${esc(pl.name)} (you)</div><div class="d">Score ${pl.score} · level ${pl.level} · ${pl.bcount} buildings</div>`);
+    const mate = ME.team && pl.team === ME.team;
+    const blocked = mate ? 'Teammate — immune' : pl.shield ? 'New-player protection (24h)' : '';
+    openSheet(`<div class="t">${esc(pl.name)}</div><div class="d">Score ${pl.score} · level ${pl.level} · ${pl.bcount} buildings${pl.online ? ' · online now' : ''}</div>
+      <div style="margin-top:8px">${blocked ? `<span class="small">${blocked}</span>` : `<button class="btn go" data-raid="${pl.id}">Send harvest crew (${fmt(raidTime(ORB.me.slot, pl.slot, ORB.size))})</button>
+      <div class="small" style="margin-top:4px">One AI worker travels there and dismantles their lowest-tier building for 33% of its cost.</div>`}</div>`);
+  }
+});
+$('#sheet').addEventListener('click', e => { const b = e.target.closest('[data-raid]'); if (b && ORB) { const pl = ORB.players.find(p => p.id === +b.dataset.raid); if (pl) startRaid(pl); } });
+
 // ---------------------------------------------------------------- boot + loop
 S = load();
 genMap(S.seed);
@@ -1162,5 +1329,9 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
-window.addEventListener('pagehide', save);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { save(); pushSave(true); } });
+window.addEventListener('pagehide', () => { save(); pushSave(true); });
+setInterval(() => { if (ME && dirty) pushSave(); }, 15000);
+setInterval(() => { if (ME) pollLosses(); }, 30000);
+setInterval(() => { if (ME && view === 'orb') loadOrb(); }, 20000);
+syncLogin();
