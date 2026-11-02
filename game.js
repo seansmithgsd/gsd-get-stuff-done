@@ -15,7 +15,6 @@ const DPR = Math.min(2, window.devicePixelRatio || 1);
 // ---------------------------------------------------------------- tuning
 const EAT_EVERY = 60;        // seconds per food per worker
 const STARVE_SPEED = 0.5;    // work speed with no food
-const TASK_COST = 1;         // money value per gather task
 const SPEED_PER_MOVE = 20;   // speedup seconds per leftover puzzle move
 const WINS_PER_WORKER = 2;
 const MAX_OFFLINE = 3 * 86400;
@@ -169,7 +168,19 @@ function pickTarget(kind) {
 let floaters = [];
 function addWorker() {
   const n = S.workers.length + 1;
-  S.workers.push({ id: S.nextId++, name: `AI Worker ${n}`, task: null, repeat: true, hue: (n * 67) % 360 });
+  const w = { id: S.nextId++, name: `AI Worker ${n}`, task: null, repeat: true, hue: (n * 67) % 360 };
+  S.workers.push(w);
+  autoAssign(w);
+}
+// new workers head straight to the closest open resource
+function autoAssign(w) {
+  let best = null, bd = 1e9;
+  for (const kind of Object.keys(TASKS)) {
+    if (!taskOpen(kind)) continue;
+    const t = pickTarget(kind), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
+    if (d < bd) { bd = d; best = { kind, target: t }; }
+  }
+  if (best) { w.task = { kind: best.kind, dur: TASKS[best.kind].time, prog: 0, target: best.target }; w.repeat = true; }
 }
 function taskYield(kind) {
   const T = TASKS[kind], m = T.boost && hasB(T.boost) ? 2 : 1, out = {};
@@ -187,8 +198,7 @@ function finishTask(w, quiet) {
   for (const k in y) S.res[k] += y[k];
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
   const carry = t.prog - t.dur;
-  if (w.repeat && canPay({ money: TASK_COST }) && taskOpen(t.kind)) {
-    pay({ money: TASK_COST });
+  if (w.repeat && taskOpen(t.kind)) {
     w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: pickTarget(t.kind) };
   } else w.task = null;
 }
@@ -222,10 +232,8 @@ function assign(kind) {
   const T = TASKS[kind], w = idle()[0];
   if (!w) return toast('No idle AI workers — win puzzles to recruit more');
   if (T.req && !hasB(T.req)) return toast(`Build a ${BLD[T.req].n} first`);
-  if (!canPay({ money: TASK_COST })) return toast('Need 1 coin — win a puzzle');
   const target = pickTarget(kind);
   if (!target) return toast('Nothing to gather');
-  pay({ money: TASK_COST });
   w.task = { kind, dur: T.time, prog: 0, target }; w.repeat = true;
   save(); refresh();
 }
@@ -294,11 +302,11 @@ if (window.ResizeObserver) { const ro = new ResizeObserver(() => layout()); ro.o
 
 function hud() {
   const R = S.res;
-  const it = (c, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${v}</span>`;
+  const it = (c, label, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${label} <b>${v}</b></span>`;
   $('#res').innerHTML =
-    it('#c0392b', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', R.wood) + it('#9aa3ab', R.stone) +
-    it('#c86f33', R.copper) + it('#d8dde2', R.silver) + it('#e8b923', R.gold) +
-    `<span class="r">⏱ ${fmt(S.bank)}</span><span class="r">👷 ${S.workers.length}/${housing()}${S.waiting ? ` (+${S.waiting})` : ''}</span>`;
+    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) +
+    it('#c86f33', 'Copper', R.copper) + it('#d8dde2', 'Silver', R.silver) + it('#e8b923', 'Gold', R.gold) +
+    `<span class="r">Speedup <b>${fmt(S.bank)}</b></span><span class="r">Workers <b>${S.workers.length}/${housing()}</b>${S.waiting ? ` <b>(+${S.waiting} waiting)</b>` : ''}</span>`;
   const n = idle().length, tb = document.querySelector('#tabs [data-v=workers]');
   tb.innerHTML = 'Workers' + (n ? `<span class="dot">${n}</span>` : '');
 }
@@ -369,7 +377,7 @@ function renderWorkers(force) {
         ${w.task && w.task.kind !== 'build' ? `<button class="btn sm alt" data-stop="${w.id}">Stop</button>` : ''}
         </div></div>
         ${!w.task ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${Object.keys(TASKS).filter(k => !TASKS[k].req || hasB(TASKS[k].req)).map(k => `<button class="btn sm" data-task="${k}">${TASKS[k].n}</button>`).join('')}</div>` : ''}
-        ${w.task && w.task.kind !== 'build' ? `<label class="small"><input type="checkbox" data-rep="${w.id}" ${w.repeat ? 'checked' : ''}> Repeat (1 coin each)</label>` : ''}
+        ${w.task && w.task.kind !== 'build' ? `<label class="small"><input type="checkbox" data-rep="${w.id}" ${w.repeat ? 'checked' : ''}> Repeat</label>` : ''}
         </div>`;
     }
     if (!S.workers.length) html += `<div class="card"><div class="d">No AI workers yet. Win ${WINS_PER_WORKER} puzzles to recruit one.</div></div>`;
@@ -418,7 +426,7 @@ function tileSheet(i, j) {
   if (!kind) return closeSheet();
   const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !hasB(T.req);
   openSheet(`<div class="t">${NODE_NAME[kind]}</div>
-    <div class="d">${T.n}: ${Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(', ')} every ${fmt(T.time)} · 1 coin per trip</div>
+    <div class="d">${T.n}: ${Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(', ')} every ${fmt(T.time)}</div>
     <div style="margin-top:8px">${locked ? `<span class="small">Requires ${BLD[T.req].n}</span> <button class="btn sm" data-go="build">Tech tree</button>`
       : idle().length ? `<button class="btn go" data-task="${tk}">Send AI worker</button>` : `<span class="small">No idle workers.</span> <button class="btn sm" data-go="puzzle">Win puzzles to recruit</button>`}</div>`);
 }
@@ -664,7 +672,8 @@ function startLevel() {
 }
 function sizeBoard() {
   const wrap = $('#v-puzzle'); if (!wrap.offsetWidth) return;
-  const avail = Math.min(wrap.offsetWidth - 20, wrap.offsetHeight - 150, 480);
+  const side = wrap.offsetWidth >= 760 ? 280 : 0;
+  const avail = Math.min(wrap.offsetWidth - 20 - side, (side ? wrap.offsetHeight - 150 : wrap.offsetHeight - 150), 480);
   CS = Math.floor(Math.max(200, avail) / N);
   boardC.style.width = boardC.style.height = CS * N + 'px';
   boardC.width = boardC.height = CS * N * DPR;
@@ -907,12 +916,32 @@ function drawBoard() {
   }
   bx.restore();
 }
+const LEGEND = [
+  { s: 'h', t: 1, n: 'Row Clear', how: 'Match 4 in a row (side to side)', does: 'Clears its whole row when matched or swapped.' },
+  { s: 'v', t: 2, n: 'Column Clear', how: 'Match 4 in a column (up and down)', does: 'Clears its whole column when matched or swapped.' },
+  { s: 'b', t: 0, n: 'Bomb', how: 'Match an L or T shape', does: 'Clears the 3×3 area around it.' },
+  { s: 'c', t: -1, n: 'Color Bomb', how: 'Match 5 in a line', does: 'Swap it with any tile to clear every tile of that type.' },
+];
+let legendDone = false;
+function renderLegend() {
+  if (legendDone) return; legendDone = true;
+  $('#pz-legend').innerHTML = '<div class="lg-h">Specials</div>' + LEGEND.map((L, k) => `<div class="lg"><canvas data-lg="${k}" width="${40 * DPR}" height="${40 * DPR}"></canvas>
+    <div><b>${L.n}</b><div class="how">${L.how}</div><div>${L.does}</div></div></div>`).join('') +
+    `<div class="lg-note">Swap two specials together → both fire.<br>Two Color Bombs → clears the board.</div>`;
+  document.querySelectorAll('#pz-legend canvas[data-lg]').forEach(c => {
+    const L = LEGEND[+c.dataset.lg], x = c.getContext('2d');
+    x.setTransform(DPR, 0, 0, DPR, 0, 0); x.fillStyle = '#45301b'; x.fillRect(0, 0, 40, 40);
+    if (L.t >= 0) drawIcon(x, L.t, 20, 20, 16);
+    drawSpecial(x, L.s, 20, 20, 16, 0);
+  });
+}
 function renderPuzzleHead() {
   if (!P) return;
   const goals = Object.entries(P.left).map(([t, v]) => `<div class="goal${v <= 0 ? ' done' : ''}"><canvas data-icon="${t}" width="${28 * DPR}" height="${28 * DPR}" style="width:28px;height:28px"></canvas>${v <= 0 ? '✓' : v}</div>`).join('');
   $('#pz-head').innerHTML = `<div class="lv">Level ${P.L.n}</div><div class="goals">${goals}</div><div class="mv"><b>${P.moves}</b>moves</div>`;
   document.querySelectorAll('#pz-head canvas[data-icon]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawIcon(x, +c.dataset.icon, 14, 14, 12); });
-  $('#pz-foot').innerHTML = `Match 4 → line clear · L/T → bomb · 5 → color bomb<br>Leftover moves become speedup time · ${S.recruit}/${WINS_PER_WORKER} wins to next AI worker`;
+  $('#pz-foot').innerHTML = `Leftover moves become speedup time · ${S.recruit}/${WINS_PER_WORKER} wins to next AI worker`;
+  renderLegend();
 }
 (() => {
   let st = null;

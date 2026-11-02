@@ -22,6 +22,7 @@ button{font-family:inherit;cursor:pointer}
 .brand span{color:var(--parch);font-weight:normal}
 #res{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:13px;margin-top:3px}
 .r{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.r b{color:#fff}
 .r i{display:inline-block;width:11px;height:11px;border-radius:50%;border:1px solid rgba(0,0,0,.5)}
 .r.warn{color:#ff8a7a;font-weight:bold}
 
@@ -65,7 +66,15 @@ main{position:fixed;left:0;right:0;top:var(--toph,62px);bottom:var(--navh,54px)}
 #pz-head .goals{display:flex;gap:8px}
 #pz-head .goal{display:flex;flex-direction:column;align-items:center;font-size:13px;font-weight:bold}
 #pz-head .goal.done{color:#9be37f}
-#pz-wrap{display:flex;justify-content:center}
+#pz-wrap{display:flex;justify-content:center;align-items:flex-start;gap:14px;flex-wrap:wrap;padding:0 10px}
+#v-puzzle{overflow-y:auto;touch-action:pan-y}
+#pz-legend{background:rgba(43,29,16,.85);border:2px solid var(--gold);border-radius:8px;color:var(--parch);padding:10px;width:260px;max-width:100%;font-size:13px}
+#pz-legend .lg-h{font-weight:bold;color:var(--gold);margin-bottom:6px;font-size:14px}
+#pz-legend .lg{display:flex;gap:10px;align-items:flex-start;margin:8px 0}
+#pz-legend canvas{width:40px;height:40px;flex:none;border-radius:6px}
+#pz-legend .how{color:#e8c37a;font-size:12px}
+#pz-legend .lg-note{margin-top:8px;font-size:12px;opacity:.85;border-top:1px solid rgba(255,255,255,.15);padding-top:6px}
+@media (max-width:759px){#pz-legend{width:calc(100% - 0px)}}
 #board{border:3px solid var(--gold);border-radius:8px;background:#2a1c10;touch-action:none;display:block}
 #pz-foot{text-align:center;color:var(--parch);font-size:12px;padding:8px;opacity:.85}
 
