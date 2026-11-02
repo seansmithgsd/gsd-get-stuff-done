@@ -328,7 +328,7 @@ function startDaily() {
 let techCat = 'All';
 function renderTech(force) {
   const el = document.getElementById('v-tech'); if (!el) return;
-  const s = 't' + JSON.stringify([S.upg, S.rs && S.rs.id, techCat, tierNow(), S.civ, PRES(), Math.floor(S.bank), Object.values(S.res).map(v => Math.floor(Math.log2(v + 1)))]);
+  const s = 't' + JSON.stringify([S.upg, S.rs && S.rs.id, techCat, tierNow(), S.civ, PRES(), Math.floor(S.bank), Object.values(S.res).map(Math.floor)]);
   if (s === sig && !force) { if (S.rs) { const b = el.querySelector('[data-rsbar]'); if (b) b.style.width = (100 * S.rs.prog / S.rs.dur).toFixed(1) + '%'; const tl = el.querySelector('[data-rstl]'); if (tl) tl.textContent = fmt(S.rs.dur - S.rs.prog); } return; }
   sig = s;
   const tn = tierNow();
@@ -339,12 +339,12 @@ function renderTech(force) {
     const u = UPGI[S.rs.id];
     h += `<div class="card rsnow"><div class="t">Researching: ${u.n} ${u.max > 1 ? 'L' + (U(u.id) + 1) : ''}</div><div class="d">${u.d}</div>
       <div class="bar"><b data-rsbar style="width:${(100 * S.rs.prog / S.rs.dur).toFixed(1)}%"></b></div><div class="small"><span data-rstl>${fmt(S.rs.dur - S.rs.prog)}</span> left</div>
-      <div class="spd"><button class="btn sm go" data-spr="60" ${S.bank > 0 ? '' : 'disabled'}>⏱ 1m</button><button class="btn sm go" data-spr="300" ${S.bank > 0 ? '' : 'disabled'}>⏱ 5m</button><button class="btn sm go" data-spr="1800" ${S.bank > 0 ? '' : 'disabled'}>⏱ 30m</button><button class="btn sm" data-spr="all" ${S.bank > 0 ? '' : 'disabled'}>Finish (${fmt(S.rs.dur - S.rs.prog)})</button><span class="small">bank ${fmt(S.bank)} / ${fmt(bankCap())}</span></div></div>`;
+      <div class="spd"><button class="btn sm go" data-spr="60" ${S.bank > 0 ? '' : 'disabled'}>⏱ 1m</button><button class="btn sm go" data-spr="300" ${S.bank > 0 ? '' : 'disabled'}>⏱ 5m</button><button class="btn sm go" data-spr="1800" ${S.bank > 0 ? '' : 'disabled'}>⏱ 30m</button><button class="btn sm" data-spr="all" ${S.bank > 0 ? '' : 'disabled'}>Finish (${fmt(S.rs.dur - S.rs.prog)})</button><span class="small">bank ${fmt(S.bank)} / ${fmt(bankCap())}</span></div>${S.bank > 0 ? '' : whyHTML('Speedup bank is empty — win puzzles with moves left over to fill it')}</div>`;
   }
   // prestige + daily
   if (U('age6')) {
     const can = canPay(PRESTIGE_COST);
-    h += `<div class="card"><div class="row"><div><div class="t">Prestige ${PRES() + 1}</div><div class="d">Restart your village with a permanent +5% to everything (stacks). Keeps puzzle level, tools and prestige; you re-pick your civ.</div><div class="cost">${costHTML(PRESTIGE_COST)}</div></div><button class="btn sm" data-prestige ${can ? '' : 'disabled'}>Prestige</button></div></div>`;
+    h += `<div class="card"><div class="row"><div><div class="t">Prestige ${PRES() + 1}</div><div class="d">Restart your village with a permanent +5% to everything (stacks). Keeps puzzle level, tools and prestige; you re-pick your civ.</div><div class="cost">${costHTML(PRESTIGE_COST)}</div>${can ? '' : whyHTML('Need ' + shortBy(PRESTIGE_COST).join(', '))}</div><button class="btn sm" data-prestige ${can ? '' : 'disabled'}>Prestige</button></div></div>`;
   }
   const cats = ['All', ...new Set(UPG.map(u => u.cat))];
   h += `<div class="chips">${cats.map(c => `<button class="chip${c === techCat ? ' on' : ''}" data-cat="${c}">${c}</button>`).join('')}</div>`;
@@ -353,9 +353,10 @@ function renderTech(force) {
     h += `<h3>Tier ${tier}${tier >= 6 ? ' · ' + AGE_NAME[tier] : ''}</h3>`;
     for (const u of list) {
       const lvl = U(u.id), max = u.max || 1, done = lvl >= max, open = upgOpen(u), c = upgCost(u, lvl);
-      const why = tierNow() < u.tier ? `tier ${u.tier}${u.tier >= 6 ? ' (' + AGE_NAME[u.tier] + ')' : ''}` : (u.req || []).filter(r => !reqMet(r)).map(reqName).join(', ');
+      const why = done ? '' : [tierNow() < u.tier && (u.tier >= 6 ? `reach tier ${u.tier}: research ${AGE_NAME[u.tier]}` : `reach tier ${u.tier}: build any tier ${u.tier} building`),
+        ...(u.req || []).filter(r => !reqMet(r)).map(reqHint), open && S.rs && `already researching ${UPGI[S.rs.id].n} — one at a time`, open && !canPay(c) && 'need ' + shortBy(c).join(', ')].filter(Boolean).join(' · ');
       h += `<div class="card${open || done ? '' : ' locked'}${u.age ? ' age' : ''}"><div class="row"><div style="flex:1"><div class="t"><span class="no">#${u.no}</span> ${u.n} ${max > 1 ? `<span class="small">${lvl}/${max}</span>` : ''}</div><div class="d">${u.d}</div>
-        <div class="cost">${done ? 'Done' : open ? costHTML(c) + ' · ' + fmt(upgTime(u, lvl)) : 'Requires ' + why}</div></div>
+        <div class="cost">${done ? 'Done' : costHTML(c) + ' · ' + fmt(upgTime(u, lvl))}</div>${whyHTML(why)}</div>
         ${done ? '<span class="small">✓</span>' : `<button class="btn sm" data-res="${u.id}" ${open && !S.rs && canPay(c) ? '' : 'disabled'}>Research</button>`}</div></div>`;
     }
   }
@@ -384,8 +385,8 @@ function openMarket() {
   const sell = k => Math.max(.01, PRICE[k] * (k === 'gold' && U('assay') ? 1.2 : 1));
   const rows = Object.keys(PRICE).filter(k => k !== 'silver').map(k => {
     const s1 = sell(k), q = s1 < 1 ? Math.ceil(1 / s1) * 10 : 10;
-    return `<tr><td>${k}</td><td>${S.res[k] || 0}</td><td><button class="btn sm" data-sell="${k}" data-q="${q}" ${(S.res[k] || 0) >= q ? '' : 'disabled'}>Sell ${q} → ${Math.floor(q * s1)}c</button></td>
-      <td><button class="btn sm alt" data-buyr="${k}" data-q="${q}" ${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : 'disabled'}>Buy ${q} for ${Math.ceil(q * PRICE[k] * 2)}c</button></td></tr>`;
+    return `<tr><td>${k}</td><td>${S.res[k] || 0}</td><td><button class="btn sm" data-sell="${k}" data-q="${q}" ${(S.res[k] || 0) >= q ? '' : 'disabled'} title="${(S.res[k] || 0) >= q ? '' : 'Need ' + (q - (S.res[k] || 0)) + ' more ' + k}">Sell ${q} → ${Math.floor(q * s1)}c</button>${(S.res[k] || 0) >= q ? '' : `<div class="why sm">need ${q - Math.floor(S.res[k] || 0)} more</div>`}</td>
+      <td><button class="btn sm alt" data-buyr="${k}" data-q="${q}" ${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : 'disabled'} title="${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : needCoin(Math.ceil(q * PRICE[k] * 2))}">Buy ${q} for ${Math.ceil(q * PRICE[k] * 2)}c</button>${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : `<div class="why sm">${needCoin(Math.ceil(q * PRICE[k] * 2))}</div>`}</td></tr>`;
   }).join('');
   modal(`<h2>Market</h2><div class="small">Copper ${S.res.copper} · wallet ${wallet()}</div><table class="lb mk"><tr><th>Res</th><th>Have</th><th>Sell</th><th>Buy</th></tr>${rows}</table>
     ${U('silverex') ? `<div class="btns"><button class="btn sm" data-ex="c2s" ${S.res.copper >= 30 ? '' : 'disabled'}>30 copper → 10 silver</button><button class="btn sm" data-ex="s2g" ${S.res.silver >= 10 ? '' : 'disabled'}>10 silver → 3 gold</button></div>` : '<div class="small">Research Silver Exchange (#56) to convert coins.</div>'}

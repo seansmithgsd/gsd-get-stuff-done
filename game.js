@@ -176,6 +176,11 @@ function pay(c) {
     R.copper -= v;
   }
 }
+// why a button is greyed out — shown under every disabled option
+function shortBy(c) { return Object.entries(c).map(([k, v]) => { const have = k === 'money' ? wallet() : (S.res[k] || 0); return have < v ? `${Math.ceil(v - have)} more ${k === 'money' ? 'coin' : k}` : null; }).filter(Boolean); }
+function reqHint(r) { return BLD[r] ? `build ${BLD[r].n}` : UPGI[r] ? `research ${UPGI[r].n} (Tech tab)` : r; }
+const whyHTML = w => w ? `<div class="why">🔒 ${w}</div>` : '';
+const needCoin = n => `need ${Math.ceil(n - wallet())} more coin`;
 function costHTML(c) {
   return Object.entries(c).map(([k, v]) => {
     const have = k === 'money' ? wallet() : (S.res[k] || 0);
@@ -388,7 +393,7 @@ function speedRow(ws) {
   const ids = ws.map(w => w.id).join(','), all = ws.reduce((a, w) => a + remaining(w), 0), dis = S.bank > 0 ? '' : 'disabled';
   return `<div class="spd"><button class="btn sm go" data-sp="${ids}" data-amt="60" ${dis}>⏱ 1m</button><button class="btn sm go" data-sp="${ids}" data-amt="300" ${dis}>⏱ 5m</button>
     <button class="btn sm" data-sp="${ids}" data-amt="all" ${dis}>Finish ${ws.length > 1 ? 'all' : 'now'} (${fmt(all)})${S.bank < all ? ' — bank short' : ''}</button>
-    <span class="small">bank ${fmt(S.bank)}</span></div>`;
+    <span class="small">bank ${fmt(S.bank)}</span></div>${S.bank > 0 ? '' : whyHTML('Speedup bank is empty — win puzzles with moves left over to fill it')}`;
 }
 function progRow(w) {
   return `<div class="bar"><b data-pw="${w.id}" style="width:${(100 * w.task.prog / w.task.dur).toFixed(1)}%"></b></div><div class="small"><span data-tl="${w.id}">${fmt(remaining(w))}</span> left</div>`;
@@ -509,11 +514,12 @@ function renderBuild(force) {
       if (D.tier !== tier) continue;
       const c = costOf(k), built = countB(k), locked = D.req && !D.req.every(reqMet);
       const doneOnce = !D.repeat && built;
+      const why = doneOnce ? '' : [locked && 'Needs: ' + D.req.filter(r => !reqMet(r)).map(reqHint).join(' + '), !canPay(c) && 'Need ' + shortBy(c).join(', '), !free().length && (S.workers.length ? 'Every AI worker is already building — wait or speed one up' : 'No AI workers yet — win puzzles to recruit one')].filter(Boolean).join(' · ');
       let btn;
       if (doneOnce) btn = k === 'market' && hasB(k) ? `<button class="btn sm go" data-market>Open</button>` : `<button class="btn sm alt" disabled>${hasB(k) ? 'Built' : 'Building'}</button>`;
       else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !free().length ? 'disabled' : ''}>Build</button>`;
       html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
-        <div class="cost">${locked ? 'Requires ' + D.req.filter(r => !reqMet(r)).map(reqName).join(', ') : costHTML(c) + ` · ${fmt(D.time)}`}</div></div>${btn}</div></div>`;
+        <div class="cost">${doneOnce ? '' : costHTML(c) + ` · ${fmt(D.time)}`}</div>${whyHTML(why)}</div>${btn}</div></div>`;
     }
     for (const f of FUTURE.filter(f => f.tier === tier)) {
       html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div><div class="cost">Requires ${f.req}</div></div><span class="small">Coming soon</span></div></div>`;
@@ -618,11 +624,11 @@ function renderWorkers(force) {
     html += '<div class="wgrid">';
     for (const G of GROUPS) {
       const open = G.tasks.some(k => taskOpen(k)), n = cnt(G.k), r = R[G.k === 'ore' ? 'iron' : G.k];
-      const need = !open ? (G.tasks.map(k => TASKS[k].req).filter(Boolean).map(reqName)[0] || '') : '';
+      const need = !open ? (G.tasks.map(k => TASKS[k].req).filter(Boolean).map(reqHint)[0] || '') : '';
       html += `<div class="wt${open ? '' : ' locked'}"><canvas data-gi="${G.k}" width="${44 * DPR}" height="${44 * DPR}"></canvas>
         <div class="wn">${G.n}</div><div class="wc">${n}</div>
-        <div class="wr">${open ? (r ? `+${(+r.p.toFixed(1))}/min` : '—') : 'Needs ' + need}</div>
-        <div class="wb"><button class="btn sm alt" data-minus="${G.k}" ${n ? '' : 'disabled'}>−</button><button class="btn sm" data-plus="${G.k}" ${open && idle().length ? '' : 'disabled'}>+</button>
+        <div class="wr">${open ? (r ? `+${(+r.p.toFixed(1))}/min` : '—') : 'Needs: ' + need}</div>${open && !idle().length && !n ? '<div class="why sm">no idle worker</div>' : ''}
+        <div class="wb"><button class="btn sm alt" data-minus="${G.k}" ${n ? '' : 'disabled'} title="${n ? 'Take one worker off' : 'No workers on this'}">−</button><button class="btn sm" data-plus="${G.k}" ${open && idle().length ? '' : 'disabled'} title="${!open ? 'Locked — ' + esc(need) : idle().length ? 'Add an idle worker' : 'No idle worker — tap − on another group first'}">+</button>
         ${n ? `<button class="btn sm go" title="Finish this group's current trips with speedup" data-sp="${S.workers.filter(w => groupOf(w) === G.k).map(w => w.id).join(',')}" data-amt="all" ${S.bank > 0 ? '' : 'disabled'}>⏱</button>` : ''}</div></div>`;
     }
     for (const [k, n] of [['build', 'Building'], ['raid', 'Harvesting'], ['idle', 'Idle']]) {
@@ -1500,7 +1506,7 @@ function lose() {
   P.over = true; sfx('lose'); S.streak = 0;
   if (U('secondchance') && S.chanceDay !== today() && !P.usedChance) { P.usedChance = true; S.chanceDay = today(); P.moves += 5; P.over = false; save(); renderPuzzleHead(); toast('Second Chance: +5 free moves'); return; }
   modal(`<h2>Out of moves</h2><p>${Object.entries(P.left).filter(([, v]) => v > 0).map(([t, v]) => `${v} ${goalName(t)}`).join(', ')} left.</p>
-    <div class="btns"><button class="btn" data-act="more" ${wallet() >= MORE_MOVES_COST ? '' : 'disabled'}>+5 moves (${MORE_MOVES_COST} copper)</button></div>
+    <div class="btns"><button class="btn" data-act="more" ${wallet() >= MORE_MOVES_COST ? '' : 'disabled'}>+5 moves (${MORE_MOVES_COST} copper)</button></div>${wallet() >= MORE_MOVES_COST ? '' : whyHTML(needCoin(MORE_MOVES_COST))}
     <div class="small" style="margin-top:4px">You have ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10)</div>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Try again</button></div>`);
 }
@@ -1826,7 +1832,7 @@ function openShop() {
   modal(`<h2>Copper Shop</h2><div class="small">Wallet: ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10). Tools don't use a move.</div>
     ${Object.entries(TOOLS).map(([k, t]) => `<div class="card" style="text-align:left"><div class="row"><canvas data-si="${k}" width="${40 * DPR}" height="${40 * DPR}" style="width:40px;height:40px;flex:none"></canvas>
       <div style="flex:1"><div class="t">${t.n} <span class="small">owned ${T[k] || 0}</span></div><div class="d">${t.d}</div></div>
-      <button class="btn sm" data-buy="${k}" ${wallet() >= toolCost(k) ? '' : 'disabled'}>${toolCost(k)} c</button></div></div>`).join('')}
+      <button class="btn sm" data-buy="${k}" ${wallet() >= toolCost(k) ? '' : 'disabled'}>${toolCost(k)} c</button></div>${wallet() >= toolCost(k) ? '' : whyHTML(needCoin(toolCost(k)))}</div>`).join('')}
     <div class="btns"><button class="btn alt" data-close>Done</button></div>`);
   document.querySelectorAll('#modal canvas[data-si]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawTool(x, c.dataset.si, 20, 20, 17); });
 }

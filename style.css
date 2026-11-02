@@ -187,3 +187,7 @@ table.lb tr.me td{background:#fef3c7;font-weight:700}
 table.mk td{cursor:default}
 #tabs button{font-size:13px}
 .civs .btn .small{color:#ecfdf5}
+
+.why{font-size:12px;margin-top:3px;color:var(--red);font-weight:600}
+.why.sm{font-size:10px;margin-top:2px}
+.mk button:disabled{pointer-events:auto;cursor:not-allowed}
