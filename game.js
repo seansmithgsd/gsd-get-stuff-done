@@ -199,7 +199,7 @@ function finishTask(w, quiet) {
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
   const carry = t.prog - t.dur;
   if (w.repeat && taskOpen(t.kind)) {
-    w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: pickTarget(t.kind) };
+    w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: TASKS[t.kind].node === 'deer' ? pickTarget(t.kind) : t.target };
   } else w.task = null;
 }
 function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || hasB(T.req)) && !!pickTarget(kind); }
@@ -414,6 +414,28 @@ $('#sheet').addEventListener('click', e => {
   if (b.dataset.task) { assign(b.dataset.task); closeSheet(); }
   if (b.dataset.go) { setView(b.dataset.go); }
 });
+// tap a resource: the closest non-building worker drops what it's doing and goes there
+function sendClosest(i, j) {
+  const b = bAt(i, j);
+  let kind = b ? (b.type === 'farm' && b.done ? 'farm' : null) : nodeAt(i, j);
+  const deer = DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
+  if (deer && !b) kind = 'deer';
+  if (!kind) return false;
+  const tk = NODE_TASK[kind], T = TASKS[tk];
+  if (T.req && !hasB(T.req)) return false;           // locked: show the sheet instead
+  const target = deer ? [unwrapNear(deer.i, TCI), deer.j] : [unwrapNear(i, TCI), j];
+  let best = null, bd = 1e9;
+  S.workers.forEach((w, k) => {
+    if (w.task && w.task.kind === 'build') return;
+    const p = workerPos(w, k).p, d = Math.hypot(unwrapNear(p[0], target[0]) - target[0], p[1] - target[1]);
+    if (d < bd) { bd = d; best = w; }
+  });
+  if (!best) { toast(S.workers.length ? 'All AI workers are building' : 'No AI workers yet — win puzzles to recruit'); return true; }
+  best.task = { kind: tk, dur: T.time, prog: 0, target }; best.repeat = true;
+  toast(`${best.name} → ${T.n}`);
+  closeSheet(); save(); refresh(true);
+  return true;
+}
 function tileSheet(i, j) {
   const b = bAt(i, j);
   let kind = b ? (b.type === 'farm' && b.done ? 'farm' : null) : nodeAt(i, j);
@@ -624,7 +646,7 @@ function drawMap(now) {
       const cands = [[Math.floor(fi + .5), Math.floor(fj + .5)], [Math.floor(fi), Math.floor(fj)], [Math.floor(fi + 1), Math.floor(fj + 1)]];
       let hit = null;
       for (const [i, j] of cands) { if (j < 0 || j >= H) continue; if (bAt(i, j) || nodeAt(i, j) || DEER.some(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j)) { hit = [i, j]; break; } }
-      if (hit) tileSheet(hit[0], hit[1]); else closeSheet();
+      if (hit) { if (!sendClosest(hit[0], hit[1])) tileSheet(hit[0], hit[1]); } else closeSheet();
     }
     down = null;
   });
