@@ -153,3 +153,7 @@ table.lb tr.me td{background:#fef3c7;font-weight:700}
 .wt.locked{opacity:.5}
 .wt.status{background:#eef2ff}
 .wt.alert{background:#fef3c7;border-color:var(--gold)}
+
+.spd{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
+.spd .small{margin-left:auto}
+.wt .wb .btn.go{min-width:38px;font-size:13px}

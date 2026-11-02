@@ -334,6 +334,40 @@ function useSpeed(id) {
   if (w.task.prog >= w.task.dur - 1e-6) { w.task.prog = w.task.dur; finishTask(w, false); }
   save(); refresh();
 }
+// speedup: spend banked seconds on specific tasks (soonest-to-finish first)
+function remaining(w) { const sp = starving() ? STARVE_SPEED : 1; return w.task ? (w.task.dur - w.task.prog) / sp : 0; }
+function speedTasks(ids, amt) {
+  const ws = ids.map(id => S.workers.find(w => w.id === id)).filter(w => w && w.task).sort((a, b) => remaining(a) - remaining(b));
+  if (!ws.length || S.bank <= 0) return;
+  const sp = starving() ? STARVE_SPEED : 1; let used = 0;
+  for (const w of ws) {
+    if (S.bank <= 0) break;
+    const use = Math.min(S.bank, remaining(w), amt === 'all' ? Infinity : +amt);
+    S.bank -= use; used += use; w.task.prog += use * sp;
+    if (w.task.prog >= w.task.dur - 1e-6) { w.task.prog = w.task.dur; finishTask(w, false); }
+  }
+  if (used > 0) { sfx('coin'); toast(`⏱ Used ${fmt(used)} of speedup`); }
+  save(); refresh(true);
+}
+function speedRow(ws) {
+  ws = ws.filter(w => w.task); if (!ws.length) return '';
+  const ids = ws.map(w => w.id).join(','), all = ws.reduce((a, w) => a + remaining(w), 0), dis = S.bank > 0 ? '' : 'disabled';
+  return `<div class="spd"><button class="btn sm go" data-sp="${ids}" data-amt="60" ${dis}>⏱ 1m</button><button class="btn sm go" data-sp="${ids}" data-amt="300" ${dis}>⏱ 5m</button>
+    <button class="btn sm" data-sp="${ids}" data-amt="all" ${dis}>Finish ${ws.length > 1 ? 'all' : 'now'} (${fmt(all)})${S.bank < all ? ' — bank short' : ''}</button>
+    <span class="small">bank ${fmt(S.bank)}</span></div>`;
+}
+function progRow(w) {
+  return `<div class="bar"><b data-pw="${w.id}" style="width:${(100 * w.task.prog / w.task.dur).toFixed(1)}%"></b></div><div class="small"><span data-tl="${w.id}">${fmt(remaining(w))}</span> left</div>`;
+}
+function liveProgress() {
+  document.querySelectorAll('[data-pw]').forEach(el => { const w = S.workers.find(x => x.id === +el.dataset.pw); if (w && w.task) el.style.width = (100 * w.task.prog / w.task.dur).toFixed(1) + '%'; });
+  document.querySelectorAll('[data-tl]').forEach(el => { const w = S.workers.find(x => x.id === +el.dataset.tl); if (w && w.task) el.textContent = fmt(remaining(w)); });
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-sp]'); if (!b || b.disabled) return;
+  speedTasks(b.dataset.sp.split(',').map(Number), b.dataset.amt);
+  if (!$('#sheet').hidden && b.closest('#sheet')) closeSheet();
+});
 function stopTask(id) {
   const w = S.workers.find(x => x.id === id); if (!w || !w.task) return;
   if (w.task.kind === 'build') return toast('Builds can\'t be cancelled');
@@ -405,6 +439,7 @@ function refresh(force) {
   if (view === 'workers') renderWorkers(force);
   if (view === 'orb') renderOrb(force);
   if (view === 'puzzle') renderPuzzleHead();
+  liveProgress();
 }
 function renderHint(force) {
   let html = '';
@@ -422,9 +457,17 @@ function renderHint(force) {
 $('#hint').addEventListener('click', e => { const b = e.target.closest('[data-go]'); if (b) setView(b.dataset.go); });
 
 function renderBuild(force) {
-  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done), free().length]);
+  const building = S.workers.filter(w => w.task && w.task.kind === 'build');
+  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done), free().length, building.map(w => w.id), Math.floor(S.bank)]);
   if (s === sig && !force) return; sig = s;
-  let html = '<h2>Tech Tree</h2>';
+  let html = '';
+  if (building.length) {
+    html += `<h2>Under construction <span class="small">speedup bank ${fmt(S.bank)}</span></h2>`;
+    for (const w of building) { const b = S.buildings.find(x => x.id === w.task.bid);
+      html += `<div class="card"><div class="row"><div style="flex:1"><div class="t">${b ? BLD[b.type].n : 'Building'}</div><div class="d">${esc(w.name)}</div>${progRow(w)}</div></div>${speedRow([w])}</div>`; }
+    if (building.length > 1) html += `<div class="card"><div class="t">All construction</div>${speedRow(building)}</div>`;
+  }
+  html += '<h2>Tech Tree</h2>';
   for (let tier = 1; tier <= 5; tier++) {
     html += `<h3>Tier ${tier}</h3>`;
     for (const [k, D] of Object.entries(BLD)) {
@@ -522,7 +565,7 @@ function speedSoonest() {
   ws.sort((a, b) => (a.task.dur - a.task.prog) - (b.task.dur - b.task.prog)); useSpeed(ws[0].id);
 }
 function renderWorkers(force) {
-  const s = 'w' + JSON.stringify([S.workers.map(w => [w.id, groupOf(w)]), S.bank > 0, starving(), S.waiting, housing(), S.recruit, S.buildings.filter(b => b.done).length]);
+  const s = 'w' + JSON.stringify([S.workers.map(w => [w.id, groupOf(w)]), Math.floor(S.bank), starving(), S.waiting, housing(), S.recruit, S.buildings.filter(b => b.done).length]);
   if (s !== sig || force) {
     sig = s;
     const R = rates(), cnt = k => S.workers.filter(w => groupOf(w) === k).length;
@@ -536,16 +579,18 @@ function renderWorkers(force) {
       html += `<div class="wt${open ? '' : ' locked'}"><canvas data-gi="${G.k}" width="${44 * DPR}" height="${44 * DPR}"></canvas>
         <div class="wn">${G.n}</div><div class="wc">${n}</div>
         <div class="wr">${open ? (r ? `+${(+r.p.toFixed(1))}/min` : '—') : 'Needs ' + need}</div>
-        <div class="wb"><button class="btn sm alt" data-minus="${G.k}" ${n ? '' : 'disabled'}>−</button><button class="btn sm" data-plus="${G.k}" ${open && idle().length ? '' : 'disabled'}>+</button></div></div>`;
+        <div class="wb"><button class="btn sm alt" data-minus="${G.k}" ${n ? '' : 'disabled'}>−</button><button class="btn sm" data-plus="${G.k}" ${open && idle().length ? '' : 'disabled'}>+</button>
+        ${n ? `<button class="btn sm go" title="Finish this group's current trips with speedup" data-sp="${S.workers.filter(w => groupOf(w) === G.k).map(w => w.id).join(',')}" data-amt="all" ${S.bank > 0 ? '' : 'disabled'}>⏱</button>` : ''}</div></div>`;
     }
     for (const [k, n] of [['build', 'Building'], ['raid', 'Harvesting'], ['idle', 'Idle']]) {
       const c = cnt(k);
       html += `<div class="wt status${k === 'idle' && c ? ' alert' : ''}"><canvas data-gi="${k}" width="${44 * DPR}" height="${44 * DPR}"></canvas><div class="wn">${n}</div><div class="wc">${c}</div>
-        <div class="wr">${k === 'idle' ? (c ? 'Tap + on a group' : 'Everyone busy') : k === 'build' ? 'Build tab' : 'Orb tab'}</div></div>`;
+        <div class="wr">${k === 'idle' ? (c ? 'Tap + on a group' : 'Everyone busy') : k === 'build' ? 'Build tab' : 'Orb tab'}</div>
+        ${k !== 'idle' && c ? `<div class="wb"><button class="btn sm go" title="Finish with speedup" data-sp="${S.workers.filter(w => groupOf(w) === k).map(w => w.id).join(',')}" data-amt="all" ${S.bank > 0 ? '' : 'disabled'}>⏱ Finish</button></div>` : ''}</div>`;
     }
     html += '</div>';
-    html += `<div class="card"><div class="row"><div><div class="t">Speedup bank: ${fmt(S.bank)}</div><div class="d">Finishes the task closest to done. Earned from leftover puzzle moves.</div></div>
-      <button class="btn sm go" data-speedall ${S.bank > 0 && S.workers.some(w => w.task) ? '' : 'disabled'}>⏱ Use</button></div></div>`;
+    html += `<div class="card"><div class="t">Speedup bank: ${fmt(S.bank)}</div><div class="d">Earned from leftover puzzle moves. ⏱ on a group finishes that group's current trips; builds and harvest crews can also be sped up on the Build and Orb tabs or by tapping them in the village.</div>
+      ${speedRow(S.workers.filter(w => w.task))}</div>`;
     if (!S.workers.length) html += `<div class="card"><div class="d">No AI workers yet. Win ${WINS_PER_WORKER} puzzles to recruit one.</div></div>`;
     html += `<div class="foot">${ME ? `Signed in as <b>${esc(ME.name)}</b> — progress saves to your account.` : 'Guest save on this device only. Sign in on the Orb tab to keep it.'}<br>
       <a href="https://gsdconsultantsllc.com" target="_blank" rel="noopener">GSD Consultants, LLC</a> · v0.3<br><br>
@@ -561,7 +606,6 @@ $('#v-workers').addEventListener('click', e => {
   const t = e.target.closest('button'); if (!t) return;
   if (t.dataset.plus) assignGroup(t.dataset.plus);
   else if (t.dataset.minus) unassignGroup(t.dataset.minus);
-  else if (t.dataset.speedall !== undefined) speedSoonest();
   else if (t.dataset.reset !== undefined) modal(`<h2>Reset progress?</h2><p>This wipes this device's save.</p><div class="btns"><button class="btn alt" data-close>Cancel</button><button class="btn" data-act="reset">Reset</button></div>`);
 });
 
@@ -605,8 +649,8 @@ function tileSheet(i, j) {
   const deer = DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
   if (deer && !b) kind = 'deer';
   if (b && !kind) {
-    const D = BLD[b.type];
-    return openSheet(`<div class="t">${D.n}</div><div class="d">${b.done ? (D.desc || 'Your base. Houses 2 AI workers.') : 'Under construction'}</div>`);
+    const D = BLD[b.type], bw = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
+    return openSheet(`<div class="t">${D.n}</div><div class="d">${b.done ? (b.type === 'tc' ? 'Your base. Houses 2 AI workers.' : D.desc) : 'Under construction' + (bw ? ' by ' + esc(bw.name) : '')}</div>${bw ? progRow(bw) + speedRow([bw]) : ''}`);
   }
   if (!kind) return closeSheet();
   const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !hasB(T.req);
@@ -1678,7 +1722,7 @@ async function loadOrb() {
 }
 function renderOrb(force) {
   const el = $('#v-orb');
-  const s = 'o' + JSON.stringify([!!ME, ORB && ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB && ORB.teams, S.workers.filter(w => w.task && w.task.kind === 'raid').length]);
+  const s = 'o' + JSON.stringify([!!ME, ORB && ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB && ORB.teams, S.workers.filter(w => w.task && w.task.kind === 'raid').map(w => w.id), Math.floor(S.bank)]);
   if (s === sig && !force) return; sig = s;
   if (!ME) {
     el.innerHTML = `<h2>The Orb</h2>
@@ -1702,6 +1746,7 @@ function renderOrb(force) {
     <table class="lb"><tr><th>#</th><th>Village</th><th>Team</th><th>Lvl</th><th>Bldgs</th><th>Score</th></tr>
     ${ORB.players.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${esc(p.name)}${p.shield ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}
     </table>
+    ${(() => { const crews = S.workers.filter(w => w.task && w.task.kind === 'raid'); return crews.length ? `<h3>Harvest crews out</h3>` + crews.map(w => `<div class="card"><div class="t">${esc(w.name)} → ${esc(w.task.name)}</div>${progRow(w)}${speedRow([w])}</div>`).join('') : ''; })()}
     <h3>Teams <span class="small">${ORB.teams.length}/${ORB.limits.teams}</span></h3>`;
   if (ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(tName(ME.team))}</div><div class="d">Your team</div></div><button class="btn sm alt" data-team="leave">Leave</button></div></div>`;
   for (const t of ORB.teams) if (t.id !== ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(t.name)}</div><div class="d">${t.members}/${ORB.limits.teamMax} members · ${t.score} pts</div></div>
