@@ -35,13 +35,13 @@ const BLD = {
   quarry: { n: 'Quarry', tier: 1, time: 75, cost: { wood: 20, money: 4 }, desc: 'Unlocks stone from rocks' },
   lumber: { n: 'Lumber Camp', tier: 2, time: 90, req: ['hut'], cost: { wood: 25, stone: 8, money: 5 }, desc: 'Doubles wood per trip' },
   farm:   { n: 'Farm Plot', tier: 2, time: 90, req: ['hunt'], cost: { wood: 20, stone: 6, money: 5 }, desc: 'Steady food (+5 per harvest)' },
+  kiln:   { n: 'Charcoal Kiln', tier: 3, time: 120, req: ['lumber'], cost: { wood: 30, stone: 15, money: 8 }, desc: 'Wood + Wood → Coal' },
+  mine:   { n: 'Mine', tier: 3, time: 150, req: ['quarry', 'farm'], cost: { wood: 30, stone: 20, money: 10 }, desc: 'Iron and copper; silver every 3rd trip' },
 };
 const FUTURE = [
-  { tier: 3, n: 'Charcoal Kiln', desc: 'Wood + Wood → Coal' },
-  { tier: 3, n: 'Mine', desc: 'Iron, copper, silver' },
-  { tier: 4, n: 'Smelter', desc: 'Iron + Coal → Steel' },
-  { tier: 4, n: 'Mint', desc: 'Silver and gold' },
-  { tier: 5, n: 'Town Hall', desc: 'More workers, orb rank' },
+  { tier: 4, n: 'Smelter', desc: 'Iron + Coal → Steel', req: 'Charcoal Kiln, Mine' },
+  { tier: 4, n: 'Mint', desc: 'Silver and gold', req: 'Mine' },
+  { tier: 5, n: 'Town Hall', desc: 'More workers, orb rank', req: 'Smelter, Mint' },
 ];
 const TASKS = {
   berries: { n: 'Pick berries', node: 'bush', time: 20, gain: { food: 3 } },
@@ -49,9 +49,12 @@ const TASKS = {
   farm:    { n: 'Harvest farm', node: 'farm', time: 25, gain: { food: 5 }, req: 'farm' },
   chop:    { n: 'Chop wood', node: 'tree', time: 20, gain: { wood: 3 }, boost: 'lumber' },
   stone:   { n: 'Quarry stone', node: 'rock', time: 30, gain: { stone: 2 }, req: 'quarry' },
+  coal:    { n: 'Burn charcoal', node: 'kiln', time: 30, cost: { wood: 2 }, gain: { coal: 1 }, req: 'kiln' },
+  mine:    { n: 'Mine ore', node: 'mine', time: 40, gain: { iron: 2, copper: 1 }, req: 'mine' },
 };
-const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm' };
-const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot' };
+const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine' };
+const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine' };
+const BNODE = ['farm', 'kiln', 'mine'];   // buildings workers gather at
 
 // ---------------------------------------------------------------- state
 const SAVE_KEY = 'gsd-get-stuff-done-v1';
@@ -61,13 +64,13 @@ let S;
 function newState() {
   return {
     v: 1, t: Date.now(), seed: (Math.random() * 1e9) | 0,
-    res: { food: 10, wood: 12, stone: 0, copper: 6, silver: 0, gold: 0 },
+    res: { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, copper: 6, silver: 0, gold: 0 },
     bank: 0, level: 1, wins: 0, recruit: 0, waiting: 0, eatAcc: 0, nextId: 1,
     workers: [], buildings: [{ id: 0, type: 'tc', i: TCI, j: TCJ, done: true }],
   };
 }
 function load() {
-  try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) return s; } } catch (e) {}
+  try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) { for (const k of ['iron', 'coal', 'steel']) if (s.res[k] == null) s.res[k] = 0; return s; } } } catch (e) {}
   return newState();
 }
 function save() { S.t = Date.now(); try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
@@ -150,7 +153,7 @@ function findSlot() {
 }
 function pickTarget(kind) {
   const T = TASKS[kind];
-  if (T.node === 'farm') { const b = S.buildings.find(x => x.type === 'farm' && x.done); return [b.i, b.j]; }
+  if (BNODE.includes(T.node)) { const b = S.buildings.find(x => x.type === T.node && x.done); return b ? [unwrapNear(b.i, TCI), b.j] : null; }
   if (T.node === 'deer') {
     let best = null, bd = 1e9;
     for (const d of DEER) { const ui = unwrapNear(d.i, TCI); const dd = Math.hypot(ui - TCI, d.j - TCJ); if (dd < bd) { bd = dd; best = [ui, d.j]; } }
@@ -177,7 +180,7 @@ function addWorker() {
 function autoAssign(w) {
   let best = null, bd = 1e9;
   for (const kind of Object.keys(TASKS)) {
-    if (!taskOpen(kind)) continue;
+    if (!taskOpen(kind) || TASKS[kind].cost) continue;
     const t = pickTarget(kind), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { kind, target: t }; }
   }
@@ -196,10 +199,13 @@ function finishTask(w, quiet) {
     w.task = null; return;
   }
   const y = taskYield(t.kind);
-  for (const k in y) S.res[k] += y[k];
+  if (t.kind === 'mine') { w.mineN = (w.mineN || 0) + 1; if (w.mineN % 3 === 0) y.silver = 1; }
+  for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
   const carry = t.prog - t.dur;
-  if (w.repeat && taskOpen(t.kind)) {
+  const TC = TASKS[t.kind].cost;
+  if (w.repeat && taskOpen(t.kind) && (!TC || canPay(TC))) {
+    if (TC) pay(TC);
     w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: TASKS[t.kind].node === 'deer' ? pickTarget(t.kind) : t.target };
   } else w.task = null;
 }
@@ -235,6 +241,8 @@ function assign(kind) {
   if (T.req && !hasB(T.req)) return toast(`Build a ${BLD[T.req].n} first`);
   const target = pickTarget(kind);
   if (!target) return toast('Nothing to gather');
+  if (T.cost && !canPay(T.cost)) return toast('Not enough: needs ' + Object.entries(T.cost).map(([k, v]) => v + ' ' + k).join(', '));
+  if (T.cost) pay(T.cost);
   w.task = { kind, dur: T.time, prog: 0, target }; w.repeat = true;
   save(); refresh();
 }
@@ -305,7 +313,7 @@ function hud() {
   const R = S.res;
   const it = (c, label, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${label} <b>${v}</b></span>`;
   $('#res').innerHTML =
-    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) +
+    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) +
     it('#c86f33', 'Copper', R.copper) + it('#d8dde2', 'Silver', R.silver) + it('#e8b923', 'Gold', R.gold) +
     `<span class="r">Speedup <b>${fmt(S.bank)}</b></span><span class="r">Workers <b>${S.workers.length}/${housing()}</b>${S.waiting ? ` <b>(+${S.waiting} waiting)</b>` : ''}</span>`;
   const n = idle().length, tb = document.querySelector('#tabs [data-v=workers]');
@@ -352,7 +360,7 @@ function renderBuild(force) {
         <div class="cost">${locked ? 'Requires ' + D.req.map(r => BLD[r].n).join(', ') : costHTML(c) + ` · ${fmt(D.time)}`}</div></div>${btn}</div></div>`;
     }
     for (const f of FUTURE.filter(f => f.tier === tier)) {
-      html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div></div><span class="small">Coming soon</span></div></div>`;
+      html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div><div class="cost">Requires ${f.req}</div></div><span class="small">Coming soon</span></div></div>`;
     }
   }
   if (!free().length) html += `<div class="foot">Building needs an AI worker that isn't already building.</div>`;
@@ -418,7 +426,7 @@ $('#sheet').addEventListener('click', e => {
 // tap a resource: the closest non-building worker drops what it's doing and goes there
 function sendClosest(i, j) {
   const b = bAt(i, j);
-  let kind = b ? (b.type === 'farm' && b.done ? 'farm' : null) : nodeAt(i, j);
+  let kind = b ? (b.done && BNODE.includes(b.type) ? b.type : null) : nodeAt(i, j);
   const deer = DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
   if (deer && !b) kind = 'deer';
   if (!kind) return false;
@@ -432,6 +440,8 @@ function sendClosest(i, j) {
     if (d < bd) { bd = d; best = w; }
   });
   if (!best) { toast(S.workers.length ? 'All AI workers are building' : 'No AI workers yet — win puzzles to recruit'); return true; }
+  if (T.cost && !canPay(T.cost)) { toast('Not enough: needs ' + Object.entries(T.cost).map(([k, v]) => v + ' ' + k).join(', ')); return true; }
+  if (T.cost) pay(T.cost);
   best.task = { kind: tk, dur: T.time, prog: 0, target }; best.repeat = true;
   toast(`${best.name} → ${T.n}`);
   closeSheet(); save(); refresh(true);
@@ -439,17 +449,17 @@ function sendClosest(i, j) {
 }
 function tileSheet(i, j) {
   const b = bAt(i, j);
-  let kind = b ? (b.type === 'farm' && b.done ? 'farm' : null) : nodeAt(i, j);
+  let kind = b ? (b.done && BNODE.includes(b.type) ? b.type : null) : nodeAt(i, j);
   const deer = DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
   if (deer && !b) kind = 'deer';
-  if (b && kind !== 'farm') {
+  if (b && !kind) {
     const D = BLD[b.type];
     return openSheet(`<div class="t">${D.n}</div><div class="d">${b.done ? (D.desc || 'Your base. Houses 2 AI workers.') : 'Under construction'}</div>`);
   }
   if (!kind) return closeSheet();
   const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !hasB(T.req);
   openSheet(`<div class="t">${NODE_NAME[kind]}</div>
-    <div class="d">${T.n}: ${Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(', ')} every ${fmt(T.time)}</div>
+    <div class="d">${T.n}: ${T.cost ? Object.entries(T.cost).map(([k, v]) => `${v} ${k}`).join(', ') + ' → ' : ''}${Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(', ')}${tk === 'mine' ? ', +1 silver every 3rd trip' : ''} every ${fmt(T.time)}</div>
     <div style="margin-top:8px">${locked ? `<span class="small">Requires ${BLD[T.req].n}</span> <button class="btn sm" data-go="build">Tech tree</button>`
       : idle().length ? `<button class="btn go" data-task="${tk}">Send AI worker</button>` : `<span class="small">No idle workers.</span> <button class="btn sm" data-go="puzzle">Win puzzles to recruit</button>`}</div>`);
 }
@@ -547,6 +557,18 @@ function drawBuilding(b, x, y, t) {
       isoBox(x, y, .9, 12, '#a07a4c', '#7f5e36', '#664a2b');
       roof(x, y, .9, 12, 12, '#5c3d22', '#47301a');
       mx.fillStyle = '#8b5a2b'; for (let k = 0; k < 3; k++) mx.fillRect(x + 10, y - 4 - k * 4, 16, 3);
+      break;
+    case 'kiln':
+      isoBox(x, y, .8, 18, '#9aa3ab', '#7d858c', '#646b71');
+      mx.fillStyle = '#5d6368'; mx.beginPath(); mx.arc(x, y - 18, 13, Math.PI, 0); mx.fill();
+      mx.fillStyle = '#f97316'; mx.fillRect(x - 4, y - 8, 8, 6);
+      mx.fillStyle = 'rgba(80,80,80,.45)';
+      for (let k = 0; k < 3; k++) { const p = (t * .5 + k / 3) % 1; mx.beginPath(); mx.arc(x + 4 + p * 8, y - 32 - p * 26, 4 + p * 6, 0, 7); mx.fill(); }
+      break;
+    case 'mine':
+      mx.fillStyle = '#6b6f73'; mx.beginPath(); mx.moveTo(x - 26, y + 2); mx.lineTo(x - 14, y - 24); mx.lineTo(x + 6, y - 30); mx.lineTo(x + 26, y - 6); mx.lineTo(x + 20, y + 6); mx.closePath(); mx.fill();
+      mx.fillStyle = '#1a1a1a'; mx.beginPath(); mx.arc(x, y - 4, 9, Math.PI, 0); mx.lineTo(x + 9, y); mx.lineTo(x - 9, y); mx.fill();
+      mx.strokeStyle = '#8b5a2b'; mx.lineWidth = 3; mx.beginPath(); mx.moveTo(x - 10, y); mx.lineTo(x - 10, y - 14); mx.lineTo(x + 10, y - 14); mx.lineTo(x + 10, y); mx.stroke();
       break;
     case 'farm':
       diamond(x, y, '#8a6b35');
