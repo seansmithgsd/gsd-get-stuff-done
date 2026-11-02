@@ -33,6 +33,7 @@ const RES = [
   { k: 'copper', n: 'Copper', c: '#c86f33' },
   { k: 'silver', n: 'Silver', c: '#d8dde2' },
   { k: 'gold', n: 'Gold', c: '#e8b923' },
+  { k: 'iron', n: 'Iron' }, { k: 'coal', n: 'Coal' }, { k: 'steel', n: 'Steel' }, { k: 'planks', n: 'Planks' }, { k: 'gears', n: 'Gears' },
 ];
 
 const BLD = {
@@ -63,6 +64,11 @@ const TASKS = {
 const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine', smelter: 'smelt', mint: 'strike' };
 const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
 const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings workers gather at
+Object.assign(BLD, EXTRA_BLD); Object.assign(TASKS, EXTRA_TASKS);
+Object.assign(NODE_TASK, { dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
+Object.assign(NODE_NAME, { dock: 'Fishing Dock', quarry2: 'Deep Quarry Pit', sawmill: 'Sawmill', blastfurnace: 'Blast Furnace', gearworks: 'Gearworks', goldrock: 'Gold rock' });
+BNODE.push('dock', 'quarry2', 'sawmill', 'blastfurnace', 'gearworks');
+const NODES = ['tree', 'bush', 'rock', 'goldrock'];
 
 // ---------------------------------------------------------------- sound (synthesized, no files)
 let AC = null, MUTED = false, lastSfx = {};
@@ -126,28 +132,37 @@ let S, ME = null, dirty = false, applied = [];
 function newState() {
   return {
     v: 1, t: Date.now(), seed: (Math.random() * 1e9) | 0,
-    res: { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, copper: 6, silver: 0, gold: 0 },
-    bank: 0, level: 1, wins: 0, recruit: 0, waiting: 0, eatAcc: 0, nextId: 1,
+    res: { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, copper: 6, silver: 0, gold: 0 },
+    bank: 0, level: 1, wins: 0, recruit: 0, waiting: 0, eatAcc: 0, nextId: 1, upg: {},
     workers: [], buildings: [{ id: 0, type: 'tc', i: TCI, j: TCJ, done: true }],
   };
 }
 function load() {
-  try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) { for (const k of ['iron', 'coal', 'steel']) if (s.res[k] == null) s.res[k] = 0; return s; } } } catch (e) {}
+  try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { const s = JSON.parse(raw); if (s && s.v === 1) return migrate(s); } } catch (e) {}
   return newState();
+}
+// fill any field added since the save was written, without touching existing values
+function migrate(s) {
+  const d = newState();
+  for (const k in d) if (s[k] == null) s[k] = d[k];
+  for (const k in d.res) if (s.res[k] == null) s.res[k] = 0;
+  return s;
 }
 function save() { S.t = Date.now(); dirty = true; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
 
 const hasB = t => S.buildings.some(b => b.type === t && b.done);
 const countB = t => S.buildings.filter(b => b.type === t).length;
-const housing = () => S.buildings.reduce((a, b) => a + (b.done ? (BLD[b.type].house || 0) : 0), 0);
+const housing = () => S.buildings.reduce((a, b) => a + (b.done ? (b.type === 'hut' ? hutHouse() : (BLD[b.type].house || 0)) : 0), 0);
 const starving = () => S.workers.length > 0 && S.res.food <= 0;
 const idle = () => S.workers.filter(w => !w.task);
 const free = () => S.workers.filter(w => !w.task || w.task.kind !== 'build'); // can be pulled onto a build
 const wallet = () => S.res.copper + 3 * S.res.silver + 10 * S.res.gold;
 
 function costOf(type) {
-  if (type === 'hut') { const n = countB('hut'); return { wood: 15 + 8 * n, money: 3 + 2 * n }; }
-  return BLD[type].cost;
+  if (type === 'hut') { const n = countB('hut'); return buildCost(type, { wood: 15 + 8 * n, money: 3 + 2 * n }); }
+  const D = BLD[type];
+  if (D.repeat && D.cost) { const n = countB(type), m = Math.pow(1.4, n), c = {}; for (const k in D.cost) c[k] = Math.round(D.cost[k] * m); return buildCost(type, c); }
+  return buildCost(type, D.cost);
 }
 function canPay(c) {
   for (const k in c) { if (k === 'money') { if (wallet() < c.money) return false; } else if ((S.res[k] || 0) < c[k]) return false; }
@@ -193,12 +208,14 @@ function genMap(seed) {
   [[1, 5], [2, 5], [2, 6]].forEach(([a, b]) => set(a, b, 'rock'));
   // every tree / bush / rock holds a random number of trips
   const ra = rng(seed ^ 0x2545f491), amt = new Array(W * H).fill(0);
-  for (let k = 0; k < W * H; k++) { const n = node[k], r = ra(); if (n === 'tree') amt[k] = 6 + Math.floor(r * 10); else if (n === 'bush') amt[k] = 3 + Math.floor(r * 6); else if (n === 'rock') amt[k] = 8 + Math.floor(r * 13); }
+  if (S && S.planted) for (const k in S.planted) if (!node[k]) node[k] = S.planted[k];
+  if (S && U('prospect')) { const rp = rng(seed ^ 0x77aa11); for (let n = 0; n < 7; n++) { const k = ((rp() * H) | 0) * W + ((rp() * W) | 0); if (!node[k]) node[k] = 'goldrock'; } }
+  for (let k = 0; k < W * H; k++) { const n = node[k], r = ra(); if (n === 'tree') amt[k] = 6 + Math.floor(r * 10) + treeBonus(); else if (n === 'bush') amt[k] = 3 + Math.floor(r * 6); else if (n === 'rock') amt[k] = 8 + Math.floor(r * 13) + rockBonus(); else if (n === 'goldrock') amt[k] = 5; }
   MAP = { node, g, amt }; layerDirty = true;
   if (S && S.used) for (const k in S.used) if (S.used[k] >= amt[k]) node[k] = null;
   const rd = rng(seed ^ 0x5bd1e995);
   DEER = [];
-  for (let k = 0; k < 7; k++) {
+  for (let k = 0; k < (S ? deerCount() : 7); k++) {
     let i, j;
     do { i = rd() * W; j = 1 + rd() * (H - 2); } while (near(Math.floor(i), Math.floor(j), TCI, TCJ) < 4);
     DEER.push({ i, j, ti: i, tj: j, wait: rd() * 3 });
@@ -210,8 +227,10 @@ function bAt(i, j) { const mi = mod(i, W); return S.buildings.find(b => b.i === 
 function unwrapNear(i, ref) { let d = i - ref; d = mod(d + W / 2, W) - W / 2; return ref + d; }
 
 const SLOTS = [[2, 0], [0, 2], [-2, 0], [0, -2], [2, 2], [-2, 2], [2, -2], [-2, -2], [3, 1], [1, 3], [-3, 1], [1, -3], [3, -1], [-1, 3], [-3, -1], [-1, -3], [4, 2], [2, 4], [-4, 2], [2, -4]];
+(() => { const more = []; for (let r = 4; r <= 6; r++) for (let di = -r; di <= r; di++) for (let dj = -r; dj <= r; dj++) if (Math.max(Math.abs(di), Math.abs(dj)) === r && (di + dj) % 2 === 0 && !SLOTS.some(([a, b]) => a === di && b === dj)) more.push([di, dj]); more.sort((a, b) => Math.hypot(...a) - Math.hypot(...b)); SLOTS.push(...more); })();
 function findSlot() {
-  for (const [di, dj] of SLOTS) {
+  const list = U('expansion') ? SLOTS : SLOTS.slice(0, 44);
+  for (const [di, dj] of list) {
     const i = mod(TCI + di, W), j = TCJ + dj;
     if (!bAt(i, j)) return [i, j];
   }
@@ -238,7 +257,7 @@ function pickTarget(kind) {
 let floaters = [];
 function addWorker() {
   const n = S.workers.length + 1;
-  const w = { id: S.nextId++, name: `AI Worker ${n}`, task: null, repeat: true, hue: (n * 67) % 360 };
+  const w = { id: S.nextId++, name: `AI Worker ${n}`, task: null, repeat: true, hue: (n * 67) % 360, trained: !!U('training'), trips: 0 };
   S.workers.push(w);
   autoAssign(w);
 }
@@ -250,12 +269,12 @@ function autoAssign(w) {
     const t = pickTarget(kind), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { kind, target: t }; }
   }
-  if (best) { w.task = { kind: best.kind, dur: TASKS[best.kind].time, prog: 0, target: best.target }; w.repeat = true; }
+  if (best) { w.task = mkTask(w, best.kind, best.target); w.repeat = true; }
 }
 function taskYield(kind) {
   const T = TASKS[kind], m = T.boost && hasB(T.boost) ? 2 : 1, out = {};
   for (const k in T.gain) out[k] = T.gain[k] * m;
-  return out;
+  return yieldMods(kind, out);
 }
 function finishTask(w, quiet) {
   const t = w.task;
@@ -265,33 +284,35 @@ function finishTask(w, quiet) {
     w.task = null; return;
   }
   if (t.kind === 'raid') { w.task = null; resolveRaid(w, t); return; }
-  const y = taskYield(t.kind);
-  if (t.kind === 'mine') { w.mineN = (w.mineN || 0) + 1; if (w.mineN % 3 === 0) y.silver = 1; }
+  const y = rollBonuses(t.kind, taskYield(t.kind));
+  w.trips = (w.trips || 0) + 1;
+  if (t.kind === 'mine') { w.mineN = (w.mineN || 0) + 1; if (w.mineN % silverEvery() === 0) y.silver = 1; }
   for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
   if (!quiet && view === 'village') sfx('gather', 0, 250);
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
   // deplete the resource node that was worked
   const NT = TASKS[t.kind].node;
   let tgt = t.target;
-  if ((NT === 'tree' || NT === 'bush' || NT === 'rock') && tgt) {
+  if (NODES.includes(NT) && tgt) {
     const k = tgt[1] * W + mod(tgt[0], W);
-    if (MAP.node[k] === NT) { const st0 = stageOf(tgt[0], tgt[1]); S.used = S.used || {}; S.used[k] = (S.used[k] || 0) + 1; if (stageOf(tgt[0], tgt[1]) !== st0) layerDirty = true; if (S.used[k] >= MAP.amt[k]) { MAP.node[k] = null; layerDirty = true; if (!quiet) toast(`${NODE_NAME[NT]} used up`); } }
+    if (MAP.node[k] === NT) { const st0 = stageOf(tgt[0], tgt[1]); S.used = S.used || {}; S.used[k] = (S.used[k] || 0) + 1; if (stageOf(tgt[0], tgt[1]) !== st0) layerDirty = true; if (S.used[k] >= MAP.amt[k]) { MAP.node[k] = null; layerDirty = true; (S.dep = S.dep || {})[k] = { n: NT, t: Date.now() }; if (!quiet) toast(`${NODE_NAME[NT]} used up`); } }
     if (MAP.node[k] !== NT) tgt = null;
   }
   const carry = t.prog - t.dur;
-  const TC = TASKS[t.kind].cost;
+  const TC = taskCost(t.kind);
   if (w.repeat && taskOpen(t.kind) && (!TC || canPay(TC))) {
     if (TC) pay(TC);
-    w.task = { kind: t.kind, dur: TASKS[t.kind].time, prog: Math.max(0, carry), target: (NT === 'deer' || !tgt) ? pickTarget(t.kind) : tgt };
+    w.task = mkTask(w, t.kind, (NT === 'deer' || !tgt) ? pickTarget(t.kind) : tgt, Math.max(0, carry));
   } else w.task = null;
 }
-function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || hasB(T.req)) && !!pickTarget(kind); }
+function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || reqMet(T.req)) && !!pickTarget(kind); }
 function tick(dt, quiet) {
   if (S.workers.length) {
     S.eatAcc += dt * S.workers.length;
-    while (S.eatAcc >= EAT_EVERY) { S.eatAcc -= EAT_EVERY; if (S.res.food > 0) S.res.food--; }
+    while (S.eatAcc >= eatEvery()) { S.eatAcc -= eatEvery(); if (S.res.food > 0) S.res.food--; }
   }
-  const sp = starving() ? STARVE_SPEED : 1;
+  passive(dt, quiet);
+  const sp = starving() ? starveMul() : 1;
   for (const w of S.workers) {
     if (!w.task) continue;
     w.task.prog += dt * sp;
@@ -314,18 +335,19 @@ function catchUp(sec, report) {
 function assign(kind) {
   const T = TASKS[kind], w = idle()[0];
   if (!w) return toast('No idle AI workers — win puzzles to recruit more');
-  if (T.req && !hasB(T.req)) return toast(`Build a ${BLD[T.req].n} first`);
+  if (T.req && !reqMet(T.req)) return toast(`Requires ${reqName(T.req)}`);
   const target = pickTarget(kind);
   if (!target) return toast('Nothing to gather');
-  if (T.cost && !canPay(T.cost)) return toast('Not enough: needs ' + Object.entries(T.cost).map(([k, v]) => v + ' ' + k).join(', '));
-  if (T.cost) pay(T.cost);
-  w.task = { kind, dur: T.time, prog: 0, target }; w.repeat = true;
+  const TC = taskCost(kind);
+  if (TC && !canPay(TC)) return toast('Not enough: needs ' + Object.entries(TC).map(([k, v]) => v + ' ' + k).join(', '));
+  if (TC) pay(TC);
+  w.task = mkTask(w, kind, target); w.repeat = true;
   save(); refresh();
 }
 function startBuild(type) {
   const D = BLD[type], c = costOf(type), w = idle()[0] || free()[0];
   if (!D.repeat && countB(type)) return;
-  if (D.req && !D.req.every(hasB)) return toast('Locked');
+  if (D.req && !D.req.every(reqMet)) return toast('Locked');
   if (!canPay(c)) return toast('Not enough resources');
   if (!w) return toast('All AI workers are already building');
   const slot = findSlot(); if (!slot) return toast('No room near the Town Center');
@@ -339,7 +361,7 @@ function startBuild(type) {
 }
 function useSpeed(id) {
   const w = S.workers.find(x => x.id === id); if (!w || !w.task || S.bank <= 0) return;
-  const sp = starving() ? STARVE_SPEED : 1;
+  const sp = starving() ? starveMul() : 1;
   const need = (w.task.dur - w.task.prog) / sp;
   const use = Math.min(S.bank, need);
   S.bank -= use; w.task.prog += use * sp;
@@ -347,11 +369,11 @@ function useSpeed(id) {
   save(); refresh();
 }
 // speedup: spend banked seconds on specific tasks (soonest-to-finish first)
-function remaining(w) { const sp = starving() ? STARVE_SPEED : 1; return w.task ? (w.task.dur - w.task.prog) / sp : 0; }
+function remaining(w) { const sp = starving() ? starveMul() : 1; return w.task ? (w.task.dur - w.task.prog) / sp : 0; }
 function speedTasks(ids, amt) {
   const ws = ids.map(id => S.workers.find(w => w.id === id)).filter(w => w && w.task).sort((a, b) => remaining(a) - remaining(b));
   if (!ws.length || S.bank <= 0) return;
-  const sp = starving() ? STARVE_SPEED : 1; let used = 0;
+  const sp = starving() ? starveMul() : 1; let used = 0;
   for (const w of ws) {
     if (S.bank <= 0) break;
     const use = Math.min(S.bank, remaining(w), amt === 'all' ? Infinity : +amt);
@@ -407,7 +429,7 @@ function setView(v) {
   if (v === 'puzzle' && !P) startLevel();
   if (v === 'puzzle') sizeBoard();
   if (v === 'village') sizeMap();
-  if (v === 'orb') loadOrb();
+  if (v === 'orb') { loadOrb(); if (ME) loadOrbExtras(); }
   refresh(true);
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => setView(b.dataset.v)));
@@ -420,7 +442,7 @@ function layout() {
 window.addEventListener('resize', layout);
 if (window.ResizeObserver) { const ro = new ResizeObserver(() => layout()); ro.observe($('#top')); ro.observe($('#tabs')); }
 
-const RES_COL = { food: '#e11d48', wood: '#a0622d', stone: '#9aa5b1', iron: '#6b7a8a', coal: '#374151', steel: '#a5b4c4', copper: '#c86f33', silver: '#d8dde2', gold: '#e8b923' };
+const RES_COL = { food: '#e11d48', wood: '#a0622d', stone: '#9aa5b1', iron: '#6b7a8a', coal: '#374151', steel: '#a5b4c4', planks: '#d4a056', gears: '#64748b', copper: '#c86f33', silver: '#d8dde2', gold: '#e8b923' };
 function renderRates() {
   const R = rates(), keys = Object.keys(RES_COL).filter(k => R[k] && (R[k].p > .01 || R[k].c > .01));
   const el = $('#rates');
@@ -435,7 +457,7 @@ function hud() {
   const R = S.res;
   const it = (c, label, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${label} <b>${v}</b></span>`;
   $('#res').innerHTML =
-    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) + it('#a5b4c4', 'Steel', R.steel || 0) +
+    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) + it('#a5b4c4', 'Steel', R.steel || 0) + (U('age6') ? it('#d4a056', 'Planks', R.planks || 0) + it('#64748b', 'Gears', R.gears || 0) : '') +
     it('#c86f33', 'Copper', R.copper) + it('#d8dde2', 'Silver', R.silver) + it('#e8b923', 'Gold', R.gold) +
     `<span class="r">Speedup <b>${fmt(S.bank)}</b></span><span class="r">Workers <b>${S.workers.length}/${housing()}</b>${S.waiting ? ` <b>(+${S.waiting} waiting)</b>` : ''}</span>`;
   renderRates();
@@ -450,6 +472,7 @@ function refresh(force) {
   if (view === 'build') renderBuild(force);
   if (view === 'workers') renderWorkers(force);
   if (view === 'orb') renderOrb(force);
+  if (view === 'tech') renderTech(force);
   if (view === 'puzzle') renderPuzzleHead();
   liveProgress();
 }
@@ -480,17 +503,17 @@ function renderBuild(force) {
     if (building.length > 1) html += `<div class="card"><div class="t">All construction</div>${speedRow(building)}</div>`;
   }
   html += '<h2>Tech Tree</h2>';
-  for (let tier = 1; tier <= 5; tier++) {
+  for (let tier = 1; tier <= Math.max(5, Math.min(9, tierNow() + 1)); tier++) {
     html += `<h3>Tier ${tier}</h3>`;
     for (const [k, D] of Object.entries(BLD)) {
       if (D.tier !== tier) continue;
-      const c = costOf(k), built = countB(k), locked = D.req && !D.req.every(hasB);
+      const c = costOf(k), built = countB(k), locked = D.req && !D.req.every(reqMet);
       const doneOnce = !D.repeat && built;
       let btn;
-      if (doneOnce) btn = `<button class="btn sm alt" disabled>${hasB(k) ? 'Built' : 'Building'}</button>`;
+      if (doneOnce) btn = k === 'market' && hasB(k) ? `<button class="btn sm go" data-market>Open</button>` : `<button class="btn sm alt" disabled>${hasB(k) ? 'Built' : 'Building'}</button>`;
       else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !free().length ? 'disabled' : ''}>Build</button>`;
       html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
-        <div class="cost">${locked ? 'Requires ' + D.req.map(r => BLD[r].n).join(', ') : costHTML(c) + ` · ${fmt(D.time)}`}</div></div>${btn}</div></div>`;
+        <div class="cost">${locked ? 'Requires ' + D.req.filter(r => !reqMet(r)).map(reqName).join(', ') : costHTML(c) + ` · ${fmt(D.time)}`}</div></div>${btn}</div></div>`;
     }
     for (const f of FUTURE.filter(f => f.tier === tier)) {
       html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div><div class="cost">Requires ${f.req}</div></div><span class="small">Coming soon</span></div></div>`;
@@ -499,18 +522,20 @@ function renderBuild(force) {
   if (!free().length) html += `<div class="foot">Building needs an AI worker that isn't already building.</div>`;
   $('#v-build').innerHTML = html;
 }
-$('#v-build').addEventListener('click', e => { const b = e.target.closest('[data-build]'); if (b && !b.disabled) startBuild(b.dataset.build); });
+$('#v-build').addEventListener('click', e => { if (e.target.closest('[data-market]')) return openMarket(); const b = e.target.closest('[data-build]'); if (b && !b.disabled) startBuild(b.dataset.build); });
 
 function taskLabel(t) { if (t.kind === 'raid') return 'Harvesting ' + t.name + "'s village"; if (t.kind === 'build') { const b = S.buildings.find(x => x.id === t.bid); return 'Building ' + (b ? BLD[b.type].n : ''); } return TASKS[t.kind].n; }
 // worker groups by what they produce
 const GROUPS = [
-  { k: 'food', n: 'Food', tasks: ['berries', 'hunt', 'farm'], icon: 0 },
+  { k: 'food', n: 'Food', tasks: ['berries', 'hunt', 'farm', 'fish'], icon: 0 },
   { k: 'wood', n: 'Wood', tasks: ['chop'], icon: 1 },
-  { k: 'stone', n: 'Stone', tasks: ['stone'], icon: 2 },
+  { k: 'stone', n: 'Stone', tasks: ['stone', 'stone2'], icon: 2 },
+  { k: 'planks', n: 'Planks', tasks: ['saw'], icon: 'planks' },
+  { k: 'gears', n: 'Gears', tasks: ['gear'], icon: 'gears' },
   { k: 'ore', n: 'Ore', tasks: ['mine'], icon: 'iron' },
   { k: 'coal', n: 'Coal', tasks: ['coal'], icon: 'coal' },
-  { k: 'steel', n: 'Steel', tasks: ['smelt'], icon: 'steel' },
-  { k: 'gold', n: 'Gold', tasks: ['strike'], icon: 3 },
+  { k: 'steel', n: 'Steel', tasks: ['smelt', 'blast'], icon: 'steel' },
+  { k: 'gold', n: 'Gold', tasks: ['strike', 'pan'], icon: 3 },
 ];
 function groupOf(w) { if (!w.task) return 'idle'; if (w.task.kind === 'build') return 'build'; if (w.task.kind === 'raid') return 'raid'; const g = GROUPS.find(g => g.tasks.includes(w.task.kind)); return g ? g.k : 'idle'; }
 function drawResIcon(ctx, k, x, y, r) {
@@ -527,6 +552,12 @@ function drawResIcon(ctx, k, x, y, r) {
     ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#6b7280', '#1f2937', '#030712');
     ctx.beginPath(); ctx.moveTo(-r * .7, r * .3); ctx.lineTo(-r * .45, -r * .45); ctx.lineTo(r * .25, -r * .6); ctx.lineTo(r * .75, -r * .05); ctx.lineTo(r * .45, r * .55); ctx.lineTo(-r * .35, r * .6); ctx.closePath(); ctx.fill();
     ctx.fillStyle = 'rgba(249,115,22,.7)'; ctx.beginPath(); ctx.arc(r * .1, r * .1, r * .12, 0, 7); ctx.fill();
+  } else if (k === 'planks') {
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = lg(ctx, 0, -r * .2, 0, r * .2, [[0, '#e7c08a'], [1, '#a16207']]); ctx.fillRect(-r * .75, -r * .45 + i * r * .32, r * 1.5, r * .26); }
+  } else if (k === 'gears') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#e5e7eb', '#94a3b8', '#334155'); ctx.beginPath();
+    for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2, rr = i % 2 ? r * .55 : r * .75; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#334155'; ctx.beginPath(); ctx.arc(0, 0, r * .2, 0, 7); ctx.fill();
   } else if (k === 'build') {
     ctx.rotate(-.6); ctx.fillStyle = lg(ctx, -r * .1, 0, r * .1, 0, [[0, '#d6a46a'], [1, '#7a4a22']]); ctx.fillRect(-r * .09, -r * .4, r * .18, r * 1.2);
     ctx.fillStyle = lg(ctx, 0, -r * .75, 0, -r * .35, [[0, '#e5e7eb'], [1, '#475569']]); ctx.beginPath(); ctx.roundRect(-r * .5, -r * .75, r * 1, r * .4, r * .08); ctx.fill();
@@ -541,16 +572,16 @@ function drawResIcon(ctx, k, x, y, r) {
 }
 // per-minute production and consumption for the rate bar
 function rates() {
-  const sp = starving() ? STARVE_SPEED : 1, R = {};
+  const sp = starving() ? starveMul() : 1, R = {};
   const add = (k, v) => { R[k] = R[k] || { p: 0, c: 0 }; if (v >= 0) R[k].p += v; else R[k].c -= v; };
   for (const w of S.workers) {
     if (!w.task || !TASKS[w.task.kind]) continue;
-    const T = TASKS[w.task.kind], per = 60 / (T.time / sp);
+    const per = 60 / (w.task.dur / sp), TC = taskCost(w.task.kind);
     for (const [k, v] of Object.entries(taskYield(w.task.kind))) add(k, v * per);
-    if (w.task.kind === 'mine') add('silver', per / 3);
-    if (T.cost) for (const [k, v] of Object.entries(T.cost)) add(k, -v * per);
+    if (w.task.kind === 'mine') add('silver', per / silverEvery());
+    if (TC) for (const [k, v] of Object.entries(TC)) add(k, -v * per);
   }
-  if (S.workers.length) add('food', -S.workers.length * 60 / EAT_EVERY);
+  if (S.workers.length) add('food', -S.workers.length * 60 / eatEvery());
   return R;
 }
 function assignGroup(gk) {
@@ -558,13 +589,13 @@ function assignGroup(gk) {
   const w = idle()[0]; if (!w) return toast('No idle AI workers — tap − on another group first');
   let best = null, bd = 1e9;
   for (const k of G.tasks) {
-    const T = TASKS[k]; if (!taskOpen(k) || (T.cost && !canPay(T.cost))) continue;
+    const TC = taskCost(k); if (!taskOpen(k) || (TC && !canPay(TC))) continue;
     const t = pickTarget(k), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { k, t }; }
   }
   if (!best) return toast(`Nothing to gather for ${G.n} yet`);
-  const T = TASKS[best.k]; if (T.cost) pay(T.cost);
-  w.task = { kind: best.k, dur: T.time, prog: 0, target: best.t }; w.repeat = true;
+  const TC = taskCost(best.k); if (TC) pay(TC);
+  w.task = mkTask(w, best.k, best.t); w.repeat = true;
   save(); refresh(true);
 }
 function unassignGroup(gk) {
@@ -587,7 +618,7 @@ function renderWorkers(force) {
     html += '<div class="wgrid">';
     for (const G of GROUPS) {
       const open = G.tasks.some(k => taskOpen(k)), n = cnt(G.k), r = R[G.k === 'ore' ? 'iron' : G.k];
-      const need = !open ? (G.tasks.map(k => TASKS[k].req).filter(Boolean).map(q => BLD[q].n)[0] || '') : '';
+      const need = !open ? (G.tasks.map(k => TASKS[k].req).filter(Boolean).map(reqName)[0] || '') : '';
       html += `<div class="wt${open ? '' : ' locked'}"><canvas data-gi="${G.k}" width="${44 * DPR}" height="${44 * DPR}"></canvas>
         <div class="wn">${G.n}</div><div class="wc">${n}</div>
         <div class="wr">${open ? (r ? `+${(+r.p.toFixed(1))}/min` : '—') : 'Needs ' + need}</div>
@@ -639,7 +670,7 @@ function sendClosest(i, j) {
   if (deer && !b) kind = 'deer';
   if (!kind) return false;
   const tk = NODE_TASK[kind], T = TASKS[tk];
-  if (T.req && !hasB(T.req)) return false;           // locked: show the sheet instead
+  if (T.req && !reqMet(T.req)) return false;           // locked: show the sheet instead
   const target = deer ? [unwrapNear(deer.i, TCI), deer.j] : [unwrapNear(i, TCI), j];
   let best = null, bd = 1e9;
   S.workers.forEach((w, k) => {
@@ -648,9 +679,10 @@ function sendClosest(i, j) {
     if (d < bd) { bd = d; best = w; }
   });
   if (!best) { toast(S.workers.length ? 'All AI workers are building' : 'No AI workers yet — win puzzles to recruit'); return true; }
-  if (T.cost && !canPay(T.cost)) { toast('Not enough: needs ' + Object.entries(T.cost).map(([k, v]) => v + ' ' + k).join(', ')); return true; }
-  if (T.cost) pay(T.cost);
-  best.task = { kind: tk, dur: T.time, prog: 0, target }; best.repeat = true;
+  const TC = taskCost(tk);
+  if (TC && !canPay(TC)) { toast('Not enough: needs ' + Object.entries(TC).map(([k, v]) => v + ' ' + k).join(', ')); return true; }
+  if (TC) pay(TC);
+  best.task = mkTask(best, tk, target); best.repeat = true;
   toast(`${best.name} → ${T.n}`);
   closeSheet(); save(); refresh(true);
   return true;
@@ -660,15 +692,16 @@ function tileSheet(i, j) {
   let kind = b ? (b.done && BNODE.includes(b.type) ? b.type : null) : nodeAt(i, j);
   const deer = DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
   if (deer && !b) kind = 'deer';
+  if (b && !kind && b.type === 'market' && b.done) return openMarket();
   if (b && !kind) {
     const D = BLD[b.type], bw = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
     return openSheet(`<div class="t">${D.n}</div><div class="d">${b.done ? (b.type === 'tc' ? 'Your base. Houses 2 AI workers.' : D.desc) : 'Under construction' + (bw ? ' by ' + esc(bw.name) : '')}</div>${bw ? progRow(bw) + speedRow([bw]) : ''}`);
   }
   if (!kind) return closeSheet();
-  const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !hasB(T.req);
+  const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !reqMet(T.req);
   openSheet(`<div class="t">${NODE_NAME[kind]}</div>
     <div class="d">${T.n}: ${T.cost ? Object.entries(T.cost).map(([k, v]) => `${v} ${k}`).join(', ') + ' → ' : ''}${Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(', ')}${tk === 'mine' ? ', +1 silver every 3rd trip' : ''} every ${fmt(T.time)}</div>
-    <div style="margin-top:8px">${locked ? `<span class="small">Requires ${BLD[T.req].n}</span> <button class="btn sm" data-go="build">Tech tree</button>`
+    <div style="margin-top:8px">${locked ? `<span class="small">Requires ${reqName(T.req)}</span> <button class="btn sm" data-go="build">Tech tree</button>`
       : idle().length ? `<button class="btn go" data-task="${tk}">Send AI worker</button>` : `<span class="small">No idle workers.</span> <button class="btn sm" data-go="puzzle">Win puzzles to recruit</button>`}</div>`);
 }
 
@@ -694,6 +727,7 @@ function nodeSprite(n, x, y, g, st) {
   const sc = [.62, .82, 1][st];
   if (n === 'tree') { const gq = Math.round(g * 5); const c = sprite(`t${gq}${st}`, 60, 90, 28, 78, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawTree(0, 0, gq / 5); }); mx.drawImage(c, x - 28, y - 78, 60, 90); }
   else if (n === 'bush') { const c = sprite(`b${st}`, 44, 34, 20, 24, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawBush(0, 0, st); }); mx.drawImage(c, x - 20, y - 24, 44, 34); }
+  else if (n === 'goldrock') { const c = sprite(`gr${st}`, 44, 34, 20, 26, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawRock(0, 0); mx.fillStyle = '#facc15'; [[-6, -10], [3, -14], [7, -6], [-2, -5]].forEach(([p, q]) => { mx.beginPath(); mx.arc(p, q, 2.2, 0, 7); mx.fill(); }); }); mx.drawImage(c, x - 20, y - 26, 44, 34); }
   else { const c = sprite(`r${st}`, 44, 34, 20, 26, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawRock(0, 0); }); mx.drawImage(c, x - 20, y - 26, 44, 34); }
 }
 let cw = 0, ch = 0, camX = (TCI - TCJ) * TW / 2, camY = (TCI + TCJ) * TH / 2;
@@ -843,6 +877,8 @@ function drawBuilding(b, x, y, t) {
       mx.fillStyle = '#1a1a1a'; mx.beginPath(); mx.arc(x, y - 4, 9, Math.PI, 0); mx.lineTo(x + 9, y); mx.lineTo(x - 9, y); mx.fill();
       mx.strokeStyle = '#8b5a2b'; mx.lineWidth = 3; mx.beginPath(); mx.moveTo(x - 10, y); mx.lineTo(x - 10, y - 14); mx.lineTo(x + 10, y - 14); mx.lineTo(x + 10, y); mx.stroke();
       break;
+    default:
+      drawExtraBuilding(b, x, y, t); break;
     case 'farm':
       diamond(x, y, '#8a6b35');
       mx.strokeStyle = '#d4b23f'; mx.lineWidth = 2;
@@ -892,7 +928,7 @@ function worldLayer() {
     const P = (i, j) => [(i - j) * TW / 2 + ox, (i + j) * TH / 2 + oy];
     for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const [x, y] = P(i, j); groundTile(x, y, grassColor(i, j)); }
     const list = [];
-    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const n = MAP.node[j * W + i]; if ((n === 'tree' || n === 'bush' || n === 'rock') && !bAt(i, j)) list.push([i, j, n]); }
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const n = MAP.node[j * W + i]; if (NODES.includes(n) && !bAt(i, j)) list.push([i, j, n]); }
     list.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1])).forEach(([i, j, n]) => { const [x, y] = P(i, j); nodeSprite(n, x, y, MAP.g[j * W + i], stageOf(i, j)); });
   } finally { mx = old; }
   LAYER = { c, ox, oy, w, h }; return LAYER;
@@ -935,7 +971,7 @@ function drawMap(now) {
   objs.sort((a, b) => a.d - b.d).forEach(o => o.f());
   // resources standing in front of anything that moved get drawn again on top (keeps depth correct)
   [...front].map(k => k.split(',').map(Number)).sort((a, b) => (a[0] + a[1]) - (b[0] + b[1])).forEach(([i, j]) => {
-    const n = nodeAt(i, j); if (n !== 'tree' && n !== 'bush' && n !== 'rock') return;
+    const n = nodeAt(i, j); if (!NODES.includes(n)) return;
     const [x, y] = iso(i, j); nodeSprite(n, x, y, MAP.g[j * W + mod(i, W)], stageOf(i, j));
   });
   mx.textAlign = 'center'; mx.font = 'bold 13px Georgia';
@@ -988,7 +1024,7 @@ function tipHTML(cx, cy) {
   const r = mapC.getBoundingClientRect(), px = cx - r.left, py = cy - r.top;
   const wk = WSCR.find(q => Math.hypot(q.x - px, q.y - py) < 12);
   if (wk) {
-    const w = wk.w, sp = starving() ? STARVE_SPEED : 1;
+    const w = wk.w, sp = starving() ? starveMul() : 1;
     return `<b>${esc(w.name)}</b><br>${w.task ? taskLabel(w.task) + ` · ${fmt((w.task.dur - w.task.prog) / sp)} left${w.repeat && w.task.kind !== 'build' ? ' · repeating' : ''}` : 'Idle — click a resource to put it to work'}${starving() ? '<br><span class="warn">Hungry: working at half speed</span>' : ''}`;
   }
   const hit = tileAt(cx, cy); if (!hit) return null;
@@ -1004,8 +1040,8 @@ function tipHTML(cx, cy) {
     return h;
   }
   const kind = deer ? 'deer' : nodeAt(i, j); if (!kind) return null;
-  const tk = NODE_TASK[kind], T = TASKS[tk], locked = T.req && !hasB(T.req);
-  return `<b>${NODE_NAME[kind]}</b>${kind !== 'deer' ? ` <span class="small">${leftOf(i, j)} trips left</span>` : ''}<br>${T.n}: ${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} every ${fmt(T.time)}<br>${locked ? `<span class="warn">Requires ${BLD[T.req].n}</span>` : '<i>Click to send the closest worker</i>'}`;
+  const tk = NODE_TASK[kind], T = TASKS[tk], locked = T.req && !reqMet(T.req);
+  return `<b>${NODE_NAME[kind]}</b>${kind !== 'deer' ? ` <span class="small">${leftOf(i, j)} trips left</span>` : ''}<br>${T.n}: ${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} every ${fmt(T.time)}<br>${locked ? `<span class="warn">Requires ${reqName(T.req)}</span>` : '<i>Click to send the closest worker</i>'}`;
 }
 function showTip(e) {
   const h = tipHTML(e.clientX, e.clientY);
@@ -1019,22 +1055,38 @@ function showTip(e) {
 // ---------------------------------------------------------------- puzzle
 const N = 8, TYPES = 5;
 const TILE_NAME = ['Berries', 'Wood', 'Stone', 'Coins', 'Leaves'];
+const goalName = k => /^\d$/.test(k) ? TILE_NAME[k] : (OB[k] ? OB[k].n : k);
 const boardC = $('#board'), bx = boardC.getContext('2d');
 let P = null, CS = 48;
 
+// obstacles: a new one every 25 levels (Royal Match / Candy Crush style blockers)
+const OBST = [
+  { k: 'crate', n: 'Crate', at: 25, kind: 'block', hp: 1, d: 'Break with a match next to it or any special' },
+  { k: 'moss', n: 'Moss', at: 50, kind: 'floor', d: 'Clear the tile sitting on it' },
+  { k: 'ice', n: 'Ice', at: 75, kind: 'cover', hp: 1, d: 'Frozen tile can\'t move — match it to thaw' },
+  { k: 'boulder', n: 'Boulder', at: 100, kind: 'block', hp: 2, d: 'Takes 2 hits' },
+  { k: 'chain', n: 'Chains', at: 125, kind: 'cover', hp: 2, d: 'Locked tile — match it twice to free' },
+  { k: 'safe', n: 'Safe', at: 150, kind: 'block', hp: 3, d: '3 hits — drops 5 copper' },
+  { k: 'mud', n: 'Mud', at: 175, kind: 'block', hp: 1, d: 'Spreads every move you don\'t break some' },
+  { k: 'keg', n: 'Powder Keg', at: 200, kind: 'block', hp: 1, d: 'Explodes 3×3 when hit' },
+];
+const OB = Object.fromEntries(OBST.map(o => [o.k, o]));
+const isFixed = c => c && (c.t === -9 || c.cov);
 function levelDef(n) {
-  const r = rng(n * 7919 + 13);
-  const moves = Math.max(15, 22 - Math.floor(n / 2));
-  const goalCount = n < 3 ? 1 : 2;
+  const r = rng(n * 7919 + 13), d = Math.floor((n - 1) / 10);
+  const unlocked = OBST.filter(o => n >= o.at), intro = OBST.find(o => o.at === n), hard = n % 10 === 0 && !intro;
+  let obs = [];
+  if (intro) obs = [intro.k];
+  else if (unlocked.length && r() < .75) { obs.push(unlocked[(r() * unlocked.length) | 0].k); if (unlocked.length > 2 && r() < .4) { const o2 = unlocked[(r() * unlocked.length) | 0].k; if (!obs.includes(o2)) obs.push(o2); } }
+  let moves = Math.max(16, 25 - Math.floor(d / 2)) + (intro ? 3 : 0) - (hard ? 2 : 0) + (typeof U === 'function' ? U('xmoves') : 0);
+  const tileGoals = obs.length ? (d >= 4 && !intro ? 1 : 0) + (r() < .5 ? 1 : 0) : (n < 3 ? 1 : d < 3 ? 2 : 3);
   const pool = [0, 1, 2, 3, 4], goals = {};
-  for (let g = 0; g < goalCount; g++) {
-    const t = pool.splice((r() * pool.length) | 0, 1)[0];
-    const base = Math.min(40, 12 + n * 2);
-    goals[t] = goalCount === 2 ? Math.round(base * .75) : base;
-  }
-  return { n, moves, goals };
+  const base = Math.min(40, 12 + 2 * d + (n % 10)) * (hard ? 1.2 : 1);
+  for (let g = 0; g < Math.max(obs.length ? 0 : 1, tileGoals); g++) { const t = pool.splice((r() * pool.length) | 0, 1)[0]; goals[t] = Math.round(base * (tileGoals > 1 ? .7 : 1)); }
+  return { n, d, hard, moves, goals, obs, intro: intro ? intro.k : null, seed: (n * 104729) >>> 0 };
 }
 const cell = (t, s = null) => ({ t, s, ox: 0, oy: 0, a: 1, sc: 1 });
+const block = (k, hp) => ({ t: -9, ob: k, hp: hp || OB[k].hp, max: hp || OB[k].hp, s: null, ox: 0, oy: 0, a: 1, sc: 1 });
 const rndType = () => (Math.random() * TYPES) | 0;
 function newBoard() {
   let b;
@@ -1052,10 +1104,50 @@ function newBoard() {
   } while (!hasMoves(b));
   return b;
 }
-function startLevel() {
-  const L = levelDef(S.level);
-  P = { L, b: newBoard(), moves: L.moves, left: { ...L.goals }, score: 0, busy: false, over: false, sel: null };
+// place a level's obstacles with left/right symmetry
+function placeObstacles(L, b, floor) {
+  const r = rng(L.seed), d = L.d, left = {};
+  for (const k of L.obs) {
+    const O = OB[k]; let placed = 0;
+    if (O.kind === 'floor') {
+      const rows = 2 + Math.min(3, Math.floor(d / 4));
+      for (let y = N - rows; y < N; y++) for (let x = 0; x < N; x++) { floor[y][x] = 1; placed++; }
+    } else {
+      const want = Math.min(O.kind === 'cover' ? 14 : 12, (k === 'mud' ? 3 : 4) + Math.floor(d / 2) + (L.hard ? 2 : 0));
+      for (let tries = 0; tries < 300 && placed < want; tries++) {
+        const x = (r() * (N / 2)) | 0, y = 2 + ((r() * (N - 3)) | 0);
+        for (const X of [x, N - 1 - x]) {
+          if (placed >= want) break;
+          const c = b[y][X]; if (isFixed(c) || b[y].filter(isFixed).length >= N - 3) continue;
+          if (O.kind === 'block') b[y][X] = block(k); else c.cov = { k, hp: O.hp, max: O.hp };
+          placed++;
+        }
+      }
+    }
+    left[k] = placed;
+  }
+  return left;
+}
+function startLevel(def) {
+  const L = def || levelDef(S.level);
+  const b = newBoard(), floor = Array.from({ length: N }, () => Array(N).fill(0));
+  const obLeft = placeObstacles(L, b, floor);
+  P = { L, b, floor, moves: L.moves, left: { ...L.goals, ...obLeft }, score: 0, busy: false, over: false, sel: null, daily: !!(def && def.daily) };
+  if (typeof startBoosts === 'function') startBoosts();
+  if (!hasMoves(P.b)) reshuffle();
   sizeBoard(); renderPuzzleHead(); drawBoard();
+  if (L.intro) setTimeout(() => modal(`<h2>New obstacle: ${OB[L.intro].n}</h2><canvas id="obintro" width="${80 * DPR}" height="${80 * DPR}" style="width:80px;height:80px"></canvas><p>${OB[L.intro].d}.</p><div class="btns"><button class="btn go" data-close>Got it</button></div>`) || (() => { const g = $('#obintro').getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0); drawObIcon(g, L.intro, 40, 40, 32, true, OB[L.intro].hp || 1, OB[L.intro].hp || 1); })(), 300);
+}
+function reshuffle() {
+  const pos = [], cells = [];
+  P.b.forEach((row, y) => row.forEach((c, x) => { if (c && !isFixed(c)) { pos.push([x, y]); cells.push(c); } }));
+  for (let tries = 0; tries < 80; tries++) {
+    for (let i = cells.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [cells[i], cells[j]] = [cells[j], cells[i]]; }
+    pos.forEach(([x, y], i) => P.b[y][x] = cells[i]);
+    if (!findRuns(P.b).length && hasMoves(P.b)) return;
+  }
+  // last resort: recolor movable tiles
+  for (const [x, y] of pos) P.b[y][x].t = rndType();
 }
 function sizeBoard() {
   const wrap = $('#pz-wrap'); if (!$('#v-puzzle').offsetWidth || !wrap.offsetWidth) return;
@@ -1107,6 +1199,7 @@ function hasMoves(b) {
     for (const [dx, dy] of [[1, 0], [0, 1]]) {
       const x2 = x + dx, y2 = y + dy; if (x2 >= N || y2 >= N) continue;
       const A = b[y][x], B = b[y2][x2];
+      if (!A || !B || isFixed(A) || isFixed(B)) continue;
       if (A.s || B.s) return true;
       sw(x, y, x2, y2); const ok = findRuns(b).length > 0; sw(x, y, x2, y2);
       if (ok) return true;
@@ -1132,7 +1225,7 @@ function triggerArea(c, x, y) {
   const out = [];
   if (c.s === 'h') for (let i = 0; i < N; i++) out.push(i + ',' + y);
   else if (c.s === 'v') for (let j = 0; j < N; j++) out.push(x + ',' + j);
-  else if (c.s === 'b') { for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N) out.push(X + ',' + Y); } }
+  else if (c.s === 'b') { const R = (c.big || U('combomaster')) && c.ob !== 'keg' ? 2 : 1; for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N) out.push(X + ',' + Y); } }
   else if (c.s === 'c') {
     let t = c.target;
     if (t == null || t < 0) { const cnt = [0, 0, 0, 0, 0]; P.b.forEach(r => r.forEach(q => { if (q && q.t >= 0) cnt[q.t]++; })); t = cnt.indexOf(Math.max(...cnt)); }
@@ -1143,7 +1236,14 @@ function triggerArea(c, x, y) {
 // propeller: pick the cell that helps the level goals most
 function goalHits(keys) {
   let n = 0;
-  for (const k of keys) { const [x, y] = k.split(',').map(Number), q = P.b[y][x]; if (q && q.t >= 0 && P.left[q.t] > 0) n++; }
+  for (const k of keys) {
+    const [x, y] = k.split(',').map(Number), q = P.b[y][x];
+    if (P.floor && P.floor[y][x] && P.left.moss > 0) n++;
+    if (!q) continue;
+    if (q.t === -9) { if (P.left[q.ob] > 0) n += 1.5; continue; }
+    if (q.cov && P.left[q.cov.k] > 0) n += 1.2;
+    if (q.t >= 0 && P.left[q.t] > 0) n++;
+  }
   return n;
 }
 function bestTarget(claimed, carry) {
@@ -1154,17 +1254,22 @@ function bestTarget(claimed, carry) {
     let sc;
     if (carry) { const area = triggerArea({ s: carry }, x, y); sc = goalHits(area) + area.length * .01; }
     else if (q.s && q.s !== 'p') sc = goalHits(triggerArea(q, x, y)) + .5;
-    else sc = (q.t >= 0 && P.left[q.t] > 0) ? 1 : .1;
+    else sc = goalHits([k]) || .1;
     if (sc > bs + 1e-9) { bs = sc; best = [[x, y]]; } else if (Math.abs(sc - bs) < 1e-9) best.push([x, y]);
   }
   return best.length ? best[(Math.random() * best.length) | 0] : null;
 }
 // clears run in phases: a propeller's 4 neighbours clear first, then it flies, then its target clears
-async function clearCells(start, spawns = []) {
+async function clearCells(start, spawns = [], adj = false) {
   const queue = [...start].map(k => [k, 0]), phaseOf = new Map(), flights = [];
+  if (adj) { // a normal match also hits blocks touching it
+    for (const k of [...start]) { const [x, y] = k.split(',').map(Number);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N && P.b[Y][X] && P.b[Y][X].t === -9) queue.push([X + ',' + Y, 0]); } }
+  }
   while (queue.length) {
     const [k, ph] = queue.pop(); if (phaseOf.has(k)) continue; phaseOf.set(k, ph);
     const [x, y] = k.split(',').map(Number), c = P.b[y][x];
+    if (c && c.ob === 'keg' && c.hp <= 1) { addFx({ type: 'b', x, y, dur: 500 }); sfx('bomb', 0, 60); shake = Math.max(shake, 8); triggerArea({ s: 'b', ob: 'keg' }, x, y).forEach(q => { if (!phaseOf.has(q)) queue.push([q, ph]); }); continue; }
     if (!c || !c.s) continue;
     if (c.s === 'p') {
       addFx({ type: 'p', x, y, dur: 450 }); sfx('prop');
@@ -1188,9 +1293,27 @@ async function clearCells(start, spawns = []) {
   for (let ph = 0; ph <= maxPh; ph++) {
     const fl = flights.filter(f => f.ph === ph);
     if (fl.length) { P.fly = fl; await anim(380, t => fl.forEach(f => f.p = ease(t))); P.fly = null; }
-    const cells = [...phaseOf].filter(([, p]) => p === ph).map(([k]) => k.split(',').map(Number)).filter(([x, y]) => P.b[y][x]);
-    if (!cells.length) continue;
-    for (const [x, y] of cells) { const c = P.b[y][x]; if (c.t >= 0 && P.left[c.t] > 0) P.left[c.t]--; P.score += 10; burst(x, y, c.t >= 0 ? TILE_COL[c.t] : '#fde047', c.s ? 16 : 7, c.s ? 1.4 : 1); }
+    const hit = [...phaseOf].filter(([, p]) => p === ph).map(([k]) => k.split(',').map(Number));
+    // floor (moss) under any hit cell
+    for (const [x, y] of hit) if (P.floor && P.floor[y][x]) { P.floor[y][x] = 0; if (P.left.moss > 0) P.left.moss--; burst(x, y, '#65a30d', 6); }
+    const cells = [];
+    for (const [x, y] of hit) {
+      const c = P.b[y][x]; if (!c) continue;
+      if (c.t === -9) { // block takes a hit
+        c.hp--; c.flash = performance.now(); if (c.ob === 'mud') P.mudHit = true;
+        burst(x, y, OB_COL[c.ob], 8, 1.1); sfx('tool', 0, 50);
+        if (c.hp <= 0) { cells.push([x, y]); if (P.left[c.ob] > 0) P.left[c.ob]--; if (c.ob === 'safe') { S.res.copper += 5; P.safeCopper = (P.safeCopper || 0) + 5; } }
+        continue;
+      }
+      if (c.cov) { // ice / chains: lose a layer, tile stays
+        c.cov.hp--; c.flash = performance.now(); burst(x, y, OB_COL[c.cov.k], 8);
+        if (c.cov.hp <= 0) { if (P.left[c.cov.k] > 0) P.left[c.cov.k]--; c.cov = null; }
+        continue;
+      }
+      cells.push([x, y]);
+    }
+    if (!cells.length) { renderPuzzleHead(); continue; }
+    for (const [x, y] of cells) { const c = P.b[y][x]; if (c.t >= 0 && P.left[c.t] > 0) P.left[c.t]--; P.score += 10; if (c.t !== -9) burst(x, y, c.t >= 0 ? TILE_COL[c.t] : '#fde047', c.s ? 16 : 7, c.s ? 1.4 : 1); }
     P.destroyed = (P.destroyed || 0) + cells.length;
     await anim(170, t => { for (const [x, y] of cells) { const c = P.b[y][x]; c.a = 1 - t; c.sc = 1 + .25 * t; } });
     for (const [x, y] of cells) P.b[y][x] = null;
@@ -1200,16 +1323,27 @@ async function clearCells(start, spawns = []) {
   renderPuzzleHead();
 }
 async function gravity() {
-  const moving = [];
+  const moving = [], pop = [];
   for (let x = 0; x < N; x++) {
-    let w = N - 1;
-    for (let y = N - 1; y >= 0; y--) { const c = P.b[y][x]; if (c) { if (w !== y) { P.b[w][x] = c; P.b[y][x] = null; c.oy = y - w; moving.push(c); } w--; } }
-    const holes = w + 1;
-    for (let y = w; y >= 0; y--) { const c = cell(rndType()); c.oy = -holes; P.b[y][x] = c; moving.push(c); }
+    // split the column into segments separated by fixed cells (blocks, frozen/chained tiles)
+    let bottom = N - 1;
+    while (bottom >= 0) {
+      let top = bottom; while (top >= 0 && !isFixed(P.b[top][x])) top--;
+      // segment rows top+1 .. bottom
+      let w = bottom;
+      for (let y = bottom; y > top; y--) { const c = P.b[y][x]; if (c) { if (w !== y) { P.b[w][x] = c; P.b[y][x] = null; c.oy = y - w; moving.push(c); } w--; } }
+      const holes = w - top;
+      for (let y = w; y > top; y--) {
+        const c = cell(rndType());
+        if (top < 0) { c.oy = -holes; moving.push(c); } else { c.sc = 0; pop.push(c); } // below a blocker: appear in place
+        P.b[y][x] = c;
+      }
+      bottom = top - 1;
+    }
   }
   moving.forEach(c => c.o0 = c.oy);
-  await anim(230, t => { const e = ease(t); moving.forEach(c => c.oy = c.o0 * (1 - e)); });
-  moving.forEach(c => c.oy = 0);
+  await anim(230, t => { const e = ease(t); moving.forEach(c => c.oy = c.o0 * (1 - e)); pop.forEach(c => c.sc = e); });
+  moving.forEach(c => c.oy = 0); pop.forEach(c => c.sc = 1);
 }
 async function resolve(pref) {
   for (;;) {
@@ -1221,22 +1355,33 @@ async function resolve(pref) {
       const s = specialFor(g);
       if (!s) continue;
       let pos = null;
-      if (pref) for (const p of pref) if (g.keys.has(p[0] + ',' + p[1])) { pos = p; break; }
+      if (pref) for (const p of pref) if (g.keys.has(p[0] + ',' + p[1]) && !isFixed(P.b[p[1]][p[0]])) { pos = p; break; }
       if (!pos) { const lr = g.runs.reduce((a, r) => r.cells.length > a.cells.length ? r : a); pos = lr.cells[lr.cells.length >> 1]; }
+      if (isFixed(P.b[pos[1]][pos[0]])) { const free = [...g.keys].map(k => k.split(',').map(Number)).find(([x, y]) => !isFixed(P.b[y][x])); if (!free) continue; pos = free; }
       spawns.push({ pos, s, t: (s === 'c' || s === 'p') ? -1 : g.t });
     }
     P.combo = (P.combo || 0) + 1; sfx('match', P.combo);
     if (spawns.length) setTimeout(() => sfx('special'), 120);
-    await clearCells(clear, spawns);
+    await clearCells(clear, spawns, true);
     await gravity();
     pref = null;
   }
-  if (!hasMoves(P.b)) { toast('No moves — shuffling'); P.b = newBoard(); drawBoard(); }
+  if (!hasMoves(P.b)) { toast('No moves — shuffling'); reshuffle(); drawBoard(); }
+}
+function mudSpread() {
+  if (P.mudHit) { P.mudHit = false; return; }
+  const muds = []; P.b.forEach((row, y) => row.forEach((c, x) => { if (c && c.ob === 'mud') muds.push([x, y]); }));
+  if (!muds.length) return;
+  const opts = [];
+  for (const [x, y] of muds) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N) { const c = P.b[Y][X]; if (c && c.t >= 0 && !c.s && !c.cov) opts.push([X, Y]); } }
+  if (!opts.length) return;
+  const [X, Y] = opts[(Math.random() * opts.length) | 0]; P.b[Y][X] = block('mud'); P.left.mud = (P.left.mud || 0) + 1; burst(X, Y, OB_COL.mud, 10); toast('The mud spread');
 }
 async function trySwap(a, b) {
   if (P.busy || P.over) return;
-  P.busy = true; P.sel = null; P.combo = 0;
   const A = P.b[a[1]][a[0]], B = P.b[b[1]][b[0]];
+  if (!A || !B || isFixed(A) || isFixed(B)) { sfx('bad'); toast(isFixed(A) || isFixed(B) ? 'That tile is stuck' : ''); return; }
+  P.busy = true; P.sel = null; P.combo = 0; P.mudHit = false; const m0 = P.moves;
   sfx('swap');
   await animSwap(a, b);
   const line = q => q.s === 'h' || q.s === 'v';
@@ -1255,7 +1400,8 @@ async function trySwap(a, b) {
     // two rockets: 3 rows + 3 columns through the meeting point
     P.moves--; A.s = B.s = null;
     const [cx, cy] = b, keys = new Set();
-    for (let d = -1; d <= 1; d++) for (let k = 0; k < N; k++) {
+    const R2 = U('combomaster') ? 2 : 1;
+    for (let d = -R2; d <= R2; d++) for (let k = 0; k < N; k++) {
       if (cy + d >= 0 && cy + d < N) keys.add(k + ',' + (cy + d));
       if (cx + d >= 0 && cx + d < N) keys.add((cx + d) + ',' + k);
     }
@@ -1289,6 +1435,7 @@ async function trySwap(a, b) {
     P.moves--;
     await resolve([b, a]);
   }
+  if (P.moves < m0) mudSpread();
   P.busy = false;
   renderPuzzleHead(); drawBoard();
   checkEnd();
@@ -1297,9 +1444,10 @@ async function trySwap(a, b) {
 async function fireSpecial(pos) {
   if (P.busy || P.over) return;
   const c = P.b[pos[1]][pos[0]]; if (!c || !c.s) return;
-  P.busy = true; P.sel = null; P.moves--; P.combo = 0;
+  P.busy = true; P.sel = null; P.moves--; P.combo = 0; P.mudHit = false;
   await clearCells([pos[0] + ',' + pos[1]]);
   await gravity(); await resolve(null);
+  mudSpread();
   P.busy = false;
   renderPuzzleHead(); drawBoard();
   checkEnd();
@@ -1327,11 +1475,15 @@ async function win() {
   P.over = true; P.busy = true;
   const bonus = await finale();
   P.busy = false; drawBoard();
-  const extra = P.moves, stars = 1 + (extra >= 3 ? 1 : 0) + (extra >= 6 ? 1 : 0);
-  const rw = { copper: 3 + bonus, silver: stars - 1, gold: S.level % 5 === 0 ? 1 : 0 };
+  const extra = P.moves, stars = 1 + (extra >= 3 ? 1 : 0) + (extra >= 6 ? 1 : 0), L = P.L;
+  const mult = L.hard ? 1.5 : 1;
+  const rw = { copper: puzzleCopper(Math.round((3 + (L.d || 0)) * mult) + bonus), silver: stars - 1, gold: (S.level % 5 === 0 ? 1 : 0) + (L.hard ? 1 : 0) };
+  if (P.daily) { rw.copper += 50; rw.gold += 5; S.bank += 600; S.dailyDone = today(); }
   S.res.copper += rw.copper; S.res.silver += rw.silver; S.res.gold += rw.gold;
-  const speed = extra * SPEED_PER_MOVE; S.bank += speed;
-  S.level++; S.wins++; S.recruit++;
+  const speed = extra * perMove(); S.bank = Math.min(bankCap(), S.bank + speed);
+  S.streak = (S.streak || 0) + 1;
+  if (!P.daily) { S.level++; S.wins++; S.recruit++; if (U('recruit') && S.wins % 3 === 0) S.recruit++; }
+  if (!P.daily && hasB('gsdtower') && S.wins % 5 === 0) { if (S.workers.length < housing()) addWorker(); else S.waiting++; toast('GSD Tower: +1 AI worker'); }
   let recruit = '';
   if (S.recruit >= WINS_PER_WORKER) {
     S.recruit = 0;
@@ -1340,18 +1492,20 @@ async function win() {
   } else recruit = `<li>${S.recruit}/${WINS_PER_WORKER} wins toward next AI worker</li>`;
   save(); refresh(); sfx('win'); if (recruit.includes('recruited')) setTimeout(() => sfx('recruit'), 700);
   modal(`<h2>Puzzle complete</h2><div class="stars">${[1, 2, 3].map(s => `<span class="${s <= stars ? '' : 'off'}">★</span>`).join('')}</div>
-    <ul>${bonus ? `<li>Leftover specials destroyed ${bonus} tiles → +${bonus} copper</li>` : ''}<li>+${rw.copper} copper total${rw.silver ? `, +${rw.silver} silver` : ''}${rw.gold ? ', +1 gold' : ''}</li>
+    <ul>${P.daily ? '<li><b>Daily Challenge cleared!</b> +50 copper, +5 gold, +10 min speedup</li>' : ''}${L.hard ? '<li>Hard level bonus: ×1.5 copper, +1 gold</li>' : ''}${P.safeCopper ? `<li>Safes cracked: +${P.safeCopper} copper</li>` : ''}${bonus ? `<li>Leftover specials destroyed ${bonus} tiles → +${bonus} copper</li>` : ''}<li>+${rw.copper} copper total${rw.silver ? `, +${rw.silver} silver` : ''}${rw.gold ? ', +1 gold' : ''}</li>
     ${extra ? `<li>${extra} moves left → +${fmt(speed)} speedup</li>` : ''}${recruit}</ul>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Next puzzle</button></div>`);
 }
 function lose() {
-  P.over = true; sfx('lose');
-  modal(`<h2>Out of moves</h2><p>${Object.entries(P.left).filter(([, v]) => v > 0).map(([t, v]) => `${v} ${TILE_NAME[t]}`).join(', ')} left.</p>
+  P.over = true; sfx('lose'); S.streak = 0;
+  if (U('secondchance') && S.chanceDay !== today() && !P.usedChance) { P.usedChance = true; S.chanceDay = today(); P.moves += 5; P.over = false; save(); renderPuzzleHead(); toast('Second Chance: +5 free moves'); return; }
+  modal(`<h2>Out of moves</h2><p>${Object.entries(P.left).filter(([, v]) => v > 0).map(([t, v]) => `${v} ${goalName(t)}`).join(', ')} left.</p>
     <div class="btns"><button class="btn" data-act="more" ${wallet() >= MORE_MOVES_COST ? '' : 'disabled'}>+5 moves (${MORE_MOVES_COST} copper)</button></div>
     <div class="small" style="margin-top:4px">You have ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10)</div>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Try again</button></div>`);
 }
 const ACTS = {
+  prestige: () => doPrestige(),
   more: () => { if (!P || wallet() < MORE_MOVES_COST) return; pay({ money: MORE_MOVES_COST }); sfx('coin'); P.moves += 5; P.over = false; save(); refresh(); renderPuzzleHead(); drawBoard(); toast('+5 moves'); },
   next: () => { startLevel(); },
   village: () => { P = null; setView('village'); },
@@ -1359,6 +1513,45 @@ const ACTS = {
 };
 
 const TILE_COL = ['#e11d48', '#a0622d', '#9aa5b1', '#f5b301', '#22c55e'];
+const OB_COL = { crate: '#b7793f', moss: '#65a30d', ice: '#bae6fd', boulder: '#78716c', chain: '#94a3b8', safe: '#64748b', mud: '#78350f', keg: '#b45309' };
+function drawObIcon(ctx, k, x, y, r, big, hp = 1, max = 1) {
+  ctx.save(); ctx.translate(x, y);
+  const pips = () => { if (max > 1) for (let i = 0; i < max; i++) { ctx.fillStyle = i < hp ? '#fde047' : 'rgba(0,0,0,.4)'; ctx.beginPath(); ctx.arc((i - (max - 1) / 2) * r * .3, r * .78, r * .09, 0, 7); ctx.fill(); } };
+  if (k === 'crate') {
+    ctx.fillStyle = lg(ctx, 0, -r, 0, r, [[0, '#e0a96d'], [1, '#8a5226']]); ctx.beginPath(); ctx.roundRect(-r * .9, -r * .9, r * 1.8, r * 1.8, r * .14); ctx.fill();
+    ctx.strokeStyle = '#5a3615'; ctx.lineWidth = r * .1; ctx.strokeRect(-r * .72, -r * .72, r * 1.44, r * 1.44);
+    ctx.beginPath(); ctx.moveTo(-r * .72, -r * .72); ctx.lineTo(r * .72, r * .72); ctx.moveTo(r * .72, -r * .72); ctx.lineTo(-r * .72, r * .72); ctx.stroke();
+  } else if (k === 'moss') {
+    ctx.fillStyle = 'rgba(101,163,13,.55)'; ctx.beginPath(); ctx.roundRect(-r * .95, -r * .95, r * 1.9, r * 1.9, r * .28); ctx.fill();
+    ctx.fillStyle = 'rgba(190,242,100,.6)'; for (const [a, b] of [[-.5, -.4], [.4, -.5], [-.3, .5], [.5, .35], [0, 0]]) { ctx.beginPath(); ctx.arc(a * r, b * r, r * .14, 0, 7); ctx.fill(); }
+  } else if (k === 'ice') {
+    ctx.fillStyle = 'rgba(186,230,253,.55)'; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = r * .07;
+    ctx.beginPath(); ctx.roundRect(-r * .92, -r * .92, r * 1.84, r * 1.84, r * .22); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-r * .6, -r * .2); ctx.lineTo(-r * .2, -r * .6); ctx.moveTo(-r * .4, r * .1); ctx.lineTo(r * .2, -r * .5); ctx.stroke();
+  } else if (k === 'boulder') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .95, '#d6d3d1', '#78716c', '#292524'); ctx.beginPath(); ctx.ellipse(0, r * .05, r * .92, r * .82, 0, 0, 7); ctx.fill();
+    if (hp < max) { ctx.strokeStyle = '#1c1917'; ctx.lineWidth = r * .08; ctx.beginPath(); ctx.moveTo(-r * .3, -r * .6); ctx.lineTo(0, -r * .1); ctx.lineTo(-r * .2, r * .3); ctx.lineTo(r * .2, r * .6); ctx.stroke(); }
+    pips();
+  } else if (k === 'chain') {
+    ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = r * .14;
+    for (const s of [1, -1]) { ctx.save(); ctx.rotate(s * Math.PI / 4); for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.ellipse(i * r * .36, 0, r * .2, r * .12, 0, 0, 7); ctx.stroke(); } ctx.restore(); }
+    pips();
+  } else if (k === 'safe') {
+    ctx.fillStyle = lg(ctx, 0, -r, 0, r, [[0, '#cbd5e1'], [1, '#334155']]); ctx.beginPath(); ctx.roundRect(-r * .9, -r * .9, r * 1.8, r * 1.8, r * .16); ctx.fill();
+    ctx.strokeStyle = '#1e293b'; ctx.lineWidth = r * .07; ctx.strokeRect(-r * .7, -r * .7, r * 1.4, r * 1.4);
+    ctx.fillStyle = rg(ctx, 0, 0, r * .35, '#fef3c7', '#eab308', '#854d0e'); ctx.beginPath(); ctx.arc(0, -r * .05, r * .32, 0, 7); ctx.fill();
+    pips();
+  } else if (k === 'mud') {
+    ctx.fillStyle = rg(ctx, 0, 0, r, '#a16207', '#78350f', '#451a03'); ctx.beginPath();
+    for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2, rr = r * (.8 + Math.sin(i * 2.3) * .12); ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.2)'; ctx.beginPath(); ctx.ellipse(-r * .3, -r * .35, r * .2, r * .1, -.4, 0, 7); ctx.fill();
+  } else if (k === 'keg') {
+    ctx.fillStyle = lg(ctx, -r, 0, r, 0, [[0, '#7c2d12'], [.5, '#c2410c'], [1, '#7c2d12']]); ctx.beginPath(); ctx.ellipse(0, 0, r * .75, r * .9, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#1c1917'; ctx.lineWidth = r * .1; for (const yy of [-.45, .45]) { ctx.beginPath(); ctx.moveTo(-r * .7, yy * r); ctx.lineTo(r * .7, yy * r); ctx.stroke(); }
+    ctx.fillStyle = '#fde047'; ctx.font = `bold ${r * .7}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', 0, r * .05);
+  }
+  ctx.restore();
+}
 function rg(ctx, x, y, r, c0, c1, c2) { const g = ctx.createRadialGradient(x - r * .35, y - r * .4, r * .05, x, y, r * 1.05); g.addColorStop(0, c0); g.addColorStop(.55, c1); g.addColorStop(1, c2); return g; }
 function lg(ctx, x0, y0, x1, y1, stops) { const g = ctx.createLinearGradient(x0, y0, x1, y1); stops.forEach(([o, c]) => g.addColorStop(o, c)); return g; }
 function gloss(ctx, x, y, rx, ry, rot, a) { ctx.fillStyle = `rgba(255,255,255,${a})`; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, 7); ctx.fill(); }
@@ -1549,12 +1742,15 @@ function drawBoard() {
   }
   if (P.sel) { bx.strokeStyle = '#fde047'; bx.lineWidth = CS * .07; bx.beginPath(); bx.roundRect(P.sel[0] * CS + CS * .06, P.sel[1] * CS + CS * .06, CS * .88, CS * .88, CS * .14); bx.stroke(); }
   bx.save(); bx.beginPath(); bx.rect(0, 0, CS * N, CS * N); bx.clip();
+  if (P.floor) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (P.floor[y][x]) drawObIcon(bx, 'moss', (x + .5) * CS, (y + .5) * CS, CS * .48);
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const c = P.b[y][x]; if (!c) continue;
     const px = (x + c.ox + .5) * CS, py = (y + c.oy + .5) * CS, r = CS * .42 * c.sc;
     bx.globalAlpha = c.a;
+    if (c.t === -9) { const fl = c.flash && now - c.flash < 180; drawObIcon(bx, c.ob, px + (fl ? (Math.random() - .5) * 4 : 0), py, CS * .46 * c.sc, false, c.hp, c.max); bx.globalAlpha = 1; continue; }
     if (c.t >= 0) { const R = CS * .42, ic = iconSprite(c.t); const k = r / R; bx.drawImage(ic, px - CS / 2 * k, py - CS / 2 * k, CS * k, CS * k); }
     if (c.s) drawSpecial(bx, c.s, px, py, r, t);
+    if (c.cov) drawObIcon(bx, c.cov.k, px, py, CS * .48, false, c.cov.hp, c.cov.max);
     bx.globalAlpha = 1;
   }
   drawFx(now);
@@ -1630,15 +1826,16 @@ function openShop() {
   modal(`<h2>Copper Shop</h2><div class="small">Wallet: ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10). Tools don't use a move.</div>
     ${Object.entries(TOOLS).map(([k, t]) => `<div class="card" style="text-align:left"><div class="row"><canvas data-si="${k}" width="${40 * DPR}" height="${40 * DPR}" style="width:40px;height:40px;flex:none"></canvas>
       <div style="flex:1"><div class="t">${t.n} <span class="small">owned ${T[k] || 0}</span></div><div class="d">${t.d}</div></div>
-      <button class="btn sm" data-buy="${k}" ${wallet() >= t.cost ? '' : 'disabled'}>${t.cost} c</button></div></div>`).join('')}
+      <button class="btn sm" data-buy="${k}" ${wallet() >= toolCost(k) ? '' : 'disabled'}>${toolCost(k)} c</button></div></div>`).join('')}
     <div class="btns"><button class="btn alt" data-close>Done</button></div>`);
   document.querySelectorAll('#modal canvas[data-si]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawTool(x, c.dataset.si, 20, 20, 17); });
 }
 $('#modal').addEventListener('click', e => {
   const b = e.target.closest('[data-buy]'); if (!b) return;
-  const t = TOOLS[b.dataset.buy]; if (wallet() < t.cost) return;
-  pay({ money: t.cost }); S.tools[b.dataset.buy] = (S.tools[b.dataset.buy] || 0) + 1; sfx('coin'); save(); refresh(); renderTools(); openShop();
+  const t = TOOLS[b.dataset.buy]; if (wallet() < toolCost(b.dataset.buy)) return;
+  pay({ money: toolCost(b.dataset.buy) }); S.tools[b.dataset.buy] = (S.tools[b.dataset.buy] || 0) + 1; sfx('coin'); save(); refresh(); renderTools(); openShop();
 });
+$('#pz-foot').addEventListener('click', e => { if (e.target.closest('[data-daily]')) startDaily(); });
 $('#pz-tools').addEventListener('click', e => {
   if (e.target.closest('[data-shop]')) return openShop();
   const b = e.target.closest('[data-tool]'); if (!b || !P || P.busy || P.over) return;
@@ -1653,13 +1850,8 @@ async function useTool(k, c) {
   S.tools[k]--; P.tool = null; P.busy = true; P.combo = 0; save(); renderTools(); sfx('tool');
   if (k === 'storm') {
     sfx('shuffle'); addFx({ type: 'flash', x: 0, y: 0, dur: 300 });
-    const cells = P.b.flat();
-    for (let tries = 0; tries < 60; tries++) {
-      for (let i = cells.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [cells[i], cells[j]] = [cells[j], cells[i]]; }
-      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) P.b[y][x] = cells[y * N + x];
-      if (!findRuns(P.b).length && hasMoves(P.b)) break;
-    }
-    await anim(350, t => P.b.forEach(r => r.forEach(q => { q.sc = .4 + .6 * ease(t); q.a = t; })));
+    reshuffle();
+    await anim(350, t => P.b.forEach(r => r.forEach(q => { if (q && !isFixed(q)) { q.sc = .4 + .6 * ease(t); q.a = t; } })));
   } else {
     const [x, y] = c, keys = [];
     if (k === 'pick') { keys.push(x + ',' + y); addFx({ type: 'b', x, y, dur: 350 }); shake = 5; }
@@ -1671,10 +1863,10 @@ async function useTool(k, c) {
 }
 function renderPuzzleHead() {
   if (!P) return;
-  const goals = Object.entries(P.left).map(([t, v]) => `<div class="goal${v <= 0 ? ' done' : ''}"><canvas data-icon="${t}" width="${28 * DPR}" height="${28 * DPR}" style="width:28px;height:28px"></canvas>${v <= 0 ? '✓' : v}</div>`).join('');
-  $('#pz-head').innerHTML = `<div class="lv">Level ${P.L.n}</div><div class="goals">${goals}</div><div class="mv"><b>${P.moves}</b>moves</div>`;
-  document.querySelectorAll('#pz-head canvas[data-icon]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawIcon(x, +c.dataset.icon, 14, 14, 12); });
-  $('#pz-foot').innerHTML = `Leftover moves become speedup time · ${S.recruit}/${WINS_PER_WORKER} wins to next AI worker`;
+  const goals = Object.entries(P.left).map(([t, v]) => `<div class="goal${v <= 0 ? ' done' : ''}" title="${goalName(t)}"><canvas data-icon="${t}" width="${28 * DPR}" height="${28 * DPR}" style="width:28px;height:28px"></canvas>${v <= 0 ? '✓' : v}</div>`).join('');
+  $('#pz-head').innerHTML = `<div class="lv">${P.daily ? 'Daily Challenge' : 'Level ' + P.L.n}${P.L.hard ? ' <span class="hard">HARD</span>' : ''}</div><div class="goals">${goals}</div><div class="mv"><b>${P.moves}</b>moves</div>`;
+  document.querySelectorAll('#pz-head canvas[data-icon]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); const k = c.dataset.icon; if (/^\d$/.test(k)) drawIcon(x, +k, 14, 14, 12); else drawObIcon(x, k, 14, 14, 12, false, OB[k].hp || 1, OB[k].hp || 1); });
+  $('#pz-foot').innerHTML = `Leftover moves become speedup time · ${S.recruit}/${WINS_PER_WORKER} wins to next AI worker${U('daily') && S.dailyDone !== today() && !P.daily ? ' · <button class="btn sm go" data-daily>Daily Challenge</button>' : ''}`;
   renderLegend(); renderTools();
 }
 (() => {
@@ -1722,7 +1914,7 @@ async function api(path, opts = {}) {
   } catch (e) { return { ok: false, error: 'offline' }; }
 }
 function loadSave(sv) {
-  S = sv; for (const k of ['iron', 'coal', 'steel']) if (S.res[k] == null) S.res[k] = 0;
+  S = migrate(sv);
   genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
   catchUp((Date.now() - S.t) / 1000, true); idle().forEach(autoAssign);
 }
@@ -1736,19 +1928,34 @@ async function syncLogin() {
   if (!sv) { S.owner = ME.id; save(); await pushSave(); toast('Your village is now saved to your account'); }
   else if (S.owner === ME.id && (S.t || 0) > (sv.t || 0)) { await pushSave(); }   // this device is ahead
   else { loadSave(sv); S.owner = ME.id; save(); dirty = false; }
+  S.teamWonder = !!r.teamWonder;
   if (r.losses && r.losses.length) applyLosses(r.losses);
-  refresh(true);
+  pollLosses(); refresh(true);
 }
 async function pushSave(beacon) {
   if (!ME) return;
   S.owner = ME.id;
-  const body = JSON.stringify({ save: S, applied });
+  const body = JSON.stringify({ save: S, applied, appliedGifts });
   if (beacon && navigator.sendBeacon) { navigator.sendBeacon('/api/save', new Blob([body], { type: 'application/json' })); return; }
   const r = await api('save', { method: 'PUT', body });
-  if (r.ok) { dirty = false; applied = []; }
+  if (r.ok) { dirty = false; applied = []; appliedGifts = []; }
   else if (r.auth === false) { ME = null; refresh(true); }
 }
-async function pollLosses() { const r = await api('losses'); if (r.ok && r.losses.length) applyLosses(r.losses); }
+let appliedGifts = [], INCOMING = [], seenGifts = new Set();
+async function pollLosses() {
+  const r = await api('losses'); if (!r.ok) return;
+  if (r.losses.length) applyLosses(r.losses);
+  for (const g of r.gifts || []) {
+    if (seenGifts.has(g.id)) continue; seenGifts.add(g.id);
+    for (const [k, v] of Object.entries(g.res)) S.res[k] = (S.res[k] || 0) + v;
+    appliedGifts.push(g.id); dirty = true;
+    toast(`${g.from_name} ${g.note === 'auction sale' ? 'bought your listing' : 'sent a caravan'}: ` + Object.entries(g.res).map(([k, v]) => `+${v} ${k}`).join(', '));
+  }
+  if (appliedGifts.length) { save(); pushSave(); }
+  const fresh = (r.incoming || []).filter(i => !INCOMING.some(x => x.eta === i.eta && x.attacker === i.attacker));
+  for (const i of fresh) { toast(`Watchtower: ${i.attacker}'s crew arrives in ${fmt(Math.max(0, (i.eta - Date.now()) / 1000))}`); sfx('lose'); }
+  INCOMING = r.incoming || [];
+}
 function applyLosses(list) {
   for (const L of list) {
     if (applied.includes(L.id)) continue;
@@ -1765,22 +1972,25 @@ function applyLosses(list) {
   save(); pushSave(); refresh(true);
 }
 // harvesting: a worker crosses the orb to another village
-function raidTime(slotA, slotB, size) { const d = Math.abs(slotA - slotB), r = Math.min(d, size - d); return Math.min(600, 60 + r * 15); }
+function raidTime(slotA, slotB, size, pl) { const d = Math.abs(slotA - slotB), r = Math.min(d, size - d); return Math.min(1200, (60 + r * 15) * (U('fastcrews') ? .7 : 1) * (pl && pl.palisade ? 2 : 1)); }
 function startRaid(pl) {
   if (!ME || !ORB) return;
   const w = idle()[0] || free().find(x => !x.task || x.task.kind !== 'raid');
   if (!w) return toast('No free AI worker');
-  const dur = raidTime(ORB.me.slot, pl.slot, ORB.size);
+  const dur = raidTime(ORB.me.slot, pl.slot, ORB.size, pl);
   w.task = { kind: 'raid', target: null, pid: pl.id, name: pl.name, dur, prog: 0 }; w.repeat = false;
+  api('raidstart', { method: 'POST', body: JSON.stringify({ target: pl.id, secs: dur }) });
   toast(`${w.name} heads to ${pl.name}'s village (${fmt(dur)})`); closeSheet(); save(); refresh(true);
 }
 async function resolveRaid(w, t) {
   const r = await api('harvest', { method: 'POST', body: JSON.stringify({ target: t.pid }) });
   if (!r.ok) { toast(`${w.name} came back empty: ${r.error}`); return; }
   if (r.empty) { toast(`${t.name} had nothing left to dismantle`); return; }
+  if (r.repelled) { toast(`${t.name}'s militia drove ${w.name} off`); return; }
+  if (r.decoy) { toast(`${w.name} dismantled a decoy hut at ${t.name}'s — nothing gained`); return; }
   for (const [k, v] of Object.entries(r.gained)) S.res[k] = (S.res[k] || 0) + v;
   sfx('harvest');
-  toast(`${w.name} dismantled ${r.from}'s ${BLD[r.building] ? BLD[r.building].n : r.building}: ` + Object.entries(r.gained).map(([k, v]) => `+${v} ${k}`).join(', '));
+  toast(`${w.name} dismantled ${r.from}'s ${r.building.split(' + ').map(b => BLD[b] ? BLD[b].n : b).join(' + ')}: ` + Object.entries(r.gained).map(([k, v]) => `+${v} ${k}`).join(', '));
   idle().forEach(autoAssign); save(); pushSave(); refresh(true);
 }
 // orb view
@@ -1788,11 +1998,11 @@ let ORB = null, orbLoading = false;
 async function loadOrb() {
   if (!ME || orbLoading) return; orbLoading = true;
   const r = await api('orb'); orbLoading = false;
-  if (r.ok) { ORB = r; ME = r.me; refresh(true); }
+  if (r.ok) { ORB = r; ME = r.me; S.teamWonder = !!(ME.team && (r.teams.find(x => x.id === ME.team) || {}).wonder >= r.wonderGoal); refresh(true); }
 }
 function renderOrb(force) {
   const el = $('#v-orb');
-  const s = 'o' + JSON.stringify([!!ME, ORB && ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB && ORB.teams, S.workers.filter(w => w.task && w.task.kind === 'raid').map(w => w.id), Math.floor(S.bank)]);
+  const s = 'o' + JSON.stringify([!!ME, ORB && ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB && ORB.teams, S.workers.filter(w => w.task && w.task.kind === 'raid').map(w => w.id), S.workers.some(w => w.task && w.task.kind === 'raid') && Math.floor(S.bank), INCOMING.length, TBANK, EVT && [EVT.total, EVT.claimed], LISTS && LISTS.map(l => l.id), ORB && ORB.teams.map(t => [t.ally, t.wonder])]);
   if (s === sig && !force) return; sig = s;
   if (!ME) {
     el.innerHTML = `<h2>The Orb</h2>
@@ -1814,14 +2024,18 @@ function renderOrb(force) {
     <div class="small" style="text-align:center">Gold ring = you · green = teammates · tap a village below to send a harvest crew</div>
     <h3>Leaderboard</h3>
     <table class="lb"><tr><th>#</th><th>Village</th><th>Team</th><th>Lvl</th><th>Bldgs</th><th>Score</th></tr>
-    ${ORB.players.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${esc(p.name)}${p.shield ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}
+    ${ORB.players.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${p.banner && i < 10 ? '👑 ' : ''}${esc(p.name)}${p.shield || p.treaty ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}
     </table>
     ${(() => { const crews = S.workers.filter(w => w.task && w.task.kind === 'raid'); return crews.length ? `<h3>Harvest crews out</h3>` + crews.map(w => `<div class="card"><div class="t">${esc(w.name)} → ${esc(w.task.name)}</div>${progRow(w)}${speedRow([w])}</div>`).join('') : ''; })()}
+    ${orbExtras()}
     <h3>Teams <span class="small">${ORB.teams.length}/${ORB.limits.teams}</span></h3>`;
   if (ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(tName(ME.team))}</div><div class="d">Your team</div></div><button class="btn sm alt" data-team="leave">Leave</button></div></div>`;
-  for (const t of ORB.teams) if (t.id !== ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(t.name)}</div><div class="d">${t.members}/${ORB.limits.teamMax} members · ${t.score} pts</div></div>
-    <button class="btn sm" data-team="join" data-id="${t.id}" ${t.members >= ORB.limits.teamMax ? 'disabled' : ''}>Join</button></div></div>`;
+  const myT = ORB.teams.find(x => x.id === ME.team);
+  for (const t of ORB.teams) if (t.id !== ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(t.name)}${myT && myT.ally === t.id ? ' <span class="small">· ally</span>' : ''}</div><div class="d">${t.members}/${ORB.limits.teamMax} members · ${t.score} pts</div></div>
+    <div style="display:flex;gap:4px">${ME.team && U('envoy') && myT.ally !== t.id ? `<button class="btn sm alt" data-ally="${t.id}">Ally</button>` : ''}
+    <button class="btn sm" data-team="join" data-id="${t.id}" ${t.members >= ORB.limits.teamMax ? 'disabled' : ''}>Join</button></div></div></div>`;
   if (!ME.team && ORB.teams.length < ORB.limits.teams) html += `<div class="card"><div class="t">Start a team</div><div style="display:flex;gap:6px;margin-top:6px"><input id="tm-name" maxlength="20" placeholder="Team name" class="inp" style="flex:1"><button class="btn sm go" data-team="create">Create</button></div></div>`;
+  if (U('migration')) html += `<div class="card"><div class="row"><div><div class="t">Migration</div><div class="d">Move to another orb. You keep your village but leave your team.</div></div><button class="btn sm alt" data-migrate>Migrate</button></div></div>`;
   html += `<div class="foot">Signed in as ${esc(ME.name)} (${esc(ME.email)}) · <button class="btn sm alt" data-logout>Sign out</button></div>`;
   el.innerHTML = html;
   drawOrb();
@@ -1841,6 +2055,10 @@ function drawOrb() {
     g.fillStyle = mine ? '#fbbf24' : mate ? '#86efac' : '#f8fafc';
     g.beginPath(); g.arc(x, y, mine ? 8 : 5 + Math.min(4, p.bcount / 3), 0, 7); g.fill();
     if (mine) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.stroke(); }
+    if (U('orbmap') && (mine || mate || ORB.players.length <= 30 || ORB.players.indexOf(p) < 10)) {
+      g.font = '10px system-ui'; g.textAlign = 'center'; g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.6)';
+      const ny = y + (y > cy ? 16 : -10); g.strokeText(p.name.slice(0, 12), x, ny); g.fillStyle = '#fff'; g.fillText(p.name.slice(0, 12), x, ny);
+    }
   }
   g.fillStyle = '#fff'; g.font = 'bold 14px system-ui'; g.textAlign = 'center'; g.fillText(`Orb #${ORB.orb}`, cx, cy + 5);
 }
@@ -1867,14 +2085,107 @@ $('#v-orb').addEventListener('click', async e => {
   if (row) {
     const pl = ORB.players.find(p => p.id === +row.dataset.pl); if (!pl) return;
     if (pl.id === ME.id) return openSheet(`<div class="t">${esc(pl.name)} (you)</div><div class="d">Score ${pl.score} · level ${pl.level} · ${pl.bcount} buildings</div>`);
-    const mate = ME.team && pl.team === ME.team;
-    const blocked = mate ? 'Teammate — immune' : pl.shield ? 'New-player protection (24h)' : '';
+    const mate = ME.team && pl.team === ME.team, myT = ORB.teams.find(x => x.id === ME.team), ally = myT && pl.team && myT.ally === pl.team;
+    const blocked = mate ? 'Teammate — immune' : ally ? 'Allied team — immune' : pl.shield ? 'New-player protection (24h)' : pl.treaty ? 'Peace treaty (recently harvested)' : '';
+    const giftBtn = mate && U('caravan') ? `<div style="margin-top:8px">${giftForm(pl.id)}</div>` : '';
     openSheet(`<div class="t">${esc(pl.name)}</div><div class="d">Score ${pl.score} · level ${pl.level} · ${pl.bcount} buildings${pl.online ? ' · online now' : ''}</div>
-      <div style="margin-top:8px">${blocked ? `<span class="small">${blocked}</span>` : `<button class="btn go" data-raid="${pl.id}">Send harvest crew (${fmt(raidTime(ORB.me.slot, pl.slot, ORB.size))})</button>
-      <div class="small" style="margin-top:4px">One AI worker travels there and dismantles their lowest-tier building for 33% of its cost.</div>`}</div>`);
+      <div style="margin-top:8px">${blocked ? `<span class="small">${blocked}</span>` : `<button class="btn go" data-raid="${pl.id}">Send harvest crew (${fmt(raidTime(ORB.me.slot, pl.slot, ORB.size, pl))})</button>
+      <div class="small" style="margin-top:4px">One AI worker travels there and dismantles their lowest-tier building for ${U('spoils') ? 40 : 33}% of its cost${U('bigcrews') ? ' (Big Crews: 2 buildings)' : ''}.${pl.palisade ? ' Palisade: travel time doubled.' : ''}</div>
+      ${U('scout') ? `<button class="btn sm alt" style="margin-top:6px" data-scout="${pl.id}">Scout</button><div id="scout-out" class="small"></div>` : ''}`}</div>${giftBtn}`);
   }
 });
-$('#sheet').addEventListener('click', e => { const b = e.target.closest('[data-raid]'); if (b && ORB) { const pl = ORB.players.find(p => p.id === +b.dataset.raid); if (pl) startRaid(pl); } });
+$('#sheet').addEventListener('click', async e => {
+  const b = e.target.closest('[data-raid]'); if (b && ORB) { const pl = ORB.players.find(p => p.id === +b.dataset.raid); if (pl) startRaid(pl); return; }
+  const sc = e.target.closest('[data-scout]');
+  if (sc) { const r = await api('scout?id=' + sc.dataset.scout); const o = $('#scout-out'); if (o) o.textContent = r.ok ? `${r.workers} workers · ` + (Object.entries(r.buildings).map(([k, v]) => `${v}× ${BLD[k] ? BLD[k].n : k}`).join(', ') || 'no buildings') : r.error; return; }
+  const gf = e.target.closest('[data-gift]');
+  if (gf) { const res = readResForm('gf'); if (!res) return; const r = await api('gift', { method: 'POST', body: JSON.stringify({ to: +gf.dataset.gift, res }) });
+    if (!r.ok) { refundRes(res); return toast(r.error); } toast('Caravan sent'); closeSheet(); save(); pushSave(); refresh(true); }
+});
+
+// ---------------------------------------------------------------- orb upgrades (caravan, team bank, wonder, auction, events)
+const TRADE_RES = ['food', 'wood', 'stone', 'iron', 'coal', 'steel', 'planks', 'gears', 'copper', 'silver', 'gold'];
+let TBANK = null, EVT = null, LISTS = null;
+async function loadOrbExtras() {
+  const [tb, ev, ls] = await Promise.all([ME.team ? api('teambank') : null, U('events') ? api('event') : null, U('auction') ? api('listings') : null]);
+  TBANK = tb && tb.ok ? tb.bank : null; EVT = ev && ev.ok ? ev : null; LISTS = ls && ls.ok ? ls.listings : null;
+  if (view === 'orb') renderOrb(true);
+}
+function resSelect(id, list = TRADE_RES) { return `<select id="${id}-k" class="inp" style="flex:1">${list.map(k => `<option value="${k}">${k} (${Math.floor(S.res[k] || 0)})</option>`).join('')}</select><input id="${id}-n" class="inp" type="number" min="1" placeholder="amount" style="width:90px">`; }
+function giftForm(pid) { return `<div class="t">Trade caravan</div><div style="display:flex;gap:6px;margin-top:4px">${resSelect('gf')}<button class="btn sm go" data-gift="${pid}">Send</button></div>`; }
+// reads a resource form and takes the amount out of the village; null if not enough
+function readResForm(id, take = true) {
+  const k = $('#' + id + '-k').value, n = Math.floor(+$('#' + id + '-n').value || 0);
+  if (n <= 0) { toast('Enter an amount'); return null; }
+  if (take && (S.res[k] || 0) < n) { toast(`You only have ${Math.floor(S.res[k] || 0)} ${k}`); return null; }
+  if (take) S.res[k] -= n;
+  return { [k]: n };
+}
+function refundRes(res) { for (const [k, v] of Object.entries(res)) S.res[k] = (S.res[k] || 0) + v; }
+const WONDER_PTS = { steel: 1, gears: 2, gold: 5 };
+function orbExtras() {
+  let h = '';
+  if (INCOMING.length) h += `<div class="card"><div class="t">⚠ Incoming harvest crews</div>${INCOMING.map(i => `<div class="d">${esc(i.attacker)} · arrives in ${fmt(Math.max(0, (i.eta - Date.now()) / 1000))}</div>`).join('')}</div>`;
+  const myT = ME.team && ORB.teams.find(x => x.id === ME.team);
+  if (myT && U('storage')) h += `<div class="card"><div class="t">Team bank</div><div class="d">${TBANK ? (Object.entries(TBANK).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`).join(' · ') || 'Empty') : 'Loading…'}</div>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">${resSelect('tb')}<button class="btn sm go" data-tb="deposit">Deposit</button><button class="btn sm alt" data-tb="withdraw">Withdraw</button></div></div>`;
+  if (myT && U('wonder')) { const w = myT.wonder || 0, goal = ORB.wonderGoal || 5000;
+    h += `<div class="card"><div class="t">Team Wonder ${w >= goal ? '— complete: +10% gathering for the team' : `${w}/${goal}`}</div><div class="bar"><b style="width:${Math.min(100, w / goal * 100)}%"></b></div>
+    ${w < goal ? `<div class="d">Steel = 1 pt · gears = 2 · gold = 5</div><div style="display:flex;gap:6px;margin-top:6px">${resSelect('wd', Object.keys(WONDER_PTS))}<button class="btn sm go" data-wonder>Contribute</button></div>` : ''}</div>`; }
+  if (U('events') && EVT) h += `<div class="card"><div class="t">Weekly orb event: ${EVT.goal.toLocaleString()} ${EVT.res}</div><div class="bar"><b style="width:${Math.min(100, EVT.total / EVT.goal * 100)}%"></b></div>
+    <div class="d">${EVT.total.toLocaleString()} delivered · ends in ${Math.ceil((EVT.ends - Date.now()) / 3600000)}h · reward 300 copper, 15 gold, 30 min speedup</div>
+    <div style="display:flex;gap:6px;margin-top:6px">${EVT.total >= EVT.goal ? (EVT.claimed ? '<span class="small">Claimed</span>' : '<button class="btn sm go" data-evclaim>Claim reward</button>') : `<input id="ev-n" class="inp" type="number" min="1" placeholder="${EVT.res}" style="width:110px"><button class="btn sm go" data-ev>Deliver</button>`}</div></div>`;
+  if (U('auction')) h += `<div class="card"><div class="t">Auction house</div>
+    ${LISTS ? (LISTS.length ? LISTS.map(l => `<div class="row" style="margin-top:4px"><div class="d">${l.amt} ${l.res} for ${l.price} copper · ${esc(l.seller_name)}</div><button class="btn sm ${l.seller === ME.id ? 'alt' : ''}" data-buy="${l.id}">${l.seller === ME.id ? 'Cancel' : 'Buy'}</button></div>`).join('') : '<div class="d">No listings</div>') : '<div class="d">Loading…</div>'}
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">${resSelect('au', TRADE_RES.filter(k => k !== 'copper'))}<input id="au-p" class="inp" type="number" min="1" placeholder="price (copper)" style="width:110px"><button class="btn sm go" data-list>List</button></div></div>`;
+  return h;
+}
+$('#v-orb').addEventListener('click', async e => {
+  const t = e.target.closest('button'); if (!t || !ME) return;
+  const done = (msg) => { if (msg) toast(msg); save(); pushSave(); loadOrb(); loadOrbExtras(); };
+  if (t.dataset.tb) {
+    const dep = t.dataset.tb === 'deposit', res = readResForm('tb', dep); if (!res) return;
+    const r = await api('teambank', { method: 'POST', body: JSON.stringify({ action: t.dataset.tb, res }) });
+    if (!r.ok) { if (dep) refundRes(res); return toast(r.error); }
+    if (!dep) refundRes(res); return done(dep ? 'Deposited' : 'Withdrawn');
+  }
+  if (t.dataset.wonder !== undefined) {
+    const res = readResForm('wd'); if (!res) return; const [k, v] = Object.entries(res)[0];
+    const r = await api('wonder', { method: 'POST', body: JSON.stringify({ amt: v * WONDER_PTS[k] }) });
+    if (!r.ok) { refundRes(res); return toast(r.error); }
+    if (r.wonder >= r.goal) S.teamWonder = true; return done(`+${v * WONDER_PTS[k]} wonder points`);
+  }
+  if (t.dataset.ev !== undefined) {
+    const n = Math.floor(+$('#ev-n').value || 0), k = EVT.res; if (n <= 0 || (S.res[k] || 0) < n) return toast(`You have ${Math.floor(S.res[k] || 0)} ${k}`);
+    S.res[k] -= n; const r = await api('event', { method: 'POST', body: JSON.stringify({ amt: n }) });
+    if (!r.ok) { S.res[k] += n; return toast(r.error); } return done(`Delivered ${n} ${k}`);
+  }
+  if (t.dataset.evclaim !== undefined) {
+    const r = await api('event', { method: 'POST', body: JSON.stringify({ action: 'claim' }) }); if (!r.ok) return toast(r.error);
+    S.res.copper += r.reward.copper; S.res.gold += r.reward.gold; S.bank = Math.min(bankCap(), S.bank + r.reward.speed); sfx('win');
+    return done('Event reward: +300 copper, +15 gold, +30 min speedup');
+  }
+  if (t.dataset.list !== undefined) {
+    const price = Math.floor(+$('#au-p').value || 0); if (price <= 0) return toast('Set a price');
+    const res = readResForm('au'); if (!res) return; const [k, v] = Object.entries(res)[0];
+    const r = await api('list', { method: 'POST', body: JSON.stringify({ res: k, amt: v, price }) });
+    if (!r.ok) { refundRes(res); return toast(r.error); } return done('Listed');
+  }
+  if (t.dataset.buy) {
+    const l = LISTS && LISTS.find(x => x.id === +t.dataset.buy); if (!l) return;
+    const mine = l.seller === ME.id;
+    if (!mine && S.res.copper < l.price) return toast(`Needs ${l.price} copper`);
+    if (!mine) S.res.copper -= l.price;
+    const r = await api('buy', { method: 'POST', body: JSON.stringify({ id: l.id }) });
+    if (!r.ok) { if (!mine) S.res.copper += l.price; return toast(r.error); }
+    S.res[r.res] = (S.res[r.res] || 0) + r.amt; return done(r.cancelled ? 'Listing cancelled' : `Bought ${r.amt} ${r.res}`);
+  }
+  if (t.dataset.ally) { const r = await api('ally', { method: 'POST', body: JSON.stringify({ team: +t.dataset.ally }) }); return r.ok ? done('Alliance formed') : toast(r.error); }
+  if (t.dataset.migrate !== undefined) {
+    if (t.textContent !== 'Confirm') { t.textContent = 'Confirm'; return; }
+    const r = await api('migrate', { method: 'POST' }); if (!r.ok) return toast(r.error); ORB = null; return done(`Moved to orb #${r.orb}`);
+  }
+});
 
 // ---------------------------------------------------------------- boot + loop
 S = load();

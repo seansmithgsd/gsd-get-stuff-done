@@ -173,3 +173,17 @@ table.lb tr.me td{background:#fef3c7;font-weight:700}
   #pz-foot{grid-column:1;grid-row:3;text-align:left;padding:8px 10px}
   #pz-legend{width:250px}
 }
+
+.hard{background:#dc2626;color:#fff;font-size:11px;padding:1px 6px;border-radius:6px;vertical-align:middle;margin-left:4px}
+
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.chip{border:1px solid var(--line);background:#fff;color:var(--royal);border-radius:16px;padding:5px 11px;font-size:12px;font-weight:700}
+.chip.on{background:var(--royal);color:#fff;border-color:var(--royal)}
+.card .no{color:var(--muted);font-size:11px;font-weight:600}
+.card.age{border-color:var(--gold);background:linear-gradient(#fffbeb,#fff)}
+.card.rsnow{border:2px solid var(--gold)}
+.civs{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:8px}
+.civs .btn{text-align:left;line-height:1.3}
+table.mk td{cursor:default}
+#tabs button{font-size:13px}
+.civs .btn .small{color:#ecfdf5}
