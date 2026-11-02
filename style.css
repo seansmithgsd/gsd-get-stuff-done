@@ -157,3 +157,19 @@ table.lb tr.me td{background:#fef3c7;font-weight:700}
 .spd{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}
 .spd .small{margin-left:auto}
 .wt .wb .btn.go{min-width:38px;font-size:13px}
+
+@media (min-width:760px){
+  #v-puzzle.active{display:grid;grid-template-columns:270px minmax(0,1fr) 84px;grid-template-rows:auto minmax(0,1fr) auto}
+  #pz-head{grid-column:1;grid-row:1;flex-direction:column;align-items:stretch;gap:8px;padding:10px}
+  #pz-head .lv{font-size:18px}
+  #pz-head .goals{justify-content:center;padding:8px 10px}
+  #pz-head .goal canvas{width:34px!important;height:34px!important}
+  #pz-head .goal{font-size:16px}
+  #pz-head .mv{display:flex;align-items:baseline;gap:6px;justify-content:center}
+  #pz-wrap{grid-column:2;grid-row:1/4;padding:6px}
+  #pz-tools{grid-column:3;grid-row:1/4;flex-direction:column;flex-wrap:nowrap;justify-content:center;align-items:center;gap:12px;padding:6px}
+  #pz-tools .tool{width:60px;height:56px}
+  #pz-tools .tool.shop{width:64px;height:56px;padding:0}
+  #pz-foot{grid-column:1;grid-row:3;text-align:left;padding:8px 10px}
+  #pz-legend{width:250px}
+}

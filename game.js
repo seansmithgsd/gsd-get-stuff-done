@@ -1507,8 +1507,8 @@ let legendDone = false;
 function legendDrag() {
   const el = $('#pz-legend'), hd = el.querySelector('[data-drag]');
   let st = null;
-  try { const s = JSON.parse(localStorage.getItem('gsd-legend') || 'null'); if (s) { el.style.left = s.x + 'px'; el.style.top = s.y + 'px'; el.classList.toggle('min', !!s.min); } else if (innerWidth < 760) el.classList.add('min'); } catch (e) {}
-  const keep = () => { const r = el.getBoundingClientRect(), pr = $('#v-puzzle').getBoundingClientRect(); try { localStorage.setItem('gsd-legend', JSON.stringify({ x: r.left - pr.left, y: r.top - pr.top, min: el.classList.contains('min') })); } catch (e) {} };
+  try { const s = JSON.parse(localStorage.getItem('gsd-legend2') || 'null'); if (s) { el.style.left = s.x + 'px'; el.style.top = s.y + 'px'; el.classList.toggle('min', !!s.min); } else if (innerWidth < 760) el.classList.add('min'); else { el.style.left = '10px'; el.style.top = ($('#pz-head').offsetHeight + 10) + 'px'; } } catch (e) {}
+  const keep = () => { const r = el.getBoundingClientRect(), pr = $('#v-puzzle').getBoundingClientRect(); try { localStorage.setItem('gsd-legend2', JSON.stringify({ x: r.left - pr.left, y: r.top - pr.top, min: el.classList.contains('min') })); } catch (e) {} };
   hd.addEventListener('pointerdown', e => { if (e.target.dataset.lgx !== undefined) return; hd.setPointerCapture(e.pointerId); const r = el.getBoundingClientRect(), pr = $('#v-puzzle').getBoundingClientRect(); st = { dx: e.clientX - r.left, dy: e.clientY - r.top, pr }; });
   hd.addEventListener('pointermove', e => { if (!st) return; el.style.left = clamp(e.clientX - st.dx - st.pr.left, 0, st.pr.width - 60) + 'px'; el.style.top = clamp(e.clientY - st.dy - st.pr.top, 0, st.pr.height - 30) + 'px'; el.style.right = 'auto'; });
   hd.addEventListener('pointerup', () => { if (st) keep(); st = null; });
