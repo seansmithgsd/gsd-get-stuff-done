@@ -658,7 +658,8 @@ function newBoard() {
       b[y] = [];
       for (let x = 0; x < N; x++) {
         let t;
-        do { t = rndType(); } while ((x >= 2 && b[y][x - 1].t === t && b[y][x - 2].t === t) || (y >= 2 && b[y - 1][x].t === t && b[y - 2][x].t === t));
+        do { t = rndType(); } while ((x >= 2 && b[y][x - 1].t === t && b[y][x - 2].t === t) || (y >= 2 && b[y - 1][x].t === t && b[y - 2][x].t === t) ||
+          (x >= 1 && y >= 1 && b[y][x - 1].t === t && b[y - 1][x].t === t && b[y - 1][x - 1].t === t));
         b[y][x] = cell(t);
       }
     }
@@ -683,6 +684,12 @@ function findRuns(b) {
   const runs = [];
   for (let y = 0; y < N; y++) { let x = 0; while (x < N) { const t = b[y][x] ? b[y][x].t : -2; let e = x + 1; if (t >= 0) while (e < N && b[y][e] && b[y][e].t === t) e++; if (t >= 0 && e - x >= 3) { const cs = []; for (let k = x; k < e; k++) cs.push([k, y]); runs.push({ dir: 'h', cells: cs, t }); } x = e; } }
   for (let x = 0; x < N; x++) { let y = 0; while (y < N) { const t = b[y][x] ? b[y][x].t : -2; let e = y + 1; if (t >= 0) while (e < N && b[e][x] && b[e][x].t === t) e++; if (t >= 0 && e - y >= 3) { const cs = []; for (let k = y; k < e; k++) cs.push([x, k]); runs.push({ dir: 'v', cells: cs, t }); } y = e; } }
+  // 2x2 squares -> propeller
+  for (let y = 0; y < N - 1; y++) for (let x = 0; x < N - 1; x++) {
+    const q = b[y][x]; if (!q || q.t < 0) continue; const t = q.t;
+    const same = (X, Y) => b[Y][X] && b[Y][X].t === t;
+    if (same(x + 1, y) && same(x, y + 1) && same(x + 1, y + 1)) runs.push({ dir: 'sq', cells: [[x, y], [x + 1, y], [x, y + 1], [x + 1, y + 1]], t });
+  }
   return runs;
 }
 function groupRuns(runs) {
@@ -700,11 +707,13 @@ function groupRuns(runs) {
   return groups.filter(g => !g.dead);
 }
 function specialFor(g) {
-  const max = Math.max(...g.runs.map(r => r.cells.length));
-  const hv = g.runs.some(r => r.dir === 'h') && g.runs.some(r => r.dir === 'v');
+  const lines = g.runs.filter(r => r.dir !== 'sq');
+  const max = lines.length ? Math.max(...lines.map(r => r.cells.length)) : 0;
+  const hv = lines.some(r => r.dir === 'h') && lines.some(r => r.dir === 'v');
   if (max >= 5) return 'c';
   if (hv) return 'b';
-  if (max === 4) return g.runs.find(r => r.cells.length === 4).dir;
+  if (max === 4) return lines.find(r => r.cells.length === 4).dir;
+  if (g.runs.some(r => r.dir === 'sq')) return 'p';
   return null;
 }
 function hasMoves(b) {
@@ -713,7 +722,7 @@ function hasMoves(b) {
     for (const [dx, dy] of [[1, 0], [0, 1]]) {
       const x2 = x + dx, y2 = y + dy; if (x2 >= N || y2 >= N) continue;
       const A = b[y][x], B = b[y2][x2];
-      if (A.s === 'c' || B.s === 'c' || (A.s && B.s)) return true;
+      if (A.s === 'c' || B.s === 'c' || A.s === 'p' || B.s === 'p' || (A.s && B.s)) return true;
       sw(x, y, x2, y2); const ok = findRuns(b).length > 0; sw(x, y, x2, y2);
       if (ok) return true;
     }
@@ -746,12 +755,48 @@ function triggerArea(c, x, y) {
   }
   return out;
 }
+// propeller: pick the cell that helps the level goals most
+function goalHits(keys) {
+  let n = 0;
+  for (const k of keys) { const [x, y] = k.split(',').map(Number), q = P.b[y][x]; if (q && q.t >= 0 && P.left[q.t] > 0) n++; }
+  return n;
+}
+function bestTarget(claimed, carry) {
+  let best = [], bs = -1;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const k = x + ',' + y, q = P.b[y][x];
+    if (!q || claimed.has(k)) continue;
+    let sc;
+    if (carry) { const area = triggerArea({ s: carry }, x, y); sc = goalHits(area) + area.length * .01; }
+    else if (q.s && q.s !== 'p') sc = goalHits(triggerArea(q, x, y)) + .5;
+    else sc = (q.t >= 0 && P.left[q.t] > 0) ? 1 : .1;
+    if (sc > bs + 1e-9) { bs = sc; best = [[x, y]]; } else if (Math.abs(sc - bs) < 1e-9) best.push([x, y]);
+  }
+  return best.length ? best[(Math.random() * best.length) | 0] : null;
+}
 async function clearCells(start, spawns = []) {
-  const queue = [...start], seen = new Set();
+  const queue = [...start], seen = new Set(), flights = [];
   while (queue.length) {
     const k = queue.pop(); if (seen.has(k)) continue; seen.add(k);
     const [x, y] = k.split(',').map(Number), c = P.b[y][x];
-    if (c && c.s) triggerArea(c, x, y).forEach(q => { if (!seen.has(q)) queue.push(q); });
+    if (!c || !c.s) continue;
+    if (c.s === 'p') {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N && !seen.has(X + ',' + Y)) queue.push(X + ',' + Y); }
+      const claimed = new Set([...seen, ...queue]);
+      const tg = bestTarget(claimed, c.carry);
+      if (tg) {
+        const tk = tg[0] + ',' + tg[1];
+        if (c.carry) P.b[tg[1]][tg[0]].s = c.carry;
+        flights.push({ x0: x, y0: y, x1: tg[0], y1: tg[1], p: 0, carry: c.carry });
+        queue.push(tk);
+      }
+    } else triggerArea(c, x, y).forEach(q => { if (!seen.has(q)) queue.push(q); });
+  }
+  if (flights.length) {
+    P.fly = flights;
+    flights.forEach(f => { const c = P.b[f.y0][f.x0]; if (c) c.a = 0; });
+    await anim(380, t => flights.forEach(f => f.p = ease(t)));
+    P.fly = null;
   }
   const cells = [...seen].map(k => k.split(',').map(Number)).filter(([x, y]) => P.b[y][x]);
   for (const [x, y] of cells) { const c = P.b[y][x]; if (c.t >= 0 && P.left[c.t] > 0) P.left[c.t]--; P.score += 10; }
@@ -784,7 +829,7 @@ async function resolve(pref) {
       let pos = null;
       if (pref) for (const p of pref) if (g.keys.has(p[0] + ',' + p[1])) { pos = p; break; }
       if (!pos) { const lr = g.runs.reduce((a, r) => r.cells.length > a.cells.length ? r : a); pos = lr.cells[lr.cells.length >> 1]; }
-      spawns.push({ pos, s, t: s === 'c' ? -1 : g.t });
+      spawns.push({ pos, s, t: (s === 'c' || s === 'p') ? -1 : g.t });
     }
     await clearCells(clear, spawns);
     await gravity();
@@ -801,6 +846,14 @@ async function trySwap(a, b) {
     P.moves--;
     if (A.s === 'c' && B.s === 'c') { const all = []; for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) all.push(i + ',' + j); A.s = B.s = null; await clearCells(all); }
     else { const bomb = A.s === 'c' ? A : B, other = bomb === A ? B : A; bomb.target = other.t; await clearCells([a[0] + ',' + a[1], b[0] + ',' + b[1]]); }
+    await gravity(); await resolve(null);
+  } else if (A.s === 'p' || B.s === 'p') {
+    P.moves--;
+    // after the swap, A sits at b and B sits at a
+    const start = [];
+    if (A.s === 'p') { if (B.s && B.s !== 'p') { A.carry = B.s; B.s = null; } start.push(b[0] + ',' + b[1]); }
+    if (B.s === 'p') { if (A.s && A.s !== 'p') { B.carry = A.s; A.s = null; } start.push(a[0] + ',' + a[1]); }
+    await clearCells(start);
     await gravity(); await resolve(null);
   } else if (A.s && B.s) {
     P.moves--;
@@ -890,6 +943,12 @@ function drawSpecial(ctx, s, x, y, r, t) {
   } else if (s === 'b') {
     ctx.strokeStyle = '#ffde59'; ctx.lineWidth = r * .14; ctx.beginPath(); ctx.arc(0, 0, r * .88, 0, 7); ctx.stroke();
     ctx.fillStyle = '#ffde59'; ctx.beginPath(); ctx.arc(r * .6, -r * .6, r * .16 + Math.sin(t * 10) * r * .05, 0, 7); ctx.fill();
+  } else if (s === 'p') {
+    ctx.fillStyle = '#22160c'; ctx.beginPath(); ctx.arc(0, 0, r * .8, 0, 7); ctx.fill();
+    ctx.rotate(t * 9);
+    ctx.fillStyle = '#e8b923';
+    for (let k = 0; k < 2; k++) { ctx.save(); ctx.rotate(k * Math.PI / 2); ctx.beginPath(); ctx.ellipse(0, 0, r * .72, r * .17, 0, 0, 7); ctx.fill(); ctx.restore(); }
+    ctx.fillStyle = '#c0392b'; ctx.beginPath(); ctx.arc(0, 0, r * .18, 0, 7); ctx.fill();
   } else if (s === 'c') {
     ctx.fillStyle = '#22160c'; ctx.beginPath(); ctx.arc(0, 0, r * .8, 0, 7); ctx.fill();
     const cols = ['#d0263a', '#c87a2a', '#c3cacf', '#f2c43d', '#4caf3a'];
@@ -914,12 +973,18 @@ function drawBoard() {
     if (c.s) drawSpecial(bx, c.s, px, py, r, t);
     bx.globalAlpha = 1;
   }
+  if (P.fly) for (const f of P.fly) {
+    const px = (f.x0 + (f.x1 - f.x0) * f.p + .5) * CS, py = (f.y0 + (f.y1 - f.y0) * f.p + .5) * CS, r = CS * .42 * (1 + Math.sin(f.p * Math.PI) * .35);
+    if (f.carry) drawSpecial(bx, f.carry, px, py, r * .9, t);
+    drawSpecial(bx, 'p', px, py, r, t);
+  }
   bx.restore();
 }
 const LEGEND = [
   { s: 'h', t: 1, n: 'Row Clear', how: 'Match 4 in a row (side to side)', does: 'Clears its whole row when matched or swapped.' },
   { s: 'v', t: 2, n: 'Column Clear', how: 'Match 4 in a column (up and down)', does: 'Clears its whole column when matched or swapped.' },
   { s: 'b', t: 0, n: 'Bomb', how: 'Match an L or T shape', does: 'Clears the 3×3 area around it.' },
+  { s: 'p', t: -1, n: 'Propeller', how: 'Match a 2×2 square', does: 'Clears the 4 tiles around it, then flies to the spot that helps your goals most. Swap it with another special to carry that special there.' },
   { s: 'c', t: -1, n: 'Color Bomb', how: 'Match 5 in a line', does: 'Swap it with any tile to clear every tile of that type.' },
 ];
 let legendDone = false;
@@ -977,6 +1042,7 @@ S = load();
 genMap(S.seed);
 S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
 catchUp((Date.now() - S.t) / 1000, true);
+idle().forEach(autoAssign); // idle workers get to work on load
 layout();
 refresh(true);
 let lastWall = Date.now(), lastUI = 0, lastSave = 0;
