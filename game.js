@@ -2045,7 +2045,7 @@ function renderOrb(force) {
     <div style="display:flex;gap:4px">${ME.team && U('envoy') && myT.ally !== t.id ? `<button class="btn sm alt" data-ally="${t.id}">Ally</button>` : ''}
     <button class="btn sm" data-team="join" data-id="${t.id}" ${t.members >= ORB.limits.teamMax ? 'disabled' : ''}>Join</button></div></div></div>`;
   if (!ME.team && ORB.teams.length < ORB.limits.teams) html += `<div class="card"><div class="t">Start a team</div><div style="display:flex;gap:6px;margin-top:6px"><input id="tm-name" maxlength="20" placeholder="Team name" class="inp" style="flex:1"><button class="btn sm go" data-team="create">Create</button></div></div>`;
-  if (U('migration')) html += `<div class="card"><div class="row"><div><div class="t">Migration</div><div class="d">Move to another orb. You keep your village but leave your team.</div></div><button class="btn sm alt" data-migrate>Migrate</button></div></div>`;
+  if (U('migration')) html += `<div class="card"><div class="row"><div><div class="t">Migration</div><div class="d">Move to another orb. You keep your buildings, workers and research, but all resources reset to the starting amounts and you leave your team.</div></div><button class="btn sm alt" data-migrate>Migrate</button></div></div>`;
   html += `<div class="foot">Signed in as ${esc(ME.name)} (${esc(ME.email)}) · <button class="btn sm alt" data-logout>Sign out</button></div>`;
   el.innerHTML = html;
   drawOrb();
@@ -2192,8 +2192,9 @@ $('#v-orb').addEventListener('click', async e => {
   }
   if (t.dataset.ally) { const r = await api('ally', { method: 'POST', body: JSON.stringify({ team: +t.dataset.ally }) }); return r.ok ? done('Alliance formed') : toast(r.error); }
   if (t.dataset.migrate !== undefined) {
-    if (t.textContent !== 'Confirm') { t.textContent = 'Confirm'; return; }
-    const r = await api('migrate', { method: 'POST' }); if (!r.ok) return toast(r.error); ORB = null; return done(`Moved to orb #${r.orb}`);
+    if (!t.dataset.armed) { t.dataset.armed = 1; t.textContent = 'Confirm: resources reset'; return; }
+    const r = await api('migrate', { method: 'POST' }); if (!r.ok) return toast(r.error);
+    S.res = newState().res; ORB = null; return done(`Moved to orb #${r.orb} — resources reset`);
   }
 });
 

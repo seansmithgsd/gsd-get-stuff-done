@@ -100,7 +100,7 @@ const UPG = [
   { id: 'envoy', no: 87, n: 'Envoy', cat: 'Orb', tier: 8, d: 'Your team can ally with one other team (allies can\'t harvest each other)' },
   { id: 'banner', no: 88, n: 'Seasonal Banner', cat: 'Orb', tier: 6, d: 'Crown on your name while you\'re top 10 in your orb' },
   { id: 'events', no: 89, n: 'Orb Events', cat: 'Orb', tier: 7, d: 'Join the weekly orb-wide goal for a group reward' },
-  { id: 'migration', no: 90, n: 'Migration', cat: 'Orb', tier: 6, d: 'Move to a new orb and keep your progress' },
+  { id: 'migration', no: 90, n: 'Migration', cat: 'Orb', tier: 6, d: 'Move to a new orb: keep buildings, workers and research; resources reset' },
   // Ages
   { id: 'age6', no: 91, n: 'Bronze Age', cat: 'Ages', tier: 5, req: ['townhall'], d: 'Unlocks tier 6: Sawmill, Market, Docks and more', age: true },
   { id: 'age7', no: 92, n: 'Iron Age', cat: 'Ages', tier: 6, req: ['age6', 'sawmill'], d: 'Unlocks tier 7: Blast Furnace, Gearworks, Bank, Barracks', age: true },

@@ -253,7 +253,10 @@ export async function onRequest(ctx) {
       const orb = row ? row.orb : ((await env.DB.prepare('SELECT MAX(orb) m FROM players').first())?.m || 0) + 1;
       const taken = new Set((await env.DB.prepare('SELECT slot FROM players WHERE orb = ?').bind(orb).all()).results.map(r => r.slot));
       let slot = 0; while (taken.has(slot)) slot++;
-      await env.DB.prepare('UPDATE players SET orb = ?, slot = ?, team = NULL WHERE id = ?').bind(orb, slot, p.id).run();
+      // migrating costs your stockpile: resources go back to the starting amounts
+      const sv = p.save ? JSON.parse(p.save) : null;
+      if (sv) { sv.res = { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, copper: 6, silver: 0, gold: 0 }; sv.t = now; }
+      await env.DB.prepare('UPDATE players SET orb = ?, slot = ?, team = NULL, save = COALESCE(?, save), save_t = ? WHERE id = ?').bind(orb, slot, sv ? JSON.stringify(sv) : null, now, p.id).run();
       return json({ ok: true, orb });
     }
     if (path === 'listings' && req.method === 'GET') {
