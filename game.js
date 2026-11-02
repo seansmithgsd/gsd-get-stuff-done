@@ -823,6 +823,7 @@ async function clearCells(start, spawns = []) {
   }
   const cells = [...seen].map(k => k.split(',').map(Number)).filter(([x, y]) => P.b[y][x]);
   for (const [x, y] of cells) { const c = P.b[y][x]; if (c.t >= 0 && P.left[c.t] > 0) P.left[c.t]--; P.score += 10; }
+  P.destroyed = (P.destroyed || 0) + cells.length;
   await anim(170, t => { for (const [x, y] of cells) { const c = P.b[y][x]; c.a = 1 - t; c.sc = 1 + .25 * t; } });
   for (const [x, y] of cells) P.b[y][x] = null;
   for (const sp of spawns) { const [x, y] = sp.pos; P.b[y][x] = cell(sp.t, sp.s); }
@@ -913,10 +914,25 @@ function checkEnd() {
   if (won) return win();
   if (P.moves <= 0) lose();
 }
-function win() {
-  P.over = true;
+// leftover specials all fire after a win: 1 copper per tile destroyed
+async function finale() {
+  const start = P.destroyed || 0;
+  for (let round = 0; round < 12; round++) {
+    const keys = [];
+    P.b.forEach((row, y) => row.forEach((c, x) => { if (c && c.s) keys.push(x + ',' + y); }));
+    if (!keys.length) break;
+    if (round === 0) toast('Leftover specials firing!');
+    await clearCells(keys);
+    await gravity(); await resolve(null);
+  }
+  return (P.destroyed || 0) - start;
+}
+async function win() {
+  P.over = true; P.busy = true;
+  const bonus = await finale();
+  P.busy = false; drawBoard();
   const extra = P.moves, stars = 1 + (extra >= 3 ? 1 : 0) + (extra >= 6 ? 1 : 0);
-  const rw = { copper: 3, silver: stars - 1, gold: S.level % 5 === 0 ? 1 : 0 };
+  const rw = { copper: 3 + bonus, silver: stars - 1, gold: S.level % 5 === 0 ? 1 : 0 };
   S.res.copper += rw.copper; S.res.silver += rw.silver; S.res.gold += rw.gold;
   const speed = extra * SPEED_PER_MOVE; S.bank += speed;
   S.level++; S.wins++; S.recruit++;
@@ -928,7 +944,7 @@ function win() {
   } else recruit = `<li>${S.recruit}/${WINS_PER_WORKER} wins toward next AI worker</li>`;
   save(); refresh();
   modal(`<h2>Puzzle complete</h2><div class="stars">${[1, 2, 3].map(s => `<span class="${s <= stars ? '' : 'off'}">★</span>`).join('')}</div>
-    <ul><li>+${rw.copper} copper${rw.silver ? `, +${rw.silver} silver` : ''}${rw.gold ? ', +1 gold' : ''}</li>
+    <ul>${bonus ? `<li>Leftover specials destroyed ${bonus} tiles → +${bonus} copper</li>` : ''}<li>+${rw.copper} copper total${rw.silver ? `, +${rw.silver} silver` : ''}${rw.gold ? ', +1 gold' : ''}</li>
     ${extra ? `<li>${extra} moves left → +${fmt(speed)} speedup</li>` : ''}${recruit}</ul>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Next puzzle</button></div>`);
 }
