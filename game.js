@@ -17,6 +17,7 @@ const EAT_EVERY = 60;        // seconds per food per worker
 const STARVE_SPEED = 0.5;    // work speed with no food
 const SPEED_PER_MOVE = 20;   // speedup seconds per leftover puzzle move
 const WINS_PER_WORKER = 2;
+const MORE_MOVES_COST = 100;  // copper value for +5 moves on a failed puzzle
 const MAX_OFFLINE = 3 * 86400;
 
 const RES = [
@@ -36,13 +37,12 @@ const BLD = {
   lumber: { n: 'Lumber Camp', tier: 2, time: 90, req: ['hut'], cost: { wood: 25, stone: 8, money: 5 }, desc: 'Doubles wood per trip' },
   farm:   { n: 'Farm Plot', tier: 2, time: 90, req: ['hunt'], cost: { wood: 20, stone: 6, money: 5 }, desc: 'Steady food (+5 per harvest)' },
   kiln:   { n: 'Charcoal Kiln', tier: 3, time: 120, req: ['lumber'], cost: { wood: 30, stone: 15, money: 8 }, desc: 'Wood + Wood → Coal' },
+  smelter: { n: 'Smelter', tier: 4, time: 180, req: ['kiln', 'mine'], cost: { wood: 40, stone: 40, money: 15 }, desc: 'Iron + Coal → Steel' },
+  mint:   { n: 'Mint', tier: 4, time: 180, req: ['mine'], cost: { stone: 50, iron: 10, money: 20 }, desc: 'Strikes gold: 1 steel → 1 gold' },
+  townhall: { n: 'Town Hall', tier: 5, time: 300, house: 5, req: ['smelter', 'mint'], cost: { wood: 80, stone: 60, steel: 10, money: 40 }, desc: 'Houses 5 more AI workers; orb rank (multiplayer)' },
   mine:   { n: 'Mine', tier: 3, time: 150, req: ['quarry', 'farm'], cost: { wood: 30, stone: 20, money: 10 }, desc: 'Iron and copper; silver every 3rd trip' },
 };
-const FUTURE = [
-  { tier: 4, n: 'Smelter', desc: 'Iron + Coal → Steel', req: 'Charcoal Kiln, Mine' },
-  { tier: 4, n: 'Mint', desc: 'Silver and gold', req: 'Mine' },
-  { tier: 5, n: 'Town Hall', desc: 'More workers, orb rank', req: 'Smelter, Mint' },
-];
+const FUTURE = [];
 const TASKS = {
   berries: { n: 'Pick berries', node: 'bush', time: 20, gain: { food: 3 } },
   hunt:    { n: 'Hunt deer', node: 'deer', time: 30, gain: { food: 6 }, req: 'hunt' },
@@ -50,11 +50,13 @@ const TASKS = {
   chop:    { n: 'Chop wood', node: 'tree', time: 20, gain: { wood: 3 }, boost: 'lumber' },
   stone:   { n: 'Quarry stone', node: 'rock', time: 30, gain: { stone: 2 }, req: 'quarry' },
   coal:    { n: 'Burn charcoal', node: 'kiln', time: 30, cost: { wood: 2 }, gain: { coal: 1 }, req: 'kiln' },
+  smelt:   { n: 'Smelt steel', node: 'smelter', time: 35, cost: { iron: 1, coal: 1 }, gain: { steel: 1 }, req: 'smelter' },
+  strike:  { n: 'Strike gold', node: 'mint', time: 45, cost: { steel: 1 }, gain: { gold: 1 }, req: 'mint' },
   mine:    { n: 'Mine ore', node: 'mine', time: 40, gain: { iron: 2, copper: 1 }, req: 'mine' },
 };
-const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine' };
-const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine' };
-const BNODE = ['farm', 'kiln', 'mine'];   // buildings workers gather at
+const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine', smelter: 'smelt', mint: 'strike' };
+const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
+const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings workers gather at
 
 // ---------------------------------------------------------------- state
 const SAVE_KEY = 'gsd-get-stuff-done-v1';
@@ -313,7 +315,7 @@ function hud() {
   const R = S.res;
   const it = (c, label, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${label} <b>${v}</b></span>`;
   $('#res').innerHTML =
-    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) +
+    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) + it('#a5b4c4', 'Steel', R.steel || 0) +
     it('#c86f33', 'Copper', R.copper) + it('#d8dde2', 'Silver', R.silver) + it('#e8b923', 'Gold', R.gold) +
     `<span class="r">Speedup <b>${fmt(S.bank)}</b></span><span class="r">Workers <b>${S.workers.length}/${housing()}</b>${S.waiting ? ` <b>(+${S.waiting} waiting)</b>` : ''}</span>`;
   const n = idle().length, tb = document.querySelector('#tabs [data-v=workers]');
@@ -557,6 +559,24 @@ function drawBuilding(b, x, y, t) {
       isoBox(x, y, .9, 12, '#a07a4c', '#7f5e36', '#664a2b');
       roof(x, y, .9, 12, 12, '#5c3d22', '#47301a');
       mx.fillStyle = '#8b5a2b'; for (let k = 0; k < 3; k++) mx.fillRect(x + 10, y - 4 - k * 4, 16, 3);
+      break;
+    case 'smelter':
+      isoBox(x, y, .9, 16, '#7d858c', '#5d6368', '#4a4f53');
+      mx.fillStyle = '#3a3f43'; mx.fillRect(x + 6, y - 44, 8, 26);
+      mx.fillStyle = '#f97316'; mx.beginPath(); mx.arc(x - 6, y - 4, 4 + Math.sin(t * 6) * 1, 0, 7); mx.fill();
+      mx.fillStyle = 'rgba(80,80,80,.45)';
+      for (let k = 0; k < 3; k++) { const p = (t * .6 + k / 3) % 1; mx.beginPath(); mx.arc(x + 10 + p * 6, y - 48 - p * 24, 4 + p * 6, 0, 7); mx.fill(); }
+      break;
+    case 'mint':
+      isoBox(x, y, .9, 16, '#e5e7eb', '#cbd5e1', '#94a3b8');
+      roof(x, y, .9, 16, 14, '#e8b923', '#c9971a');
+      mx.fillStyle = '#e8b923'; mx.beginPath(); mx.arc(x, y - 40, 5, 0, 7); mx.fill();
+      break;
+    case 'townhall':
+      isoBox(x, y, 1, 30, '#f1f5f9', '#cbd5e1', '#94a3b8');
+      roof(x, y, 1, 30, 26, '#1e40af', '#172554');
+      mx.fillStyle = '#4a3220'; mx.fillRect(x - 1, y - 84, 2, 28);
+      mx.fillStyle = '#fbbf24'; mx.beginPath(); mx.moveTo(x + 1, y - 84); mx.lineTo(x + 14 + Math.sin(t * 3) * 2, y - 79); mx.lineTo(x + 1, y - 74); mx.fill();
       break;
     case 'kiln':
       isoBox(x, y, .8, 18, '#9aa3ab', '#7d858c', '#646b71');
@@ -819,35 +839,36 @@ function bestTarget(claimed, carry) {
   }
   return best.length ? best[(Math.random() * best.length) | 0] : null;
 }
+// clears run in phases: a propeller's 4 neighbours clear first, then it flies, then its target clears
 async function clearCells(start, spawns = []) {
-  const queue = [...start], seen = new Set(), flights = [];
+  const queue = [...start].map(k => [k, 0]), phaseOf = new Map(), flights = [];
   while (queue.length) {
-    const k = queue.pop(); if (seen.has(k)) continue; seen.add(k);
+    const [k, ph] = queue.pop(); if (phaseOf.has(k)) continue; phaseOf.set(k, ph);
     const [x, y] = k.split(',').map(Number), c = P.b[y][x];
     if (!c || !c.s) continue;
     if (c.s === 'p') {
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N && !seen.has(X + ',' + Y)) queue.push(X + ',' + Y); }
-      const claimed = new Set([...seen, ...queue]);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N && !phaseOf.has(X + ',' + Y)) queue.push([X + ',' + Y, ph]); }
+      const claimed = new Set([...phaseOf.keys(), ...queue.map(q => q[0])]);
       const tg = bestTarget(claimed, c.carry);
       if (tg) {
-        const tk = tg[0] + ',' + tg[1];
         if (c.carry) P.b[tg[1]][tg[0]].s = c.carry;
-        flights.push({ x0: x, y0: y, x1: tg[0], y1: tg[1], p: 0, carry: c.carry });
-        queue.push(tk);
+        flights.push({ x0: x, y0: y, x1: tg[0], y1: tg[1], p: 0, carry: c.carry, ph: ph + 1 });
+        queue.push([tg[0] + ',' + tg[1], ph + 1]);
       }
-    } else triggerArea(c, x, y).forEach(q => { if (!seen.has(q)) queue.push(q); });
+    } else triggerArea(c, x, y).forEach(q => { if (!phaseOf.has(q)) queue.push([q, ph]); });
   }
-  if (flights.length) {
-    P.fly = flights;
-    flights.forEach(f => { const c = P.b[f.y0][f.x0]; if (c) c.a = 0; });
-    await anim(380, t => flights.forEach(f => f.p = ease(t)));
-    P.fly = null;
+  const maxPh = Math.max(0, ...phaseOf.values());
+  for (let ph = 0; ph <= maxPh; ph++) {
+    const fl = flights.filter(f => f.ph === ph);
+    if (fl.length) { P.fly = fl; await anim(380, t => fl.forEach(f => f.p = ease(t))); P.fly = null; }
+    const cells = [...phaseOf].filter(([, p]) => p === ph).map(([k]) => k.split(',').map(Number)).filter(([x, y]) => P.b[y][x]);
+    if (!cells.length) continue;
+    for (const [x, y] of cells) { const c = P.b[y][x]; if (c.t >= 0 && P.left[c.t] > 0) P.left[c.t]--; P.score += 10; }
+    P.destroyed = (P.destroyed || 0) + cells.length;
+    await anim(170, t => { for (const [x, y] of cells) { const c = P.b[y][x]; c.a = 1 - t; c.sc = 1 + .25 * t; } });
+    for (const [x, y] of cells) P.b[y][x] = null;
+    renderPuzzleHead();
   }
-  const cells = [...seen].map(k => k.split(',').map(Number)).filter(([x, y]) => P.b[y][x]);
-  for (const [x, y] of cells) { const c = P.b[y][x]; if (c.t >= 0 && P.left[c.t] > 0) P.left[c.t]--; P.score += 10; }
-  P.destroyed = (P.destroyed || 0) + cells.length;
-  await anim(170, t => { for (const [x, y] of cells) { const c = P.b[y][x]; c.a = 1 - t; c.sc = 1 + .25 * t; } });
-  for (const [x, y] of cells) P.b[y][x] = null;
   for (const sp of spawns) { const [x, y] = sp.pos; P.b[y][x] = cell(sp.t, sp.s); }
   renderPuzzleHead();
 }
@@ -973,9 +994,12 @@ async function win() {
 function lose() {
   P.over = true;
   modal(`<h2>Out of moves</h2><p>${Object.entries(P.left).filter(([, v]) => v > 0).map(([t, v]) => `${v} ${TILE_NAME[t]}`).join(', ')} left.</p>
+    <div class="btns"><button class="btn" data-act="more" ${wallet() >= MORE_MOVES_COST ? '' : 'disabled'}>+5 moves (${MORE_MOVES_COST} copper)</button></div>
+    <div class="small" style="margin-top:4px">You have ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10)</div>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Try again</button></div>`);
 }
 const ACTS = {
+  more: () => { if (!P || wallet() < MORE_MOVES_COST) return; pay({ money: MORE_MOVES_COST }); P.moves += 5; P.over = false; save(); refresh(); renderPuzzleHead(); drawBoard(); toast('+5 moves'); },
   next: () => { startLevel(); },
   village: () => { P = null; setView('village'); },
   reset: () => { localStorage.removeItem(SAVE_KEY); S = newState(); genMap(S.seed); P = null; save(); setView('village'); toast('Progress reset'); },
