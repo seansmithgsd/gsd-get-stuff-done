@@ -65,9 +65,9 @@ const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', 
 const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
 const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings workers gather at
 Object.assign(BLD, EXTRA_BLD); Object.assign(TASKS, EXTRA_TASKS);
-Object.assign(NODE_TASK, { dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
+Object.assign(NODE_TASK, { quarry: 'dig', dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
 Object.assign(NODE_NAME, { dock: 'Fishing Dock', quarry2: 'Deep Quarry Pit', sawmill: 'Sawmill', blastfurnace: 'Blast Furnace', gearworks: 'Gearworks', goldrock: 'Gold rock' });
-BNODE.push('dock', 'quarry2', 'sawmill', 'blastfurnace', 'gearworks');
+BNODE.push('quarry', 'dock', 'quarry2', 'sawmill', 'blastfurnace', 'gearworks');
 const NODES = ['tree', 'bush', 'rock', 'goldrock'];
 
 // ---------------------------------------------------------------- sound (synthesized, no files)
@@ -270,7 +270,7 @@ function addWorker() {
 function autoAssign(w) {
   let best = null, bd = 1e9;
   for (const kind of Object.keys(TASKS)) {
-    if (!taskOpen(kind) || TASKS[kind].cost) continue;
+    if (!taskOpen(kind) || TASKS[kind].cost || (kind === 'dig' && (taskOpen('stone') || taskOpen('stone2')))) continue;   // quarry cutting only once rocks are gone
     const t = pickTarget(kind), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { kind, target: t }; }
   }
@@ -308,7 +308,11 @@ function finishTask(w, quiet) {
   if (w.repeat && taskOpen(t.kind) && (!TC || canPay(TC))) {
     if (TC) pay(TC);
     w.task = mkTask(w, t.kind, (NT === 'deer' || !tgt) ? pickTarget(t.kind) : tgt, Math.max(0, carry));
-  } else w.task = null;
+  } else {
+    w.task = null;
+    // source ran out: stay on the same resource if another source exists (rocks gone → cut stone at the Quarry), else find other work
+    if (w.repeat && !taskOpen(t.kind)) { const G = GROUPS.find(g => g.tasks.includes(t.kind)); if (G) assignGroup(G.k, w, true); if (!w.task) autoAssign(w); }
+  }
 }
 function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || reqMet(T.req)) && !!pickTarget(kind); }
 function tick(dt, quiet) {
@@ -535,7 +539,7 @@ function taskLabel(t) { if (t.kind === 'raid') return 'Harvesting ' + t.name + "
 const GROUPS = [
   { k: 'food', n: 'Food', tasks: ['berries', 'hunt', 'farm', 'fish'], icon: 0 },
   { k: 'wood', n: 'Wood', tasks: ['chop'], icon: 1 },
-  { k: 'stone', n: 'Stone', tasks: ['stone', 'stone2'], icon: 2 },
+  { k: 'stone', n: 'Stone', tasks: ['stone', 'stone2', 'dig'], icon: 2 },
   { k: 'planks', n: 'Planks', tasks: ['saw'], icon: 'planks' },
   { k: 'gears', n: 'Gears', tasks: ['gear'], icon: 'gears' },
   { k: 'ore', n: 'Ore', tasks: ['mine'], icon: 'iron' },
@@ -590,19 +594,19 @@ function rates() {
   if (S.workers.length) add('food', -S.workers.length * 60 / eatEvery());
   return R;
 }
-function assignGroup(gk) {
+function assignGroup(gk, w, quiet) {
   const G = GROUPS.find(g => g.k === gk); if (!G) return;
-  const w = idle()[0]; if (!w) return toast('No idle AI workers — tap − on another group first');
+  w = w || idle()[0]; if (!w) return toast('No idle AI workers — tap − on another group first');
   let best = null, bd = 1e9;
   for (const k of G.tasks) {
-    const TC = taskCost(k); if (!taskOpen(k) || (TC && !canPay(TC))) continue;
+    const TC = taskCost(k); if (!taskOpen(k) || (TC && !canPay(TC)) || (k === 'dig' && (taskOpen('stone') || taskOpen('stone2')))) continue;
     const t = pickTarget(k), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { k, t }; }
   }
-  if (!best) return toast(`Nothing to gather for ${G.n} yet`);
+  if (!best) return quiet ? null : toast(`Nothing to gather for ${G.n} yet`);
   const TC = taskCost(best.k); if (TC) pay(TC);
   w.task = mkTask(w, best.k, best.t); w.repeat = true;
-  save(); refresh(true);
+  if (!quiet) { save(); refresh(true); }
 }
 function unassignGroup(gk) {
   const ws = S.workers.filter(w => groupOf(w) === gk); if (!ws.length) return;

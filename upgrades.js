@@ -136,6 +136,7 @@ const EXTRA_BLD = {
 const EXTRA_TASKS = {
   fish:  { n: 'Fish', node: 'dock', time: 25, gain: { food: 4 }, req: 'dock' },
   stone2:{ n: 'Dig the pit', node: 'quarry2', time: 30, gain: { stone: 3 }, req: 'quarry2' },
+  dig:   { n: 'Cut stone at the Quarry', node: 'quarry', time: 45, gain: { stone: 1 }, req: 'quarry' },   // endless fallback once rocks run out
   saw:   { n: 'Saw planks', node: 'sawmill', time: 30, cost: { wood: 2 }, gain: { planks: 1 }, req: 'sawmill' },
   blast: { n: 'Run the furnace', node: 'blastfurnace', time: 45, cost: { iron: 2, coal: 1 }, gain: { steel: 2 }, req: 'blastfurnace' },
   gear:  { n: 'Cut gears', node: 'gearworks', time: 60, cost: { steel: 1, planks: 2 }, gain: { gears: 1 }, req: 'gearworks' },
@@ -188,7 +189,7 @@ function workerSpeed(w) {
 function taskTime(w, kind) {
   let t = TASKS[kind].time;
   if (kind === 'chop') t *= (1 - .1 * U('axes')) * (U('sled') ? .85 : 1);
-  if (kind === 'stone' || kind === 'stone2') t *= (1 - .1 * U('picks')) * (U('carts') ? .85 : 1);
+  if (kind === 'stone' || kind === 'stone2' || kind === 'dig') t *= (1 - .1 * U('picks')) * (U('carts') ? .85 : 1);
   if (kind === 'farm' && U('irrigation')) t *= .8;
   if (kind === 'mine' && U('blastpowder')) t *= .75;
   if ((kind === 'smelt' || kind === 'blast') && U('bellows')) t *= .8;
