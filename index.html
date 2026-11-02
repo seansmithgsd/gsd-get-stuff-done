@@ -6,12 +6,14 @@
 <meta name="theme-color" content="#1e3a8a">
 <title>GSD: Get Stuff Done</title>
 <meta name="description" content="Win puzzles, recruit AI workers, build your village. A GSD Consultants game.">
-<link rel="stylesheet" href="style.css?v=13">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <header id="top">
   <div class="brand">GSD<span>: Get Stuff Done</span></div>
+  <button id="mute" title="Sound on/off">🔊</button>
   <div id="res"></div>
+  <div id="rates"></div>
 </header>
 
 <main>
@@ -23,6 +25,7 @@
   <section id="v-puzzle" class="view">
     <div id="pz-head"></div>
     <div id="pz-wrap"><canvas id="board"></canvas></div>
+    <div id="pz-tools"></div>
     <aside id="pz-legend"></aside>
     <div id="pz-foot"></div>
   </section>
@@ -44,6 +47,6 @@
 <div id="modal" hidden></div>
 <div id="toast"></div>
 
-<script src="game.js?v=13"></script>
+<script src="game.js?v=15"></script>
 </body>
 </html>

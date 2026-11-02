@@ -17,7 +17,13 @@ const EAT_EVERY = 60;        // seconds per food per worker
 const STARVE_SPEED = 0.5;    // work speed with no food
 const SPEED_PER_MOVE = 20;   // speedup seconds per leftover puzzle move
 const WINS_PER_WORKER = 2;
-const MORE_MOVES_COST = 100;  // copper value for +5 moves on a failed puzzle
+const MORE_MOVES_COST = 100;
+const TOOLS = {
+  pick:  { n: 'Pickaxe', d: 'Smash any one tile', cost: 30 },
+  saw:   { n: 'Buzz Saw', d: 'Cut a whole row', cost: 60 },
+  drill: { n: 'Drill Rig', d: 'Bore a whole column', cost: 60 },
+  storm: { n: 'Dust Storm', d: 'Reshuffle the whole board', cost: 40 },
+};  // copper value for +5 moves on a failed puzzle
 const MAX_OFFLINE = 3 * 86400;
 
 const RES = [
@@ -57,6 +63,60 @@ const TASKS = {
 const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine', smelter: 'smelt', mint: 'strike' };
 const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
 const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings workers gather at
+
+// ---------------------------------------------------------------- sound (synthesized, no files)
+let AC = null, MUTED = false, lastSfx = {};
+try { MUTED = localStorage.getItem('gsd-mute') === '1'; } catch (e) {}
+function audio() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return null; } } if (AC.state === 'suspended') AC.resume(); return AC; }
+window.addEventListener('pointerdown', () => audio(), { once: true });
+function tone(f, d, o = {}) {
+  const a = audio(); if (!a) return; const t0 = a.currentTime + (o.at || 0);
+  const g = a.createGain(), osc = a.createOscillator();
+  osc.type = o.type || 'sine'; osc.frequency.setValueAtTime(f, t0);
+  if (o.to) osc.frequency.exponentialRampToValueAtTime(o.to, t0 + d);
+  g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(o.vol || .18, t0 + .01); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d);
+  osc.connect(g).connect(a.destination); osc.start(t0); osc.stop(t0 + d + .02);
+}
+function noise(d, o = {}) {
+  const a = audio(); if (!a) return; const t0 = a.currentTime + (o.at || 0);
+  const buf = a.createBuffer(1, Math.max(1, a.sampleRate * d), a.sampleRate), ch = buf.getChannelData(0);
+  for (let i = 0; i < ch.length; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / ch.length, o.decay || 2);
+  const src = a.createBufferSource(); src.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = o.ftype || 'lowpass'; f.frequency.setValueAtTime(o.f || 1200, t0); if (o.fto) f.frequency.exponentialRampToValueAtTime(o.fto, t0 + d);
+  const g = a.createGain(); g.gain.value = o.vol || .3;
+  src.connect(f).connect(g).connect(a.destination); src.start(t0);
+}
+const SFX = {
+  tap: () => tone(660, .06, { type: 'triangle', vol: .08 }),
+  swap: () => tone(420, .09, { type: 'triangle', to: 560, vol: .1 }),
+  bad: () => { tone(220, .12, { type: 'square', vol: .06 }); tone(180, .14, { type: 'square', vol: .06, at: .08 }); },
+  match: n => { const b = 520 * Math.pow(1.12, Math.min(n, 8)); tone(b, .12, { type: 'triangle', vol: .12 }); tone(b * 1.5, .1, { type: 'sine', vol: .07, at: .04 }); },
+  special: () => { [0, 4, 7, 12].forEach((k, i) => tone(660 * Math.pow(2, k / 12), .14, { type: 'triangle', vol: .1, at: i * .05 })); },
+  line: () => { noise(.35, { ftype: 'bandpass', f: 600, fto: 4000, vol: .35, decay: 1 }); tone(300, .3, { type: 'sawtooth', to: 1200, vol: .05 }); },
+  bomb: () => { noise(.6, { f: 900, fto: 80, vol: .6, decay: 1.5 }); tone(110, .45, { type: 'sine', to: 40, vol: .35 }); },
+  color: () => { for (let i = 0; i < 6; i++) tone(900 + i * 220, .18, { type: 'sine', vol: .07, at: i * .03 }); noise(.4, { ftype: 'highpass', f: 3000, vol: .15 }); },
+  prop: () => { noise(.45, { ftype: 'bandpass', f: 300, fto: 1400, vol: .3, decay: .8 }); },
+  nuke: () => { noise(1.1, { f: 1500, fto: 60, vol: .7, decay: 1.2 }); tone(80, .9, { type: 'sine', to: 30, vol: .4 }); },
+  tool: () => { tone(160, .08, { type: 'square', vol: .12 }); noise(.15, { f: 2500, vol: .25 }); },
+  shuffle: () => { for (let i = 0; i < 8; i++) tone(300 + Math.random() * 600, .06, { type: 'triangle', vol: .06, at: i * .04 }); },
+  coin: () => { tone(988, .08, { type: 'square', vol: .07 }); tone(1319, .18, { type: 'square', vol: .07, at: .07 }); },
+  win: () => { [0, 4, 7, 12, 16].forEach((k, i) => tone(523 * Math.pow(2, k / 12), .3, { type: 'triangle', vol: .12, at: i * .1 })); },
+  lose: () => { [0, -3, -7].forEach((k, i) => tone(392 * Math.pow(2, k / 12), .35, { type: 'triangle', vol: .1, at: i * .16 })); },
+  gather: () => tone(740, .07, { type: 'sine', vol: .05 }),
+  build: () => { [0, 7, 12].forEach((k, i) => tone(392 * Math.pow(2, k / 12), .2, { type: 'triangle', vol: .1, at: i * .08 })); noise(.15, { f: 600, vol: .2 }); },
+  recruit: () => { [0, 5, 9, 12].forEach((k, i) => tone(587 * Math.pow(2, k / 12), .22, { type: 'sine', vol: .1, at: i * .07 })); },
+  harvest: () => { noise(.3, { f: 700, vol: .3 }); tone(330, .2, { type: 'square', to: 220, vol: .06 }); },
+};
+function sfx(name, arg, gap = 0) {
+  if (MUTED || !SFX[name]) return;
+  const now = performance.now(); if (gap && now - (lastSfx[name] || 0) < gap) return; lastSfx[name] = now;
+  try { SFX[name](arg); } catch (e) {}
+}
+document.addEventListener('click', e => { const b = e.target.closest('button'); if (b && !b.disabled && b.id !== 'mute') sfx('tap', 0, 40); }, true);
+function muteIcon() { const m = document.getElementById('mute'); if (m) m.textContent = MUTED ? '🔇' : '🔊'; }
+document.addEventListener('DOMContentLoaded', muteIcon);
+document.addEventListener('click', e => { if (e.target.id !== 'mute') return; MUTED = !MUTED; try { localStorage.setItem('gsd-mute', MUTED ? '1' : '0'); } catch (er) {} muteIcon(); if (!MUTED) sfx('coin'); });
+setTimeout(muteIcon, 0);
 
 // ---------------------------------------------------------------- state
 const SAVE_KEY = 'gsd-get-stuff-done-v1';
@@ -197,13 +257,14 @@ function finishTask(w, quiet) {
   const t = w.task;
   if (t.kind === 'build') {
     const b = S.buildings.find(x => x.id === t.bid);
-    if (b) { b.done = true; if (!quiet) toast(`${BLD[b.type].n} complete`); }
+    if (b) { b.done = true; if (!quiet) { toast(`${BLD[b.type].n} complete`); sfx('build'); } }
     w.task = null; return;
   }
   if (t.kind === 'raid') { w.task = null; resolveRaid(w, t); return; }
   const y = taskYield(t.kind);
   if (t.kind === 'mine') { w.mineN = (w.mineN || 0) + 1; if (w.mineN % 3 === 0) y.silver = 1; }
   for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
+  if (!quiet && view === 'village') sfx('gather', 0, 250);
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
   const carry = t.prog - t.dur;
   const TC = TASKS[t.kind].cost;
@@ -313,6 +374,17 @@ function layout() {
 window.addEventListener('resize', layout);
 if (window.ResizeObserver) { const ro = new ResizeObserver(() => layout()); ro.observe($('#top')); ro.observe($('#tabs')); }
 
+const RES_COL = { food: '#e11d48', wood: '#a0622d', stone: '#9aa5b1', iron: '#6b7a8a', coal: '#374151', steel: '#a5b4c4', copper: '#c86f33', silver: '#d8dde2', gold: '#e8b923' };
+function renderRates() {
+  const R = rates(), keys = Object.keys(RES_COL).filter(k => R[k] && (R[k].p > .01 || R[k].c > .01));
+  const el = $('#rates');
+  if (!keys.length) { el.innerHTML = '<span class="small">No production yet — win puzzles to recruit AI workers</span>'; return; }
+  el.innerHTML = keys.map(k => {
+    const p = R[k].p, c = R[k].c, net = p - c, m = Math.max(p, c), up = Math.round(14 * p / m), dn = Math.round(14 * c / m);
+    return `<span class="rt" title="${k}: +${p.toFixed(1)} made, −${c.toFixed(1)} used per minute"><span class="rb"><i class="up" style="height:${up}px;background:${RES_COL[k]}"></i><i class="dn" style="height:${dn}px"></i></span>
+      <span class="rl">${k[0].toUpperCase() + k.slice(1)}</span><b class="${net < -.01 ? 'neg' : 'pos'}">${net >= 0 ? '+' : ''}${(+net.toFixed(1))}</b></span>`;
+  }).join('') + '<span class="small rmin">per min</span>';
+}
 function hud() {
   const R = S.res;
   const it = (c, label, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${label} <b>${v}</b></span>`;
@@ -320,6 +392,7 @@ function hud() {
     it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) + it('#a5b4c4', 'Steel', R.steel || 0) +
     it('#c86f33', 'Copper', R.copper) + it('#d8dde2', 'Silver', R.silver) + it('#e8b923', 'Gold', R.gold) +
     `<span class="r">Speedup <b>${fmt(S.bank)}</b></span><span class="r">Workers <b>${S.workers.length}/${housing()}</b>${S.waiting ? ` <b>(+${S.waiting} waiting)</b>` : ''}</span>`;
+  renderRates();
   const n = idle().length, tb = document.querySelector('#tabs [data-v=workers]');
   tb.innerHTML = 'Workers' + (n ? `<span class="dot">${n}</span>` : '');
 }
@@ -374,50 +447,124 @@ function renderBuild(force) {
 $('#v-build').addEventListener('click', e => { const b = e.target.closest('[data-build]'); if (b && !b.disabled) startBuild(b.dataset.build); });
 
 function taskLabel(t) { if (t.kind === 'raid') return 'Harvesting ' + t.name + "'s village"; if (t.kind === 'build') { const b = S.buildings.find(x => x.id === t.bid); return 'Building ' + (b ? BLD[b.type].n : ''); } return TASKS[t.kind].n; }
+// worker groups by what they produce
+const GROUPS = [
+  { k: 'food', n: 'Food', tasks: ['berries', 'hunt', 'farm'], icon: 0 },
+  { k: 'wood', n: 'Wood', tasks: ['chop'], icon: 1 },
+  { k: 'stone', n: 'Stone', tasks: ['stone'], icon: 2 },
+  { k: 'ore', n: 'Ore', tasks: ['mine'], icon: 'iron' },
+  { k: 'coal', n: 'Coal', tasks: ['coal'], icon: 'coal' },
+  { k: 'steel', n: 'Steel', tasks: ['smelt'], icon: 'steel' },
+  { k: 'gold', n: 'Gold', tasks: ['strike'], icon: 3 },
+];
+function groupOf(w) { if (!w.task) return 'idle'; if (w.task.kind === 'build') return 'build'; if (w.task.kind === 'raid') return 'raid'; const g = GROUPS.find(g => g.tasks.includes(w.task.kind)); return g ? g.k : 'idle'; }
+function drawResIcon(ctx, k, x, y, r) {
+  if (typeof k === 'number') return drawIcon(ctx, k, x, y, r);
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, r * .75, r * .6, r * .14, 0, 0, 7); ctx.fill();
+  if (k === 'iron' || k === 'steel') {
+    const c = k === 'iron' ? ['#a8b0b8', '#6b7480', '#374151'] : ['#f1f5f9', '#b6c2d1', '#64748b'];
+    ctx.fillStyle = lg(ctx, 0, -r * .4, 0, r * .5, [[0, c[0]], [.5, c[1]], [1, c[2]]]);
+    ctx.beginPath(); ctx.moveTo(-r * .55, -r * .3); ctx.lineTo(r * .55, -r * .3); ctx.lineTo(r * .8, r * .45); ctx.lineTo(-r * .8, r * .45); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.5)'; ctx.fillRect(-r * .45, -r * .25, r * .9, r * .1);
+    if (k === 'steel') { ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.beginPath(); ctx.arc(r * .4, -r * .1, r * .08, 0, 7); ctx.fill(); }
+  } else if (k === 'coal') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#6b7280', '#1f2937', '#030712');
+    ctx.beginPath(); ctx.moveTo(-r * .7, r * .3); ctx.lineTo(-r * .45, -r * .45); ctx.lineTo(r * .25, -r * .6); ctx.lineTo(r * .75, -r * .05); ctx.lineTo(r * .45, r * .55); ctx.lineTo(-r * .35, r * .6); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(249,115,22,.7)'; ctx.beginPath(); ctx.arc(r * .1, r * .1, r * .12, 0, 7); ctx.fill();
+  } else if (k === 'build') {
+    ctx.rotate(-.6); ctx.fillStyle = lg(ctx, -r * .1, 0, r * .1, 0, [[0, '#d6a46a'], [1, '#7a4a22']]); ctx.fillRect(-r * .09, -r * .4, r * .18, r * 1.2);
+    ctx.fillStyle = lg(ctx, 0, -r * .75, 0, -r * .35, [[0, '#e5e7eb'], [1, '#475569']]); ctx.beginPath(); ctx.roundRect(-r * .5, -r * .75, r * 1, r * .4, r * .08); ctx.fill();
+  } else if (k === 'raid') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#fecaca', '#ef4444', '#7f1d1d'); ctx.beginPath(); ctx.moveTo(0, -r * .75); ctx.lineTo(r * .65, -r * .45); ctx.lineTo(r * .55, r * .25); ctx.lineTo(0, r * .75); ctx.lineTo(-r * .55, r * .25); ctx.lineTo(-r * .65, -r * .45); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${r * .8}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('⚔', 0, r * .02);
+  } else if (k === 'idle') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#e0f2fe', '#7dd3fc', '#0369a1'); ctx.beginPath(); ctx.arc(0, 0, r * .62, 0, 7); ctx.fill();
+    ctx.fillStyle = '#0f1b3d'; ctx.font = `bold ${r * .55}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Zz', 0, r * .03);
+  }
+  ctx.restore();
+}
+// per-minute production and consumption for the rate bar
+function rates() {
+  const sp = starving() ? STARVE_SPEED : 1, R = {};
+  const add = (k, v) => { R[k] = R[k] || { p: 0, c: 0 }; if (v >= 0) R[k].p += v; else R[k].c -= v; };
+  for (const w of S.workers) {
+    if (!w.task || !TASKS[w.task.kind]) continue;
+    const T = TASKS[w.task.kind], per = 60 / (T.time / sp);
+    for (const [k, v] of Object.entries(taskYield(w.task.kind))) add(k, v * per);
+    if (w.task.kind === 'mine') add('silver', per / 3);
+    if (T.cost) for (const [k, v] of Object.entries(T.cost)) add(k, -v * per);
+  }
+  if (S.workers.length) add('food', -S.workers.length * 60 / EAT_EVERY);
+  return R;
+}
+function assignGroup(gk) {
+  const G = GROUPS.find(g => g.k === gk); if (!G) return;
+  const w = idle()[0]; if (!w) return toast('No idle AI workers — tap − on another group first');
+  let best = null, bd = 1e9;
+  for (const k of G.tasks) {
+    const T = TASKS[k]; if (!taskOpen(k) || (T.cost && !canPay(T.cost))) continue;
+    const t = pickTarget(k), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
+    if (d < bd) { bd = d; best = { k, t }; }
+  }
+  if (!best) return toast(`Nothing to gather for ${G.n} yet`);
+  const T = TASKS[best.k]; if (T.cost) pay(T.cost);
+  w.task = { kind: best.k, dur: T.time, prog: 0, target: best.t }; w.repeat = true;
+  save(); refresh(true);
+}
+function unassignGroup(gk) {
+  const ws = S.workers.filter(w => groupOf(w) === gk); if (!ws.length) return;
+  ws.sort((a, b) => (a.task.prog / a.task.dur) - (b.task.prog / b.task.dur));
+  ws[0].task = null; save(); refresh(true);
+}
+function speedSoonest() {
+  const ws = S.workers.filter(w => w.task && w.task.kind !== 'raid'); if (!ws.length || S.bank <= 0) return;
+  ws.sort((a, b) => (a.task.dur - a.task.prog) - (b.task.dur - b.task.prog)); useSpeed(ws[0].id);
+}
 function renderWorkers(force) {
-  const s = 'w' + JSON.stringify([S.workers.map(w => [w.id, w.task && w.task.kind, w.repeat]), S.bank > 0, starving(), S.waiting, housing(), S.recruit]);
+  const s = 'w' + JSON.stringify([S.workers.map(w => [w.id, groupOf(w)]), S.bank > 0, starving(), S.waiting, housing(), S.recruit, S.buildings.filter(b => b.done).length]);
   if (s !== sig || force) {
     sig = s;
-    let html = `<h2>AI Workers <span class="small">${S.workers.length}/${housing()} housed</span></h2>`;
+    const R = rates(), cnt = k => S.workers.filter(w => groupOf(w) === k).length;
+    let html = `<h2>AI Workers <span class="small">${S.workers.length}/${housing()} housed · next recruit ${S.recruit}/${WINS_PER_WORKER} wins</span></h2>`;
     if (starving()) html += `<div class="card"><div class="t" style="color:var(--red)">No food — everyone works at half speed</div></div>`;
     if (S.waiting) html += `<div class="card"><div class="d">${S.waiting} recruited worker${S.waiting > 1 ? 's' : ''} waiting for housing — build a Hut.</div></div>`;
-    html += `<div class="small">Next recruit: ${S.recruit}/${WINS_PER_WORKER} puzzle wins · Food use: ${S.workers.length}/min</div>`;
-    for (const w of S.workers) {
-      html += `<div class="card"><div class="row"><div style="flex:1"><div class="t"><span style="color:hsl(${w.hue},55%,35%)">●</span> ${w.name}</div>
-        <div class="d">${w.task ? taskLabel(w.task) : 'Idle'} <span data-time="${w.id}"></span></div>
-        ${w.task ? `<div class="bar${starving() ? ' hungry' : ''}"><b data-bar="${w.id}"></b></div>` : ''}</div>
-        <div style="display:flex;flex-direction:column;gap:4px">
-        ${w.task ? `<button class="btn sm go" data-speed="${w.id}" ${S.bank > 0 ? '' : 'disabled'}>⏱ Speed up</button>` : ''}
-        ${w.task && w.task.kind !== 'build' ? `<button class="btn sm alt" data-stop="${w.id}">Stop</button>` : ''}
-        </div></div>
-        ${!w.task ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${Object.keys(TASKS).filter(k => !TASKS[k].req || hasB(TASKS[k].req)).map(k => `<button class="btn sm" data-task="${k}">${TASKS[k].n}</button>`).join('')}</div>` : ''}
-        ${w.task && w.task.kind !== 'build' ? `<label class="small"><input type="checkbox" data-rep="${w.id}" ${w.repeat ? 'checked' : ''}> Repeat</label>` : ''}
-        </div>`;
+    html += '<div class="wgrid">';
+    for (const G of GROUPS) {
+      const open = G.tasks.some(k => taskOpen(k)), n = cnt(G.k), r = R[G.k === 'ore' ? 'iron' : G.k];
+      const need = !open ? (G.tasks.map(k => TASKS[k].req).filter(Boolean).map(q => BLD[q].n)[0] || '') : '';
+      html += `<div class="wt${open ? '' : ' locked'}"><canvas data-gi="${G.k}" width="${44 * DPR}" height="${44 * DPR}"></canvas>
+        <div class="wn">${G.n}</div><div class="wc">${n}</div>
+        <div class="wr">${open ? (r ? `+${(+r.p.toFixed(1))}/min` : '—') : 'Needs ' + need}</div>
+        <div class="wb"><button class="btn sm alt" data-minus="${G.k}" ${n ? '' : 'disabled'}>−</button><button class="btn sm" data-plus="${G.k}" ${open && idle().length ? '' : 'disabled'}>+</button></div></div>`;
     }
+    for (const [k, n] of [['build', 'Building'], ['raid', 'Harvesting'], ['idle', 'Idle']]) {
+      const c = cnt(k);
+      html += `<div class="wt status${k === 'idle' && c ? ' alert' : ''}"><canvas data-gi="${k}" width="${44 * DPR}" height="${44 * DPR}"></canvas><div class="wn">${n}</div><div class="wc">${c}</div>
+        <div class="wr">${k === 'idle' ? (c ? 'Tap + on a group' : 'Everyone busy') : k === 'build' ? 'Build tab' : 'Orb tab'}</div></div>`;
+    }
+    html += '</div>';
+    html += `<div class="card"><div class="row"><div><div class="t">Speedup bank: ${fmt(S.bank)}</div><div class="d">Finishes the task closest to done. Earned from leftover puzzle moves.</div></div>
+      <button class="btn sm go" data-speedall ${S.bank > 0 && S.workers.some(w => w.task) ? '' : 'disabled'}>⏱ Use</button></div></div>`;
     if (!S.workers.length) html += `<div class="card"><div class="d">No AI workers yet. Win ${WINS_PER_WORKER} puzzles to recruit one.</div></div>`;
     html += `<div class="foot">${ME ? `Signed in as <b>${esc(ME.name)}</b> — progress saves to your account.` : 'Guest save on this device only. Sign in on the Orb tab to keep it.'}<br>
-      <a href="https://gsdconsultantsllc.com" target="_blank" rel="noopener">GSD Consultants, LLC</a> · v0.2<br><br>
+      <a href="https://gsdconsultantsllc.com" target="_blank" rel="noopener">GSD Consultants, LLC</a> · v0.3<br><br>
       <button class="btn sm alt" data-reset>Reset progress</button></div>`;
     $('#v-workers').innerHTML = html;
-  }
-  const sp = starving() ? STARVE_SPEED : 1;
-  for (const w of S.workers) {
-    if (!w.task) continue;
-    const b = document.querySelector(`[data-bar="${w.id}"]`); if (b) b.style.width = (100 * w.task.prog / w.task.dur).toFixed(1) + '%';
-    const tm = document.querySelector(`[data-time="${w.id}"]`); if (tm) tm.textContent = '· ' + fmt((w.task.dur - w.task.prog) / sp);
+    document.querySelectorAll('#v-workers canvas[data-gi]').forEach(c => {
+      const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0);
+      const G = GROUPS.find(g => g.k === c.dataset.gi); drawResIcon(x, G ? G.icon : c.dataset.gi, 22, 22, 18);
+    });
   }
 }
 $('#v-workers').addEventListener('click', e => {
-  const t = e.target;
-  if (t.dataset.speed) useSpeed(+t.dataset.speed);
-  else if (t.dataset.stop) stopTask(+t.dataset.stop);
-  else if (t.dataset.task) assign(t.dataset.task);
+  const t = e.target.closest('button'); if (!t) return;
+  if (t.dataset.plus) assignGroup(t.dataset.plus);
+  else if (t.dataset.minus) unassignGroup(t.dataset.minus);
+  else if (t.dataset.speedall !== undefined) speedSoonest();
   else if (t.dataset.reset !== undefined) modal(`<h2>Reset progress?</h2><p>This wipes this device's save.</p><div class="btns"><button class="btn alt" data-close>Cancel</button><button class="btn" data-act="reset">Reset</button></div>`);
 });
-$('#v-workers').addEventListener('change', e => {
-  const id = +e.target.dataset.rep; if (!id) return;
-  const w = S.workers.find(x => x.id === id); if (w) { w.repeat = e.target.checked; save(); }
-});
+
 
 // tap sheet on village map
 function openSheet(html) { const s = $('#sheet'); s.innerHTML = `<button class="btn sm alt x" data-x>✕</button>` + html; s.hidden = false; }
@@ -482,47 +629,69 @@ const iso = (i, j) => [(i - j) * TW / 2 - camX + cw / 2, (i + j) * TH / 2 - camY
 function grassColor(i, j) {
   const g = MAP.g[j * W + mod(i, W)];
   const near = Math.hypot(unwrapNear(i, TCI) - TCI, j - TCJ);
-  if (near < 2.2) return `hsl(36,${30 + g * 10}%,${46 + g * 6}%)`;
-  return `hsl(${88 + g * 18},${38 + g * 10}%,${34 + g * 8}%)`;
+  if (near < 2.2) return `hsl(36,${32 + g * 10}%,${50 + g * 6}%)`;
+  return `hsl(${92 + g * 18},${46 + g * 10}%,${36 + g * 8}%)`;
 }
 function diamond(x, y, fill) {
   mx.beginPath(); mx.moveTo(x, y - TH / 2); mx.lineTo(x + TW / 2, y); mx.lineTo(x, y + TH / 2); mx.lineTo(x - TW / 2, y); mx.closePath();
   mx.fillStyle = fill; mx.fill();
 }
+function groundTile(x, y, fill) {
+  diamond(x, y, fill);
+  mx.fillStyle = lg(mx, x, y - TH / 2, x, y + TH / 2, [[0, 'rgba(255,255,255,.10)'], [.5, 'rgba(255,255,255,0)'], [1, 'rgba(0,0,0,.12)']]); mx.fill();
+  mx.strokeStyle = 'rgba(0,0,0,.06)'; mx.lineWidth = 1; mx.stroke();
+}
+function shadow(x, y, rx, ry, a = .28) { mx.fillStyle = `rgba(0,0,0,${a})`; mx.beginPath(); mx.ellipse(x + 4, y + 2, rx, ry, 0, 0, 7); mx.fill(); }
 function drawTree(x, y, g) {
-  mx.fillStyle = '#5b3a1e'; mx.fillRect(x - 3, y - 14, 6, 14);
   const s = 0.85 + g * 0.3;
-  mx.fillStyle = '#1f4d22'; mx.beginPath(); mx.moveTo(x, y - 50 * s); mx.lineTo(x + 16 * s, y - 16); mx.lineTo(x - 16 * s, y - 16); mx.fill();
-  mx.fillStyle = '#2b6a2c'; mx.beginPath(); mx.moveTo(x, y - 58 * s); mx.lineTo(x + 12 * s, y - 32 * s); mx.lineTo(x - 12 * s, y - 32 * s); mx.fill();
+  shadow(x, y, 15 * s, 6 * s);
+  mx.fillStyle = lg(mx, x - 3, 0, x + 3, 0, [[0, '#7a4f2a'], [1, '#3e2612']]); mx.fillRect(x - 3, y - 14, 6, 14);
+  const layer = (top, bot, w, c0, c1) => { mx.fillStyle = lg(mx, x - w, 0, x + w, 0, [[0, c0], [.55, c1], [1, '#0f2e14']]); mx.beginPath(); mx.moveTo(x, top); mx.lineTo(x + w, bot); mx.quadraticCurveTo(x, bot + 4, x - w, bot); mx.closePath(); mx.fill(); };
+  layer(y - 46 * s, y - 14, 17 * s, '#3f8f45', '#235c2a');
+  layer(y - 56 * s, y - 28 * s, 13 * s, '#4caf50', '#2b6a2c');
+  layer(y - 64 * s, y - 42 * s, 9 * s, '#66c06a', '#2f7a33');
 }
 function drawBush(x, y) {
-  mx.fillStyle = '#2f6b2b'; mx.beginPath(); mx.ellipse(x, y - 8, 15, 10, 0, 0, Math.PI * 2); mx.fill();
-  mx.fillStyle = '#d0263a';
-  [[-7, -10], [3, -13], [8, -6], [-2, -5], [-9, -4]].forEach(([a, b]) => { mx.beginPath(); mx.arc(x + a, y + b, 2.4, 0, 7); mx.fill(); });
+  shadow(x, y, 15, 5);
+  mx.fillStyle = rg(mx, x, y - 9, 16, '#5cb85c', '#2f6b2b', '#173d16'); mx.beginPath(); mx.ellipse(x, y - 8, 16, 10.5, 0, 0, 7); mx.fill();
+  [[-7, -10], [3, -13], [8, -6], [-2, -5], [-9, -4]].forEach(([a, b]) => { mx.fillStyle = rg(mx, x + a, y + b, 3, '#ff8fa3', '#e11d48', '#7f1028'); mx.beginPath(); mx.arc(x + a, y + b, 2.8, 0, 7); mx.fill(); });
 }
 function drawRock(x, y) {
-  mx.fillStyle = '#7d858c'; mx.beginPath(); mx.moveTo(x - 16, y - 2); mx.lineTo(x - 10, y - 16); mx.lineTo(x + 4, y - 20); mx.lineTo(x + 15, y - 8); mx.lineTo(x + 12, y + 2); mx.closePath(); mx.fill();
-  mx.fillStyle = '#a3abb2'; mx.beginPath(); mx.moveTo(x - 10, y - 16); mx.lineTo(x + 4, y - 20); mx.lineTo(x + 2, y - 9); mx.closePath(); mx.fill();
+  shadow(x, y, 16, 5);
+  mx.fillStyle = rg(mx, x - 3, y - 12, 18, '#d4d9de', '#8a939b', '#4b5563');
+  mx.beginPath(); mx.moveTo(x - 16, y - 2); mx.lineTo(x - 10, y - 16); mx.lineTo(x + 4, y - 20); mx.lineTo(x + 15, y - 8); mx.lineTo(x + 12, y + 2); mx.closePath(); mx.fill();
+  mx.fillStyle = 'rgba(255,255,255,.45)'; mx.beginPath(); mx.moveTo(x - 10, y - 16); mx.lineTo(x + 4, y - 20); mx.lineTo(x + 2, y - 9); mx.closePath(); mx.fill();
+  mx.fillStyle = 'rgba(0,0,0,.2)'; mx.beginPath(); mx.moveTo(x + 15, y - 8); mx.lineTo(x + 12, y + 2); mx.lineTo(x + 3, y - 4); mx.closePath(); mx.fill();
 }
 function drawDeer(x, y, t) {
   const bob = Math.sin(t * 6) * 1;
-  mx.fillStyle = '#8a5a2b'; mx.beginPath(); mx.ellipse(x, y - 10 + bob, 9, 5, 0, 0, 7); mx.fill();
-  mx.fillRect(x - 7, y - 7, 2, 7); mx.fillRect(x + 5, y - 7, 2, 7);
-  mx.beginPath(); mx.ellipse(x + 9, y - 16 + bob, 4, 3, -0.5, 0, 7); mx.fill();
+  shadow(x, y, 10, 3, .22);
+  mx.fillStyle = '#6b4220'; mx.fillRect(x - 7, y - 7, 2, 7); mx.fillRect(x + 5, y - 7, 2, 7);
+  mx.fillStyle = rg(mx, x - 2, y - 13 + bob, 10, '#c98a4b', '#8a5a2b', '#5a3615'); mx.beginPath(); mx.ellipse(x, y - 10 + bob, 9, 5, 0, 0, 7); mx.fill();
+  mx.fillStyle = '#9a6a3a'; mx.beginPath(); mx.ellipse(x + 9, y - 16 + bob, 4, 3, -0.5, 0, 7); mx.fill();
+  mx.fillStyle = '#f5f0e6'; mx.beginPath(); mx.ellipse(x - 8, y - 11 + bob, 2, 1.5, 0, 0, 7); mx.fill();
   mx.strokeStyle = '#4a3220'; mx.lineWidth = 1.5; mx.beginPath(); mx.moveTo(x + 9, y - 19 + bob); mx.lineTo(x + 7, y - 25 + bob); mx.moveTo(x + 10, y - 19 + bob); mx.lineTo(x + 13, y - 24 + bob); mx.stroke();
+}
+function face(pts, base, from, to) {
+  mx.beginPath(); pts.forEach(([a, b], i) => i ? mx.lineTo(a, b) : mx.moveTo(a, b)); mx.closePath();
+  mx.fillStyle = base; mx.fill();
+  mx.fillStyle = lg(mx, from[0], from[1], to[0], to[1], [[0, 'rgba(255,255,255,.14)'], [1, 'rgba(0,0,0,.2)']]); mx.fill();
+  mx.strokeStyle = 'rgba(0,0,0,.22)'; mx.lineWidth = 1; mx.stroke();
 }
 function isoBox(x, y, w, h, top, left, right) {
   const hw = w * TW / 2, hh = w * TH / 2;
-  mx.fillStyle = left; mx.beginPath(); mx.moveTo(x - hw, y); mx.lineTo(x, y + hh); mx.lineTo(x, y + hh - h); mx.lineTo(x - hw, y - h); mx.fill();
-  mx.fillStyle = right; mx.beginPath(); mx.moveTo(x + hw, y); mx.lineTo(x, y + hh); mx.lineTo(x, y + hh - h); mx.lineTo(x + hw, y - h); mx.fill();
-  mx.fillStyle = top; mx.beginPath(); mx.moveTo(x, y - hh - h); mx.lineTo(x + hw, y - h); mx.lineTo(x, y + hh - h); mx.lineTo(x - hw, y - h); mx.fill();
+  shadow(x, y + hh * .3, hw * 1.05, hh * .9, .25);
+  face([[x - hw, y], [x, y + hh], [x, y + hh - h], [x - hw, y - h]], left, [x, y - h], [x, y + hh]);
+  face([[x + hw, y], [x, y + hh], [x, y + hh - h], [x + hw, y - h]], right, [x, y - h], [x, y + hh]);
+  face([[x, y - hh - h], [x + hw, y - h], [x, y + hh - h], [x - hw, y - h]], top, [x, y - hh - h], [x, y + hh - h]);
 }
 function roof(x, y, w, h, peak, c1, c2) {
   const hw = w * TW / 2, hh = w * TH / 2, top = y - h;
-  mx.fillStyle = c1; mx.beginPath(); mx.moveTo(x - hw, top); mx.lineTo(x, top + hh); mx.lineTo(x, top - peak + hh * .0); mx.fill();
-  mx.beginPath(); mx.moveTo(x - hw, top); mx.lineTo(x, top - hh); mx.lineTo(x, top - peak); mx.fill();
-  mx.fillStyle = c2; mx.beginPath(); mx.moveTo(x + hw, top); mx.lineTo(x, top + hh); mx.lineTo(x, top - peak); mx.fill();
-  mx.beginPath(); mx.moveTo(x + hw, top); mx.lineTo(x, top - hh); mx.lineTo(x, top - peak); mx.fill();
+  face([[x - hw, top], [x, top + hh], [x, top - peak]], c1, [x, top - peak], [x - hw, top]);
+  face([[x - hw, top], [x, top - hh], [x, top - peak]], c1, [x, top - peak], [x - hw, top]);
+  face([[x + hw, top], [x, top + hh], [x, top - peak]], c2, [x, top - peak], [x + hw, top]);
+  face([[x + hw, top], [x, top - hh], [x, top - peak]], c2, [x, top - peak], [x + hw, top]);
+  mx.strokeStyle = 'rgba(255,255,255,.35)'; mx.lineWidth = 1.5; mx.beginPath(); mx.moveTo(x, top - peak); mx.lineTo(x, top + hh); mx.stroke();
 }
 function buildProgress(b) {
   for (const w of S.workers) if (w.task && w.task.kind === 'build' && w.task.bid === b.id) return w.task.prog / w.task.dur;
@@ -602,10 +771,13 @@ function drawBuilding(b, x, y, t) {
 }
 function drawWorker(x, y, w, t, working) {
   const bob = working ? Math.abs(Math.sin(t * 8 + w.id)) * 3 : Math.sin(t * 3 + w.id) * .8;
-  mx.fillStyle = 'rgba(0,0,0,.25)'; mx.beginPath(); mx.ellipse(x, y, 6, 3, 0, 0, 7); mx.fill();
-  mx.fillStyle = `hsl(${w.hue},55%,42%)`; mx.fillRect(x - 4, y - 14 - bob, 8, 11);
-  mx.fillStyle = '#e8c39a'; mx.beginPath(); mx.arc(x, y - 18 - bob, 4, 0, 7); mx.fill();
-  mx.fillStyle = '#cfd8dc'; mx.fillRect(x - 3, y - 19 - bob, 6, 2); // visor: AI worker
+  WSCR.push({ w, x, y: y - 12 - bob });
+  mx.fillStyle = 'rgba(0,0,0,.28)'; mx.beginPath(); mx.ellipse(x + 2, y, 7, 3, 0, 0, 7); mx.fill();
+  mx.fillStyle = lg(mx, x - 5, 0, x + 5, 0, [[0, `hsl(${w.hue},60%,58%)`], [1, `hsl(${w.hue},55%,30%)`]]);
+  mx.beginPath(); mx.roundRect(x - 5, y - 15 - bob, 10, 12, 3); mx.fill();
+  mx.fillStyle = rg(mx, x - 1, y - 20 - bob, 5, '#f8dcc0', '#e8c39a', '#b8875a'); mx.beginPath(); mx.arc(x, y - 19 - bob, 4.5, 0, 7); mx.fill();
+  mx.fillStyle = lg(mx, x - 4, 0, x + 4, 0, [[0, '#e0f2fe'], [1, '#38bdf8']]); mx.fillRect(x - 3.5, y - 20.5 - bob, 7, 2.5); // visor: AI worker
+  if (working) { const sw = Math.sin(t * 8 + w.id); mx.strokeStyle = '#6b4220'; mx.lineWidth = 2; mx.beginPath(); mx.moveTo(x + 4, y - 10 - bob); mx.lineTo(x + 9 + sw * 3, y - 16 - bob + sw * 2); mx.stroke(); }
   if (starving()) { mx.fillStyle = '#ff6b5b'; mx.font = 'bold 10px Georgia'; mx.textAlign = 'center'; mx.fillText('!', x, y - 26); }
 }
 function workerPos(w, k) {
@@ -627,10 +799,13 @@ function updateDeer(dt) {
     const s = Math.min(L, dt * .5); d.i += dx / L * s; d.j += dy / L * s;
   }
 }
+let WSCR = [];
 function drawMap(now) {
-  const t = now / 1000;
+  const t = now / 1000; WSCR = [];
   mx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  mx.fillStyle = '#0b4a8f'; mx.fillRect(0, 0, cw, ch);
+  mx.fillStyle = lg(mx, 0, 0, 0, ch, [[0, '#0e5aa8'], [1, '#08356b']]); mx.fillRect(0, 0, cw, ch);
+  mx.strokeStyle = 'rgba(255,255,255,.07)'; mx.lineWidth = 2;
+  for (let k = 0; k < 14; k++) { const yy = (k * 53 + t * 8) % (ch + 40) - 20, xx = (k * 137) % cw; mx.beginPath(); mx.moveTo(xx - 30, yy); mx.quadraticCurveTo(xx, yy - 6, xx + 30, yy); mx.stroke(); }
   const objs = [];
   const cI = (camX / (TW / 2) + camY / (TH / 2)) / 2;
   for (let j = 0; j < H; j++) {
@@ -638,7 +813,7 @@ function drawMap(now) {
     const hi = Math.floor(Math.min(j + (camX + cw / 2 + TW) / (TW / 2), (camY + ch / 2 + TH * 4) / (TH / 2) - j));
     for (let i = lo; i <= hi; i++) {
       const [x, y] = iso(i, j);
-      diamond(x, y, grassColor(i, j));
+      groundTile(x, y, grassColor(i, j));
       const b = bAt(i, j), n = nodeAt(i, j), g = MAP.g[j * W + mod(i, W)];
       if (b) objs.push({ d: i + j, f: () => drawBuilding(b, x, y, t) });
       else if (n === 'tree') objs.push({ d: i + j, f: () => drawTree(x, y, g) });
@@ -686,18 +861,58 @@ function drawMap(now) {
   mapC.addEventListener('pointerup', e => {
     if (!down) return;
     if (!down.moved) {
-      const r = mapC.getBoundingClientRect();
-      const wx = e.clientX - r.left - cw / 2 + camX, wy = e.clientY - r.top - ch / 2 + camY;
-      const fi = (wx / (TW / 2) + wy / (TH / 2)) / 2, fj = (wy / (TH / 2) - wx / (TW / 2)) / 2;
-      // objects are drawn above their tile: test tile under tap and the one just below it
-      const cands = [[Math.floor(fi + .5), Math.floor(fj + .5)], [Math.floor(fi), Math.floor(fj)], [Math.floor(fi + 1), Math.floor(fj + 1)]];
-      let hit = null;
-      for (const [i, j] of cands) { if (j < 0 || j >= H) continue; if (bAt(i, j) || nodeAt(i, j) || DEER.some(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j)) { hit = [i, j]; break; } }
+      const hit = tileAt(e.clientX, e.clientY);
       if (hit) { if (!sendClosest(hit[0], hit[1])) tileSheet(hit[0], hit[1]); } else closeSheet();
     }
     down = null;
   });
+  mapC.addEventListener('pointermove', e => { if (e.pointerType !== 'mouse' || down) { if (down) hideTip(); return; } showTip(e); });
+  mapC.addEventListener('pointerleave', hideTip);
 })();
+
+function tileAt(cx, cy) {
+  const r = mapC.getBoundingClientRect();
+  const wx = cx - r.left - cw / 2 + camX, wy = cy - r.top - ch / 2 + camY;
+  const fi = (wx / (TW / 2) + wy / (TH / 2)) / 2, fj = (wy / (TH / 2) - wx / (TW / 2)) / 2;
+  // objects are drawn above their tile: test tile under the pointer and the one just below it
+  const cands = [[Math.floor(fi + .5), Math.floor(fj + .5)], [Math.floor(fi), Math.floor(fj)], [Math.floor(fi + 1), Math.floor(fj + 1)]];
+  for (const [i, j] of cands) { if (j < 0 || j >= H) continue; if (bAt(i, j) || nodeAt(i, j) || DEER.some(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j)) return [i, j]; }
+  return null;
+}
+const tipEl = document.createElement('div'); tipEl.id = 'tip'; document.body.appendChild(tipEl);
+function hideTip() { tipEl.style.display = 'none'; }
+function workerAtTile(type, b) { return S.workers.filter(w => w.task && ((w.task.kind === 'build' && w.task.bid === b.id) || (TASKS[w.task.kind] && TASKS[w.task.kind].node === type))).map(w => esc(w.name)); }
+function tipHTML(cx, cy) {
+  const r = mapC.getBoundingClientRect(), px = cx - r.left, py = cy - r.top;
+  const wk = WSCR.find(q => Math.hypot(q.x - px, q.y - py) < 12);
+  if (wk) {
+    const w = wk.w, sp = starving() ? STARVE_SPEED : 1;
+    return `<b>${esc(w.name)}</b><br>${w.task ? taskLabel(w.task) + ` · ${fmt((w.task.dur - w.task.prog) / sp)} left${w.repeat && w.task.kind !== 'build' ? ' · repeating' : ''}` : 'Idle — click a resource to put it to work'}${starving() ? '<br><span class="warn">Hungry: working at half speed</span>' : ''}`;
+  }
+  const hit = tileAt(cx, cy); if (!hit) return null;
+  const [i, j] = hit, b = bAt(i, j);
+  const deer = !b && DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
+  if (b) {
+    const D = BLD[b.type], ws = workerAtTile(b.type, b);
+    let h = `<b>${D.n}</b><br>${b.type === 'tc' ? 'Your base. Houses 2 AI workers.' : D.desc}`;
+    if (!b.done) h += `<br>Under construction · ${Math.round(buildProgress(b) * 100)}%`;
+    else if (NODE_TASK[b.type]) { const tk = NODE_TASK[b.type], T = TASKS[tk]; h += `<br>${T.cost ? Object.entries(T.cost).map(([k, v]) => v + ' ' + k).join(' + ') + ' → ' : ''}${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} every ${fmt(T.time)}`; }
+    if (ws.length) h += `<br>Working here: ${ws.join(', ')}`;
+    if (b.done && NODE_TASK[b.type]) h += '<br><i>Click to send the closest worker</i>';
+    return h;
+  }
+  const kind = deer ? 'deer' : nodeAt(i, j); if (!kind) return null;
+  const tk = NODE_TASK[kind], T = TASKS[tk], locked = T.req && !hasB(T.req);
+  return `<b>${NODE_NAME[kind]}</b><br>${T.n}: ${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} every ${fmt(T.time)}<br>${locked ? `<span class="warn">Requires ${BLD[T.req].n}</span>` : '<i>Click to send the closest worker</i>'}`;
+}
+function showTip(e) {
+  const h = tipHTML(e.clientX, e.clientY);
+  if (!h) return hideTip();
+  tipEl.innerHTML = h; tipEl.style.display = 'block';
+  const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+  tipEl.style.left = Math.min(innerWidth - tw - 8, e.clientX + 14) + 'px';
+  tipEl.style.top = Math.max(8, e.clientY - th - 10) + 'px';
+}
 
 // ---------------------------------------------------------------- puzzle
 const N = 8, TYPES = 5;
@@ -850,7 +1065,7 @@ async function clearCells(start, spawns = []) {
     const [x, y] = k.split(',').map(Number), c = P.b[y][x];
     if (!c || !c.s) continue;
     if (c.s === 'p') {
-      addFx({ type: 'p', x, y, dur: 450 });
+      addFx({ type: 'p', x, y, dur: 450 }); sfx('prop');
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X >= 0 && Y >= 0 && X < N && Y < N && !phaseOf.has(X + ',' + Y)) queue.push([X + ',' + Y, ph]); }
       const claimed = new Set([...phaseOf.keys(), ...queue.map(q => q[0])]);
       const tg = bestTarget(claimed, c.carry);
@@ -861,9 +1076,9 @@ async function clearCells(start, spawns = []) {
       }
     } else {
       const area = triggerArea(c, x, y);
-      if (c.s === 'h' || c.s === 'v') { addFx({ type: c.s, x, y, dur: 520 }); shake = Math.max(shake, 5); }
-      else if (c.s === 'b') { addFx({ type: 'b', x, y, dur: 600 }); shake = Math.max(shake, 10); }
-      else if (c.s === 'c') { addFx({ type: 'c', x, y, dur: 650, targets: area.map(k => k.split(',').map(Number)) }); addFx({ type: 'flash', x, y, dur: 300 }); shake = Math.max(shake, 12); }
+      if (c.s === 'h' || c.s === 'v') { addFx({ type: c.s, x, y, dur: 520 }); shake = Math.max(shake, 5); sfx('line', 0, 60); }
+      else if (c.s === 'b') { addFx({ type: 'b', x, y, dur: 600 }); shake = Math.max(shake, 10); sfx('bomb', 0, 60); }
+      else if (c.s === 'c') { addFx({ type: 'c', x, y, dur: 650, targets: area.map(k => k.split(',').map(Number)) }); addFx({ type: 'flash', x, y, dur: 300 }); shake = Math.max(shake, 12); sfx('color', 0, 60); }
       area.forEach(q => { if (!phaseOf.has(q)) queue.push([q, ph]); });
     }
   }
@@ -908,6 +1123,8 @@ async function resolve(pref) {
       if (!pos) { const lr = g.runs.reduce((a, r) => r.cells.length > a.cells.length ? r : a); pos = lr.cells[lr.cells.length >> 1]; }
       spawns.push({ pos, s, t: (s === 'c' || s === 'p') ? -1 : g.t });
     }
+    P.combo = (P.combo || 0) + 1; sfx('match', P.combo);
+    if (spawns.length) setTimeout(() => sfx('special'), 120);
     await clearCells(clear, spawns);
     await gravity();
     pref = null;
@@ -916,10 +1133,33 @@ async function resolve(pref) {
 }
 async function trySwap(a, b) {
   if (P.busy || P.over) return;
-  P.busy = true; P.sel = null;
+  P.busy = true; P.sel = null; P.combo = 0;
   const A = P.b[a[1]][a[0]], B = P.b[b[1]][b[0]];
+  sfx('swap');
   await animSwap(a, b);
-  if (A.s === 'c' || B.s === 'c') {
+  const line = q => q.s === 'h' || q.s === 'v';
+  const all = () => { const k = []; for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) k.push(i + ',' + j); return k; };
+  if (A.s === 'c' && B.s === 'c') {
+    // two color bombs: clear the board twice
+    P.moves--; A.s = B.s = null;
+    for (let r = 0; r < 2; r++) { addFx({ type: 'nuke', x: b[0], y: b[1], dur: 800 }); shake = 18; sfx('nuke'); await clearCells(all()); await gravity(); }
+    await resolve(null);
+  } else if (A.s === 'b' && B.s === 'b') {
+    // two bombs: clear the board
+    P.moves--; A.s = B.s = null;
+    addFx({ type: 'nuke', x: b[0], y: b[1], dur: 800 }); shake = 16; sfx('nuke');
+    await clearCells(all()); await gravity(); await resolve(null);
+  } else if (line(A) && line(B)) {
+    // two rockets: 3 rows + 3 columns through the meeting point
+    P.moves--; A.s = B.s = null;
+    const [cx, cy] = b, keys = new Set();
+    for (let d = -1; d <= 1; d++) for (let k = 0; k < N; k++) {
+      if (cy + d >= 0 && cy + d < N) keys.add(k + ',' + (cy + d));
+      if (cx + d >= 0 && cx + d < N) keys.add((cx + d) + ',' + k);
+    }
+    addFx({ type: 'cross', x: cx, y: cy, dur: 650 }); shake = 12; sfx('line'); setTimeout(() => sfx('line'), 90);
+    await clearCells([...keys]); await gravity(); await resolve(null);
+  } else if (A.s === 'c' || B.s === 'c') {
     P.moves--;
     if (A.s === 'c' && B.s === 'c') { const all = []; for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) all.push(i + ',' + j); A.s = B.s = null; await clearCells(all); }
     else { const bomb = A.s === 'c' ? A : B, other = bomb === A ? B : A; bomb.target = other.t; await clearCells([a[0] + ',' + a[1], b[0] + ',' + b[1]]); }
@@ -941,6 +1181,7 @@ async function trySwap(a, b) {
     await clearCells(start);
     await gravity(); await resolve(null);
   } else if (!findRuns(P.b).length) {
+    sfx('bad');
     await animSwap(b, a);
   } else {
     P.moves--;
@@ -954,7 +1195,7 @@ async function trySwap(a, b) {
 async function fireSpecial(pos) {
   if (P.busy || P.over) return;
   const c = P.b[pos[1]][pos[0]]; if (!c || !c.s) return;
-  P.busy = true; P.sel = null; P.moves--;
+  P.busy = true; P.sel = null; P.moves--; P.combo = 0;
   await clearCells([pos[0] + ',' + pos[1]]);
   await gravity(); await resolve(null);
   P.busy = false;
@@ -995,21 +1236,21 @@ async function win() {
     if (S.workers.length < housing()) { addWorker(); recruit = `<li><b>New AI worker recruited!</b></li>`; }
     else { S.waiting++; recruit = `<li><b>New AI worker</b> — waiting for housing (build a Hut)</li>`; }
   } else recruit = `<li>${S.recruit}/${WINS_PER_WORKER} wins toward next AI worker</li>`;
-  save(); refresh();
+  save(); refresh(); sfx('win'); if (recruit.includes('recruited')) setTimeout(() => sfx('recruit'), 700);
   modal(`<h2>Puzzle complete</h2><div class="stars">${[1, 2, 3].map(s => `<span class="${s <= stars ? '' : 'off'}">★</span>`).join('')}</div>
     <ul>${bonus ? `<li>Leftover specials destroyed ${bonus} tiles → +${bonus} copper</li>` : ''}<li>+${rw.copper} copper total${rw.silver ? `, +${rw.silver} silver` : ''}${rw.gold ? ', +1 gold' : ''}</li>
     ${extra ? `<li>${extra} moves left → +${fmt(speed)} speedup</li>` : ''}${recruit}</ul>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Next puzzle</button></div>`);
 }
 function lose() {
-  P.over = true;
+  P.over = true; sfx('lose');
   modal(`<h2>Out of moves</h2><p>${Object.entries(P.left).filter(([, v]) => v > 0).map(([t, v]) => `${v} ${TILE_NAME[t]}`).join(', ')} left.</p>
     <div class="btns"><button class="btn" data-act="more" ${wallet() >= MORE_MOVES_COST ? '' : 'disabled'}>+5 moves (${MORE_MOVES_COST} copper)</button></div>
     <div class="small" style="margin-top:4px">You have ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10)</div>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Try again</button></div>`);
 }
 const ACTS = {
-  more: () => { if (!P || wallet() < MORE_MOVES_COST) return; pay({ money: MORE_MOVES_COST }); P.moves += 5; P.over = false; save(); refresh(); renderPuzzleHead(); drawBoard(); toast('+5 moves'); },
+  more: () => { if (!P || wallet() < MORE_MOVES_COST) return; pay({ money: MORE_MOVES_COST }); sfx('coin'); P.moves += 5; P.over = false; save(); refresh(); renderPuzzleHead(); drawBoard(); toast('+5 moves'); },
   next: () => { startLevel(); },
   village: () => { P = null; setView('village'); },
   reset: () => { localStorage.removeItem(SAVE_KEY); S = newState(); if (ME) S.owner = ME.id; genMap(S.seed); P = null; save(); setView('village'); toast('Progress reset'); },
@@ -1154,6 +1395,17 @@ function drawFx(now) {
       const R = CS * (.5 + u * 1.1);
       bx.strokeStyle = `rgba(250,204,21,${fade})`; bx.lineWidth = CS * .1 * fade;
       for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + u * 6; bx.beginPath(); bx.arc(cx, cy, R, a, a + .9); bx.stroke(); }
+    } else if (f.type === 'nuke') {
+      const R = ease(u) * W2 * 1.5;
+      const g = bx.createRadialGradient(cx, cy, 0, cx, cy, R + 1);
+      g.addColorStop(0, `rgba(255,255,255,${fade})`); g.addColorStop(.4, `rgba(253,224,71,${.8 * fade})`); g.addColorStop(.8, `rgba(239,68,68,${.5 * fade})`); g.addColorStop(1, 'rgba(239,68,68,0)');
+      bx.fillStyle = g; bx.fillRect(0, 0, W2, W2);
+    } else if (f.type === 'cross') {
+      const reach = ease(Math.min(1, u * 2)) * W2;
+      bx.fillStyle = `rgba(56,189,248,${.75 * fade})`;
+      bx.fillRect(cx - reach, cy - CS * 1.5, reach * 2, CS * 3); bx.fillRect(cx - CS * 1.5, cy - reach, CS * 3, reach * 2);
+      bx.fillStyle = `rgba(255,255,255,${.8 * fade})`;
+      bx.fillRect(cx - reach, cy - CS * .2, reach * 2, CS * .4); bx.fillRect(cx - CS * .2, cy - reach, CS * .4, reach * 2);
     } else if (f.type === 'flash') {
       bx.fillStyle = `rgba(255,255,255,${.35 * fade})`; bx.fillRect(0, 0, W2, W2);
     }
@@ -1174,6 +1426,12 @@ function drawBoard() {
     bx.fillStyle = lg(bx, X, Y, X, Y + w, (x + y) % 2 ? [[0, '#16234a'], [1, '#22336a']] : [[0, '#1b2a57'], [1, '#2a3e7a']]);
     bx.beginPath(); bx.roundRect(X, Y, w, w, CS * .14); bx.fill();
     bx.strokeStyle = 'rgba(255,255,255,.06)'; bx.lineWidth = 1; bx.beginPath(); bx.moveTo(X + CS * .12, Y + w - .5); bx.lineTo(X + w - CS * .12, Y + w - .5); bx.stroke();
+  }
+  if (P.tool && P.hover) {
+    const [hx, hy] = P.hover; bx.fillStyle = 'rgba(253,224,71,.28)';
+    if (P.tool === 'pick') bx.fillRect(hx * CS, hy * CS, CS, CS);
+    if (P.tool === 'saw') bx.fillRect(0, hy * CS, CS * N, CS);
+    if (P.tool === 'drill') bx.fillRect(hx * CS, 0, CS, CS * N);
   }
   if (P.sel) { bx.strokeStyle = '#fde047'; bx.lineWidth = CS * .07; bx.beginPath(); bx.roundRect(P.sel[0] * CS + CS * .06, P.sel[1] * CS + CS * .06, CS * .88, CS * .88, CS * .14); bx.stroke(); }
   bx.save(); bx.beginPath(); bx.rect(0, 0, CS * N, CS * N); bx.clip();
@@ -1216,7 +1474,7 @@ function renderLegend() {
   if (legendDone) return; legendDone = true;
   $('#pz-legend').innerHTML = '<div class="lg-h" data-drag>Specials <button class="lg-x" data-lgx>–</button></div><div class="lg-body">' + LEGEND.map((L, k) => `<div class="lg"><canvas data-lg="${k}" width="${40 * DPR}" height="${40 * DPR}"></canvas>
     <div><b>${L.n}</b><div class="how">${L.how}</div><div>${L.does}</div></div></div>`).join('') +
-    `<div class="lg-note"><b>Double-tap or swap any special to fire it</b> — no match needed (uses a move).<br>Swap two specials together → both fire.<br>Two Color Bombs → clears the board.</div></div>`;
+    `<div class="lg-note"><b>Double-tap or swap any special to fire it</b> — no match needed (uses a move).<br>Swap two specials together → both fire.<br><b>Combos:</b> 2 Rockets → 3 rows + 3 columns · 2 Bombs → whole board · 2 Color Bombs → whole board twice · Propeller + any special → carries it to the best spot.</div></div>`;
   legendDrag();
   document.querySelectorAll('#pz-legend canvas[data-lg]').forEach(c => {
     const L = LEGEND[+c.dataset.lg], x = c.getContext('2d');
@@ -1225,13 +1483,85 @@ function renderLegend() {
     drawSpecial(x, L.s, 20, 20, 16, 0);
   });
 }
+function drawTool(ctx, k, x, y, r) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, r * .8, r * .6, r * .14, 0, 0, 7); ctx.fill();
+  if (k === 'pick') {
+    ctx.rotate(-.6);
+    ctx.fillStyle = lg(ctx, -r * .1, 0, r * .1, 0, [[0, '#d6a46a'], [1, '#7a4a22']]); ctx.fillRect(-r * .09, -r * .55, r * .18, r * 1.35);
+    ctx.fillStyle = lg(ctx, 0, -r * .8, 0, -r * .45, [[0, '#e5e7eb'], [1, '#64748b']]);
+    ctx.beginPath(); ctx.moveTo(-r * .85, -r * .45); ctx.quadraticCurveTo(0, -r * .95, r * .85, -r * .45); ctx.quadraticCurveTo(0, -r * .68, -r * .85, -r * .45); ctx.fill();
+  } else if (k === 'saw') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#f8fafc', '#94a3b8', '#334155');
+    ctx.beginPath(); for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2, rr = i % 2 ? r * .62 : r * .8; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(0, 0, r * .18, 0, 7); ctx.fill();
+  } else if (k === 'drill') {
+    ctx.fillStyle = lg(ctx, -r * .4, 0, r * .4, 0, [[0, '#fbbf24'], [1, '#b45309']]); ctx.beginPath(); ctx.roundRect(-r * .4, -r * .8, r * .8, r * .55, r * .1); ctx.fill();
+    ctx.fillStyle = lg(ctx, -r * .2, 0, r * .2, 0, [[0, '#e5e7eb'], [1, '#475569']]);
+    ctx.beginPath(); ctx.moveTo(-r * .22, -r * .25); ctx.lineTo(r * .22, -r * .25); ctx.lineTo(0, r * .78); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#334155'; ctx.lineWidth = r * .06; for (let i = 0; i < 4; i++) { const yy = -r * .15 + i * r * .2; ctx.beginPath(); ctx.moveTo(-r * .18 + i * r * .04, yy); ctx.lineTo(r * .18 - i * r * .04, yy + r * .08); ctx.stroke(); }
+  } else if (k === 'storm') {
+    for (let i = 0; i < 5; i++) { const w = r * (.85 - i * .14), yy = -r * .6 + i * r * .28; ctx.strokeStyle = `rgba(${200 - i * 10},${180 - i * 10},${140 - i * 10},.95)`; ctx.lineWidth = r * .14; ctx.beginPath(); ctx.ellipse(i * r * .05, yy, w, r * .12, 0, 0, 7); ctx.stroke(); }
+  }
+  ctx.restore();
+}
+function renderTools() {
+  const T = S.tools || (S.tools = {});
+  $('#pz-tools').innerHTML = Object.entries(TOOLS).map(([k, t]) => `<button class="tool${P && P.tool === k ? ' armed' : ''}" data-tool="${k}" title="${t.n}: ${t.d}"><canvas data-ti="${k}" width="${36 * DPR}" height="${36 * DPR}"></canvas><span class="cnt">${T[k] || '+'}</span></button>`).join('') +
+    `<button class="tool shop" data-shop title="Copper Shop"><b>Shop</b><span class="small">${S.res.copper}c</span></button>`;
+  document.querySelectorAll('#pz-tools canvas[data-ti]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawTool(x, c.dataset.ti, 18, 18, 15); });
+}
+function openShop() {
+  const T = S.tools || (S.tools = {});
+  modal(`<h2>Copper Shop</h2><div class="small">Wallet: ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10). Tools don't use a move.</div>
+    ${Object.entries(TOOLS).map(([k, t]) => `<div class="card" style="text-align:left"><div class="row"><canvas data-si="${k}" width="${40 * DPR}" height="${40 * DPR}" style="width:40px;height:40px;flex:none"></canvas>
+      <div style="flex:1"><div class="t">${t.n} <span class="small">owned ${T[k] || 0}</span></div><div class="d">${t.d}</div></div>
+      <button class="btn sm" data-buy="${k}" ${wallet() >= t.cost ? '' : 'disabled'}>${t.cost} c</button></div></div>`).join('')}
+    <div class="btns"><button class="btn alt" data-close>Done</button></div>`);
+  document.querySelectorAll('#modal canvas[data-si]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawTool(x, c.dataset.si, 20, 20, 17); });
+}
+$('#modal').addEventListener('click', e => {
+  const b = e.target.closest('[data-buy]'); if (!b) return;
+  const t = TOOLS[b.dataset.buy]; if (wallet() < t.cost) return;
+  pay({ money: t.cost }); S.tools[b.dataset.buy] = (S.tools[b.dataset.buy] || 0) + 1; sfx('coin'); save(); refresh(); renderTools(); openShop();
+});
+$('#pz-tools').addEventListener('click', e => {
+  if (e.target.closest('[data-shop]')) return openShop();
+  const b = e.target.closest('[data-tool]'); if (!b || !P || P.busy || P.over) return;
+  const k = b.dataset.tool;
+  if (!(S.tools && S.tools[k])) return openShop();
+  if (k === 'storm') { useTool('storm'); return; }
+  P.tool = P.tool === k ? null : k; renderTools();
+  if (P.tool) toast(k === 'pick' ? 'Tap a tile to smash' : k === 'saw' ? 'Tap a row to cut' : 'Tap a column to drill');
+});
+async function useTool(k, c) {
+  if (!P || P.busy || P.over) return;
+  S.tools[k]--; P.tool = null; P.busy = true; P.combo = 0; save(); renderTools(); sfx('tool');
+  if (k === 'storm') {
+    sfx('shuffle'); addFx({ type: 'flash', x: 0, y: 0, dur: 300 });
+    const cells = P.b.flat();
+    for (let tries = 0; tries < 60; tries++) {
+      for (let i = cells.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [cells[i], cells[j]] = [cells[j], cells[i]]; }
+      for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) P.b[y][x] = cells[y * N + x];
+      if (!findRuns(P.b).length && hasMoves(P.b)) break;
+    }
+    await anim(350, t => P.b.forEach(r => r.forEach(q => { q.sc = .4 + .6 * ease(t); q.a = t; })));
+  } else {
+    const [x, y] = c, keys = [];
+    if (k === 'pick') { keys.push(x + ',' + y); addFx({ type: 'b', x, y, dur: 350 }); shake = 5; }
+    if (k === 'saw') { for (let i = 0; i < N; i++) keys.push(i + ',' + y); addFx({ type: 'h', x, y, dur: 520 }); sfx('line'); shake = 6; }
+    if (k === 'drill') { for (let j = 0; j < N; j++) keys.push(x + ',' + j); addFx({ type: 'v', x, y, dur: 520 }); sfx('line'); shake = 6; }
+    await clearCells(keys); await gravity(); await resolve(null);
+  }
+  P.busy = false; renderPuzzleHead(); drawBoard(); checkEnd();
+}
 function renderPuzzleHead() {
   if (!P) return;
   const goals = Object.entries(P.left).map(([t, v]) => `<div class="goal${v <= 0 ? ' done' : ''}"><canvas data-icon="${t}" width="${28 * DPR}" height="${28 * DPR}" style="width:28px;height:28px"></canvas>${v <= 0 ? '✓' : v}</div>`).join('');
   $('#pz-head').innerHTML = `<div class="lv">Level ${P.L.n}</div><div class="goals">${goals}</div><div class="mv"><b>${P.moves}</b>moves</div>`;
   document.querySelectorAll('#pz-head canvas[data-icon]').forEach(c => { const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); drawIcon(x, +c.dataset.icon, 14, 14, 12); });
   $('#pz-foot').innerHTML = `Leftover moves become speedup time · ${S.recruit}/${WINS_PER_WORKER} wins to next AI worker`;
-  renderLegend();
+  renderLegend(); renderTools();
 }
 (() => {
   let st = null, lastTap = null;
@@ -1242,6 +1572,7 @@ function renderPuzzleHead() {
     boardC.setPointerCapture(e.pointerId);
     st = { c: cellAt(e), x: e.clientX, y: e.clientY, done: false };
   });
+  boardC.addEventListener('pointermove', e => { if (P && P.tool) { const c = cellAt(e); P.hover = inB(c) ? c : null; } });
   boardC.addEventListener('pointermove', e => {
     if (!st || st.done) return;
     const dx = e.clientX - st.x, dy = e.clientY - st.y;
@@ -1255,6 +1586,7 @@ function renderPuzzleHead() {
     if (!st) return;
     if (!st.done && inB(st.c)) {
       const s = P.sel, c = st.c, now = performance.now();
+      if (P.tool) { const k = P.tool; st = null; useTool(k, c); return; }
       const q = P.b[c[1]][c[0]];
       if (lastTap && lastTap.c[0] === c[0] && lastTap.c[1] === c[1] && now - lastTap.t < 400 && q && q.s) { lastTap = null; st = null; fireSpecial(c); return; }
       lastTap = { c, t: now };
@@ -1333,6 +1665,7 @@ async function resolveRaid(w, t) {
   if (!r.ok) { toast(`${w.name} came back empty: ${r.error}`); return; }
   if (r.empty) { toast(`${t.name} had nothing left to dismantle`); return; }
   for (const [k, v] of Object.entries(r.gained)) S.res[k] = (S.res[k] || 0) + v;
+  sfx('harvest');
   toast(`${w.name} dismantled ${r.from}'s ${BLD[r.building] ? BLD[r.building].n : r.building}: ` + Object.entries(r.gained).map(([k, v]) => `+${v} ${k}`).join(', '));
   idle().forEach(autoAssign); save(); pushSave(); refresh(true);
 }
