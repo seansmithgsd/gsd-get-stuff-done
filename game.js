@@ -869,6 +869,17 @@ async function trySwap(a, b) {
   renderPuzzleHead(); drawBoard();
   checkEnd();
 }
+// double-tap a special to fire it in place (costs a move)
+async function fireSpecial(pos) {
+  if (P.busy || P.over) return;
+  const c = P.b[pos[1]][pos[0]]; if (!c || !c.s) return;
+  P.busy = true; P.sel = null; P.moves--;
+  await clearCells([pos[0] + ',' + pos[1]]);
+  await gravity(); await resolve(null);
+  P.busy = false;
+  renderPuzzleHead(); drawBoard();
+  checkEnd();
+}
 function checkEnd() {
   if (P.over) return;
   const won = Object.values(P.left).every(v => v <= 0);
@@ -992,7 +1003,7 @@ function renderLegend() {
   if (legendDone) return; legendDone = true;
   $('#pz-legend').innerHTML = '<div class="lg-h">Specials</div>' + LEGEND.map((L, k) => `<div class="lg"><canvas data-lg="${k}" width="${40 * DPR}" height="${40 * DPR}"></canvas>
     <div><b>${L.n}</b><div class="how">${L.how}</div><div>${L.does}</div></div></div>`).join('') +
-    `<div class="lg-note">Swap two specials together → both fire.<br>Two Color Bombs → clears the board.</div>`;
+    `<div class="lg-note"><b>Double-tap any special to fire it</b> (uses a move).<br>Swap two specials together → both fire.<br>Two Color Bombs → clears the board.</div>`;
   document.querySelectorAll('#pz-legend canvas[data-lg]').forEach(c => {
     const L = LEGEND[+c.dataset.lg], x = c.getContext('2d');
     x.setTransform(DPR, 0, 0, DPR, 0, 0); x.fillStyle = '#45301b'; x.fillRect(0, 0, 40, 40);
@@ -1009,7 +1020,7 @@ function renderPuzzleHead() {
   renderLegend();
 }
 (() => {
-  let st = null;
+  let st = null, lastTap = null;
   const cellAt = e => { const r = boardC.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / CS), Math.floor((e.clientY - r.top) / CS)]; };
   const inB = c => c[0] >= 0 && c[1] >= 0 && c[0] < N && c[1] < N;
   boardC.addEventListener('pointerdown', e => {
@@ -1029,7 +1040,10 @@ function renderPuzzleHead() {
   boardC.addEventListener('pointerup', () => {
     if (!st) return;
     if (!st.done && inB(st.c)) {
-      const s = P.sel, c = st.c;
+      const s = P.sel, c = st.c, now = performance.now();
+      const q = P.b[c[1]][c[0]];
+      if (lastTap && lastTap.c[0] === c[0] && lastTap.c[1] === c[1] && now - lastTap.t < 400 && q && q.s) { lastTap = null; st = null; fireSpecial(c); return; }
+      lastTap = { c, t: now };
       if (s && Math.abs(s[0] - c[0]) + Math.abs(s[1] - c[1]) === 1) trySwap(s, c);
       else { P.sel = (s && s[0] === c[0] && s[1] === c[1]) ? null : c; drawBoard(); }
     }
