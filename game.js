@@ -1063,7 +1063,7 @@ function showTip(e) {
 }
 
 // ---------------------------------------------------------------- puzzle
-const N = 8, TYPES = 5;
+const N = 9, TYPES = 5;   // board arrays are 9×9; each level's shape masks out the cells it doesn't use
 const TILE_NAME = ['Berries', 'Wood', 'Stone', 'Coins', 'Leaves'];
 const goalName = k => /^\d$/.test(k) ? TILE_NAME[k] : (OB[k] ? OB[k].n : k);
 const boardC = $('#board'), bx = boardC.getContext('2d');
@@ -1081,7 +1081,8 @@ const OBST = [
   { k: 'keg', n: 'Powder Keg', at: 200, kind: 'block', hp: 1, d: 'Explodes 3×3 when hit' },
 ];
 const OB = Object.fromEntries(OBST.map(o => [o.k, o]));
-const isFixed = c => c && (c.t === -9 || c.cov);
+const isFixed = c => c && (c.t === -9 || c.t === -8 || c.cov);
+const isVoid = c => c && c.t === -8;   // not part of this level's board
 function levelDef(n) {
   const r = rng(n * 7919 + 13), d = Math.floor((n - 1) / 10);
   const unlocked = OBST.filter(o => n >= o.at), intro = OBST.find(o => o.at === n), hard = n % 10 === 0 && !intro;
@@ -1093,18 +1094,50 @@ function levelDef(n) {
   const pool = [0, 1, 2, 3, 4], goals = {};
   const base = Math.min(40, 12 + 2 * d + (n % 10)) * (hard ? 1.2 : 1);
   for (let g = 0; g < Math.max(obs.length ? 0 : 1, tileGoals); g++) { const t = pool.splice((r() * pool.length) | 0, 1)[0]; goals[t] = Math.round(base * (tileGoals > 1 ? .7 : 1)); }
-  return { n, d, hard, moves, goals, obs, intro: intro ? intro.k : null, seed: (n * 104729) >>> 0 };
+  return { n, d, hard, moves, goals, obs, intro: intro ? intro.k : null, seed: (n * 104729) >>> 0, ...boardShape(n, hard) };
+}
+// board shapes: plain 8×8 for the first 10 levels, then new sizes and shapes unlock every 10 levels.
+// split shapes have rows/columns that don't connect, so tiles can't match or fall across the gap — rockets and bombs still fire through it.
+const SHAPES = [
+  { k: 'rect', at: 1 }, { k: 'corners', at: 11 }, { k: 'holes', at: 21 }, { k: 'diamond', at: 31 }, { k: 'plus', at: 31 },
+  { k: 'splitV', at: 41, split: true }, { k: 'splitH', at: 51, split: true }, { k: 'islands', at: 71, split: true },
+];
+function boardShape(n, hard) {
+  if (n <= 10) return { shape: 'rect', bw: 8, bh: 8 };
+  const r = rng(n * 31337 + 7), open = SHAPES.filter(s => n >= s.at);
+  let pool = open; if (hard && open.some(s => s.split) && r() < .7) pool = open.filter(s => s.split);
+  const sh = pool[(r() * pool.length) | 0].k;
+  const sizes = n < 21 ? [7, 8] : [7, 8, 9];
+  let bw = sizes[(r() * sizes.length) | 0], bh = sizes[(r() * sizes.length) | 0];
+  if (sh === 'splitV' || sh === 'islands' || sh === 'plus' || sh === 'diamond') bw = 9;
+  if (sh === 'splitH' || sh === 'islands' || sh === 'plus' || sh === 'diamond') bh = 9;
+  return { shape: sh, bw, bh };
+}
+function makeMask(L) {
+  const r = rng(L.seed ^ 0x5eed), m = Array.from({ length: N }, () => Array(N).fill(0));
+  const W = L.bw || 8, H = L.bh || 8;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) m[y][x] = 1;
+  const off = (x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) { m[y][x] = 0; m[y][W - 1 - x] = 0; } };
+  if (L.shape === 'corners') { const c = 1 + (r() < .5 ? 1 : 0); for (let i = 0; i < c; i++) for (let j = 0; j < c - i; j++) { off(i, j); off(i, H - 1 - j); } }
+  if (L.shape === 'diamond') for (let y = 0; y < H; y++) { const cut = Math.max(0, 2 - Math.min(y, H - 1 - y)); for (let i = 0; i < cut; i++) off(i, y); }
+  if (L.shape === 'plus') for (const [x, y] of [[0, 0], [1, 0], [0, 1], [1, 1]]) { off(x, y); off(x, H - 1 - y); }
+  if (L.shape === 'holes') { const k = 1 + ((r() * 3) | 0); for (let i = 0; i < k; i++) off(1 + ((r() * (W / 2 - 1)) | 0), 1 + ((r() * (H - 2)) | 0)); }
+  if (L.shape === 'splitV' || L.shape === 'islands') for (let y = 0; y < H; y++) m[y][(W - 1) >> 1] = 0;
+  if (L.shape === 'splitH' || L.shape === 'islands') for (let x = 0; x < W; x++) m[(H - 1) >> 1][x] = 0;
+  return m;
 }
 const cell = (t, s = null) => ({ t, s, ox: 0, oy: 0, a: 1, sc: 1 });
+const voidCell = () => ({ t: -8, s: null, ox: 0, oy: 0, a: 1, sc: 1 });
 const block = (k, hp) => ({ t: -9, ob: k, hp: hp || OB[k].hp, max: hp || OB[k].hp, s: null, ox: 0, oy: 0, a: 1, sc: 1 });
 const rndType = () => (Math.random() * TYPES) | 0;
-function newBoard() {
+function newBoard(mask) {
   let b;
   do {
     b = [];
     for (let y = 0; y < N; y++) {
       b[y] = [];
       for (let x = 0; x < N; x++) {
+        if (mask && !mask[y][x]) { b[y][x] = voidCell(); continue; }
         let t;
         do { t = rndType(); } while ((x >= 2 && b[y][x - 1].t === t && b[y][x - 2].t === t) || (y >= 2 && b[y - 1][x].t === t && b[y - 2][x].t === t) ||
           (x >= 1 && y >= 1 && b[y][x - 1].t === t && b[y - 1][x].t === t && b[y - 1][x - 1].t === t));
@@ -1117,18 +1150,33 @@ function newBoard() {
 // place a level's obstacles with left/right symmetry
 function placeObstacles(L, b, floor) {
   const r = rng(L.seed), d = L.d, left = {};
+  // bounding box of the playable cells, used to mirror placements left/right
+  let x0 = N, x1 = -1, y0 = N, y1 = -1;
+  b.forEach((row, y) => row.forEach((c, x) => { if (!isVoid(c)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); } }));
+  const mir = x => x0 + x1 - x, play = (x, y) => x >= 0 && y >= 0 && x < N && y < N && !isVoid(b[y][x]);
   for (const k of L.obs) {
     const O = OB[k]; let placed = 0;
     if (O.kind === 'floor') {
-      const rows = 2 + Math.min(3, Math.floor(d / 4));
-      for (let y = N - rows; y < N; y++) for (let x = 0; x < N; x++) { floor[y][x] = 1; placed++; }
+      // moss grows as random mirrored patches anywhere on the board
+      const total = b.flat().filter(c => !isVoid(c)).length;
+      const want = Math.min(Math.floor(total * .5), (2 + Math.min(3, Math.floor(d / 4))) * (x1 - x0 + 1));
+      const patches = 1 + ((r() * 3) | 0), front = [];
+      for (let p = 0; p < patches; p++) for (let t = 0; t < 30; t++) { const x = x0 + ((r() * ((x1 - x0 + 2) / 2)) | 0), y = y0 + ((r() * (y1 - y0 + 1)) | 0); if (play(x, y)) { front.push([x, y]); break; } }
+      const add = (x, y) => { for (const X of [x, mir(x)]) if (play(X, y) && !floor[y][X]) { floor[y][X] = 1; placed++; } };
+      for (let guard = 0; guard < 2000 && placed < want && front.length; guard++) {
+        const i = (r() * front.length) | 0, [x, y] = front[i]; add(x, y);
+        const nb = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => [x + dx, y + dy]).filter(([X, Y]) => play(X, Y) && !floor[Y][X]);
+        if (nb.length) front.push(nb[(r() * nb.length) | 0]); else front.splice(i, 1);
+      }
     } else {
       const want = Math.min(O.kind === 'cover' ? 14 : 12, (k === 'mud' ? 3 : 4) + Math.floor(d / 2) + (L.hard ? 2 : 0));
       for (let tries = 0; tries < 300 && placed < want; tries++) {
-        const x = (r() * (N / 2)) | 0, y = 2 + ((r() * (N - 3)) | 0);
-        for (const X of [x, N - 1 - x]) {
+        const x = x0 + ((r() * ((x1 - x0 + 2) / 2)) | 0), y = y0 + 2 + ((r() * Math.max(1, y1 - y0 - 2)) | 0);
+        for (const X of [...new Set([x, mir(x)])]) {
           if (placed >= want) break;
-          const c = b[y][X]; if (isFixed(c) || b[y].filter(isFixed).length >= N - 3) continue;
+          if (!play(X, y)) continue;
+          const c = b[y][X], rowPlay = b[y].filter(q => !isVoid(q)).length, rowFixed = b[y].filter(q => isFixed(q) && !isVoid(q)).length;
+          if (isFixed(c) || rowFixed >= rowPlay - 3) continue;
           if (O.kind === 'block') b[y][X] = block(k); else c.cov = { k, hp: O.hp, max: O.hp };
           placed++;
         }
@@ -1140,12 +1188,15 @@ function placeObstacles(L, b, floor) {
 }
 function startLevel(def) {
   const L = def || levelDef(S.level);
-  const b = newBoard(), floor = Array.from({ length: N }, () => Array(N).fill(0));
+  const mask = makeMask(L), b = newBoard(mask), floor = Array.from({ length: N }, () => Array(N).fill(0));
   const obLeft = placeObstacles(L, b, floor);
-  P = { L, b, floor, moves: L.moves, left: { ...L.goals, ...obLeft }, score: 0, busy: false, over: false, sel: null, daily: !!(def && def.daily) };
+  let x0 = N, x1 = -1, y0 = N, y1 = -1;
+  mask.forEach((row, y) => row.forEach((v, x) => { if (v) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); } }));
+  P = { L, b, floor, mask, box: { x0, y0, w: x1 - x0 + 1, h: y1 - y0 + 1 }, maskKey: mask.map(r => r.join('')).join('|'), moves: L.moves, left: { ...L.goals, ...obLeft }, score: 0, busy: false, over: false, sel: null, daily: !!(def && def.daily) };
   if (typeof startBoosts === 'function') startBoosts();
   if (!hasMoves(P.b)) reshuffle();
   sizeBoard(); renderPuzzleHead(); drawBoard();
+  if (!L.intro && SHAPES.find(x => x.k === L.shape && x.split) && !S.seenSplit) { S.seenSplit = 1; save(); setTimeout(() => modal(`<h2>Split board</h2><p>Gaps cut this board into pieces. Tiles can't match or fall across a gap — use rockets, bombs and propellers to reach the other side.</p><div class="btns"><button class="btn go" data-close>Got it</button></div>`), 300); }
   if (L.intro) setTimeout(() => modal(`<h2>New obstacle: ${OB[L.intro].n}</h2><canvas id="obintro" width="${80 * DPR}" height="${80 * DPR}" style="width:80px;height:80px"></canvas><p>${OB[L.intro].d}.</p><div class="btns"><button class="btn go" data-close>Got it</button></div>`) || (() => { const g = $('#obintro').getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0); drawObIcon(g, L.intro, 40, 40, 32, true, OB[L.intro].hp || 1, OB[L.intro].hp || 1); })(), 300);
 }
 function reshuffle() {
@@ -1161,10 +1212,10 @@ function reshuffle() {
 }
 function sizeBoard() {
   const wrap = $('#pz-wrap'); if (!$('#v-puzzle').offsetWidth || !wrap.offsetWidth) return;
-  const avail = Math.min(wrap.clientWidth - 8, wrap.clientHeight - 8);
-  CS = Math.floor(Math.max(160, avail) / N);
-  boardC.style.width = boardC.style.height = CS * N + 'px';
-  boardC.width = boardC.height = CS * N * DPR;
+  const bw = P ? P.box.w : 8, bh = P ? P.box.h : 8;
+  CS = Math.max(20, Math.floor(Math.min((wrap.clientWidth - 8) / bw, (wrap.clientHeight - 8) / bh)));
+  boardC.style.width = CS * bw + 'px'; boardC.style.height = CS * bh + 'px';
+  boardC.width = CS * bw * DPR; boardC.height = CS * bh * DPR;
   drawBoard();
 }
 function findRuns(b) {
@@ -1260,7 +1311,7 @@ function bestTarget(claimed, carry) {
   let best = [], bs = -1;
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const k = x + ',' + y, q = P.b[y][x];
-    if (!q || claimed.has(k)) continue;
+    if (!q || isVoid(q) || claimed.has(k)) continue;
     let sc;
     if (carry) { const area = triggerArea({ s: carry }, x, y); sc = goalHits(area) + area.length * .01; }
     else if (q.s && q.s !== 'p') sc = goalHits(triggerArea(q, x, y)) + .5;
@@ -1308,7 +1359,7 @@ async function clearCells(start, spawns = [], adj = false) {
     for (const [x, y] of hit) if (P.floor && P.floor[y][x]) { P.floor[y][x] = 0; if (P.left.moss > 0) P.left.moss--; burst(x, y, '#65a30d', 6); }
     const cells = [];
     for (const [x, y] of hit) {
-      const c = P.b[y][x]; if (!c) continue;
+      const c = P.b[y][x]; if (!c || isVoid(c)) continue;
       if (c.t === -9) { // block takes a hit
         c.hp--; c.flash = performance.now(); if (c.ob === 'mud') P.mudHit = true;
         burst(x, y, OB_COL[c.ob], 8, 1.1); sfx('tool', 0, 50);
@@ -1343,9 +1394,10 @@ async function gravity() {
       let w = bottom;
       for (let y = bottom; y > top; y--) { const c = P.b[y][x]; if (c) { if (w !== y) { P.b[w][x] = c; P.b[y][x] = null; c.oy = y - w; moving.push(c); } w--; } }
       const holes = w - top;
+      let sky = top < 0; if (!sky && isVoid(P.b[top][x])) { sky = true; for (let y = top; y >= 0; y--) if (!isVoid(P.b[y][x])) { sky = false; break; } }   // only void above = the board's top edge here
       for (let y = w; y > top; y--) {
         const c = cell(rndType());
-        if (top < 0) { c.oy = -holes; moving.push(c); } else { c.sc = 0; pop.push(c); } // below a blocker: appear in place
+        if (sky) { c.oy = -holes; moving.push(c); } else { c.sc = 0; pop.push(c); } // below a blocker or gap: appear in place
         P.b[y][x] = c;
       }
       bottom = top - 1;
@@ -1390,7 +1442,8 @@ function mudSpread() {
 async function trySwap(a, b) {
   if (P.busy || P.over) return;
   const A = P.b[a[1]][a[0]], B = P.b[b[1]][b[0]];
-  if (!A || !B || isFixed(A) || isFixed(B)) { sfx('bad'); toast(isFixed(A) || isFixed(B) ? 'That tile is stuck' : ''); return; }
+  if (!A || !B || isVoid(A) || isVoid(B)) return;
+  if (isFixed(A) || isFixed(B)) { sfx('bad'); toast('That tile is stuck'); return; }
   P.busy = true; P.sel = null; P.combo = 0; P.mudHit = false; const m0 = P.moves;
   sfx('swap');
   await animSwap(a, b);
@@ -1719,16 +1772,20 @@ function drawFx(now) {
 }
 let BG = null, ICONS = {};
 function boardBg() {
-  if (BG && BG.cs === CS) return BG.c;
+  if (BG && BG.cs === CS && BG.key === P.maskKey) return BG.c;
   const c = document.createElement('canvas'); c.width = c.height = CS * N * DPR; const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
-  g.fillStyle = '#0f1b3d'; g.fillRect(0, 0, CS * N, CS * N);
+  const M = P.mask;
+  // board frame only under playable cells
+  g.fillStyle = '#0f1b3d';
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (M[y][x]) { g.beginPath(); g.roundRect(x * CS - 2, y * CS - 2, CS + 4, CS + 4, CS * .2); g.fill(); }
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (!M[y][x]) continue;
     const X = x * CS + CS * .04, Y = y * CS + CS * .04, w = CS * .92;
     g.fillStyle = lg(g, X, Y, X, Y + w, (x + y) % 2 ? [[0, '#16234a'], [1, '#22336a']] : [[0, '#1b2a57'], [1, '#2a3e7a']]);
     g.beginPath(); g.roundRect(X, Y, w, w, CS * .14); g.fill();
     g.strokeStyle = 'rgba(255,255,255,.06)'; g.lineWidth = 1; g.beginPath(); g.moveTo(X + CS * .12, Y + w - .5); g.lineTo(X + w - CS * .12, Y + w - .5); g.stroke();
   }
-  BG = { cs: CS, c }; ICONS = {}; return c;
+  BG = { cs: CS, key: P.maskKey, c }; ICONS = {}; return c;
 }
 function iconSprite(t) {
   if (ICONS[t]) return ICONS[t];
@@ -1741,8 +1798,8 @@ function drawBoard() {
   const now = performance.now();
   shake *= .88;
   const sx = shake > .3 ? (Math.random() - .5) * shake : 0, sy = shake > .3 ? (Math.random() - .5) * shake : 0;
-  bx.setTransform(DPR, 0, 0, DPR, sx * DPR, sy * DPR);
-  bx.clearRect(-20, -20, CS * N + 40, CS * N + 40);
+  bx.setTransform(1, 0, 0, 1, 0, 0); bx.clearRect(0, 0, boardC.width, boardC.height);
+  bx.setTransform(DPR, 0, 0, DPR, (sx - P.box.x0 * CS) * DPR, (sy - P.box.y0 * CS) * DPR);
   bx.drawImage(boardBg(), 0, 0, CS * N, CS * N);
   if (P.tool && P.hover) {
     const [hx, hy] = P.hover; bx.fillStyle = 'rgba(253,224,71,.28)';
@@ -1751,10 +1808,10 @@ function drawBoard() {
     if (P.tool === 'drill') bx.fillRect(hx * CS, 0, CS, CS * N);
   }
   if (P.sel) { bx.strokeStyle = '#fde047'; bx.lineWidth = CS * .07; bx.beginPath(); bx.roundRect(P.sel[0] * CS + CS * .06, P.sel[1] * CS + CS * .06, CS * .88, CS * .88, CS * .14); bx.stroke(); }
-  bx.save(); bx.beginPath(); bx.rect(0, 0, CS * N, CS * N); bx.clip();
+  bx.save(); bx.beginPath(); bx.rect(P.box.x0 * CS - 4, P.box.y0 * CS - 4, P.box.w * CS + 8, P.box.h * CS + 8); bx.clip();
   if (P.floor) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (P.floor[y][x]) drawObIcon(bx, 'moss', (x + .5) * CS, (y + .5) * CS, CS * .48);
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    const c = P.b[y][x]; if (!c) continue;
+    const c = P.b[y][x]; if (!c || isVoid(c)) continue;
     const px = (x + c.ox + .5) * CS, py = (y + c.oy + .5) * CS, r = CS * .42 * c.sc;
     bx.globalAlpha = c.a;
     if (c.t === -9) { const fl = c.flash && now - c.flash < 180; drawObIcon(bx, c.ob, px + (fl ? (Math.random() - .5) * 4 : 0), py, CS * .46 * c.sc, false, c.hp, c.max); bx.globalAlpha = 1; continue; }
@@ -1881,8 +1938,8 @@ function renderPuzzleHead() {
 }
 (() => {
   let st = null, lastTap = null;
-  const cellAt = e => { const r = boardC.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / CS), Math.floor((e.clientY - r.top) / CS)]; };
-  const inB = c => c[0] >= 0 && c[1] >= 0 && c[0] < N && c[1] < N;
+  const cellAt = e => { const r = boardC.getBoundingClientRect(); return [Math.floor((e.clientX - r.left) / CS) + P.box.x0, Math.floor((e.clientY - r.top) / CS) + P.box.y0]; };
+  const inB = c => c[0] >= 0 && c[1] >= 0 && c[0] < N && c[1] < N && !isVoid(P.b[c[1]][c[0]]);
   boardC.addEventListener('pointerdown', e => {
     if (!P || P.busy || P.over) return;
     boardC.setPointerCapture(e.pointerId);
