@@ -2102,7 +2102,7 @@ function renderOrb(force) {
     <div style="display:flex;gap:4px">${ME.team && U('envoy') && myT.ally !== t.id ? `<button class="btn sm alt" data-ally="${t.id}">Ally</button>` : ''}
     <button class="btn sm" data-team="join" data-id="${t.id}" ${t.members >= ORB.limits.teamMax ? 'disabled' : ''}>Join</button></div></div></div>`;
   if (!ME.team && ORB.teams.length < ORB.limits.teams) html += `<div class="card"><div class="t">Start a team</div><div style="display:flex;gap:6px;margin-top:6px"><input id="tm-name" maxlength="20" placeholder="Team name" class="inp" style="flex:1"><button class="btn sm go" data-team="create">Create</button></div></div>`;
-  if (U('migration')) html += `<div class="card"><div class="row"><div><div class="t">Migration</div><div class="d">Move to another orb. You keep your buildings, workers and research, but all resources reset to the starting amounts and you leave your team.</div></div><button class="btn sm alt" data-migrate>Migrate</button></div></div>`;
+  html += `<div class="card"><div class="row"><div><div class="t">Other orbs</div><div class="d">See every orb's players and leaders${U('migration') ? ' and pick one to migrate to' : ''}.</div>${U('migration') ? '' : whyHTML('Migrating needs Migration research (#90, Tech tab)')}</div><button class="btn sm" data-orbs>Browse orbs</button></div></div>`;
   html += `<div class="foot">Signed in as ${esc(ME.name)} (${esc(ME.email)}) · <button class="btn sm alt" data-logout>Sign out</button></div>`;
   el.innerHTML = html;
   drawOrb();
@@ -2248,11 +2248,27 @@ $('#v-orb').addEventListener('click', async e => {
     S.res[r.res] = (S.res[r.res] || 0) + r.amt; return done(r.cancelled ? 'Listing cancelled' : `Bought ${r.amt} ${r.res}`);
   }
   if (t.dataset.ally) { const r = await api('ally', { method: 'POST', body: JSON.stringify({ team: +t.dataset.ally }) }); return r.ok ? done('Alliance formed') : toast(r.error); }
-  if (t.dataset.migrate !== undefined) {
-    if (!t.dataset.armed) { t.dataset.armed = 1; t.textContent = 'Confirm: resources reset'; return; }
-    const r = await api('migrate', { method: 'POST' }); if (!r.ok) return toast(r.error);
-    S.res = newState().res; ORB = null; return done(`Moved to orb #${r.orb} — resources reset`);
-  }
+  if (t.dataset.orbs !== undefined) return openOrbs();
+});
+async function openOrbs() {
+  modal('<h2>Orbs</h2><div class="small">Loading…</div>');
+  const r = await api('orbs'); if (!r.ok) return modal(`<h2>Orbs</h2><p>${esc(r.error)}</p><div class="btns"><button class="btn alt" data-close>Close</button></div>`);
+  const rows = r.orbs.map(o => {
+    const mine = o.orb === r.me, full = o.players >= r.size;
+    const why = mine ? 'You are here' : full ? 'Full' : !U('migration') ? 'Needs Migration research' : '';
+    return `<tr class="${mine ? 'me' : ''}"><td>#${o.orb}</td><td>${o.players}/${r.size}</td><td>${o.online} / ${o.active}</td><td>${o.teams}</td><td>${esc(o.leader)}<div class="small">${o.top} pts · avg ${o.avg}</div></td>
+      <td>${why ? `<span class="small">${why}</span>` : `<button class="btn sm go" data-mig="${o.orb}">Migrate</button>`}</td></tr>`;
+  }).join('');
+  modal(`<h2>Orbs</h2><div class="small">Online = playing now · 7d = played this week. Migrating keeps buildings, workers and research; resources reset to the starting amounts and you leave your team.</div>
+    <div style="overflow-x:auto"><table class="lb"><tr><th>Orb</th><th>Players</th><th>Online / 7d</th><th>Teams</th><th>Leader</th><th></th></tr>${rows}</table></div>
+    <div class="btns"><button class="btn alt" data-close>Close</button></div>`);
+  $('#modal .box').classList.add('wide');
+}
+document.addEventListener('click', async e => {
+  const t = e.target.closest('#modal [data-mig]'); if (!t) return;
+  if (!t.dataset.armed) { t.dataset.armed = 1; t.textContent = 'Confirm: resources reset'; return; }
+  const r = await api('migrate', { method: 'POST', body: JSON.stringify({ orb: +t.dataset.mig }) }); if (!r.ok) return toast(r.error);
+  S.res = newState().res; ORB = null; $('#modal').hidden = true; save(); pushSave(); loadOrb(); loadOrbExtras(); toast(`Moved to orb #${r.orb} — resources reset`);
 });
 
 // ---------------------------------------------------------------- boot + loop

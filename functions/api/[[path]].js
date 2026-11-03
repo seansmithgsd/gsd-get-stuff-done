@@ -88,10 +88,15 @@ async function me(req, env) {
 }
 function pub(p) { return { id: p.id, name: p.name, email: p.email, orb: p.orb, slot: p.slot, team: p.team, created: p.created, score: p.score }; }
 
-async function seat(db) {
-  // first orb with a free seat, else a new orb
-  const row = await db.prepare('SELECT orb, COUNT(*) n FROM players GROUP BY orb HAVING n < ? ORDER BY orb LIMIT 1').bind(ORB_SIZE).first();
-  const orb = row ? row.orb : ((await db.prepare('SELECT MAX(orb) m FROM players').first())?.m || 0) + 1;
+async function seat(db, want, avoid) {
+  // a chosen orb if it has room; otherwise the busiest orb with a free seat (most players active this week), else a new orb
+  let orb = null;
+  if (want != null) { const r = await db.prepare('SELECT COUNT(*) n FROM players WHERE orb = ?').bind(want).first(); if (r && r.n > 0 && r.n < ORB_SIZE) orb = want; }
+  if (orb == null) {
+    const row = await db.prepare('SELECT orb, COUNT(*) n, SUM(CASE WHEN seen > ? THEN 1 ELSE 0 END) act FROM players WHERE orb != ? GROUP BY orb HAVING n < ? ORDER BY act DESC, n DESC, orb LIMIT 1')
+      .bind(Date.now() - 7 * 86400000, avoid ?? -1, ORB_SIZE).first();
+    orb = row ? row.orb : ((await db.prepare('SELECT MAX(orb) m FROM players').first())?.m || 0) + 1;
+  }
   const taken = new Set((await db.prepare('SELECT slot FROM players WHERE orb = ?').bind(orb).all()).results.map(r => r.slot));
   // spread seats around the orb: 0, 50, 25, 75, ...
   const order = []; for (let step = ORB_SIZE; step >= 1; step = Math.floor(step / 2)) for (let i = 0; i < ORB_SIZE; i += step) if (!order.includes(i)) order.push(i);
@@ -246,13 +251,20 @@ export async function onRequest(ctx) {
       await env.DB.batch([env.DB.prepare('UPDATE teams SET ally = NULL WHERE ally = ?').bind(p.team), env.DB.prepare('UPDATE teams SET ally = ? WHERE id = ?').bind(t.id, p.team), env.DB.prepare('UPDATE teams SET ally = ? WHERE id = ?').bind(p.team, t.id)]);
       return json({ ok: true });
     }
+    if (path === 'orbs' && req.method === 'GET') {
+      const rows = (await env.DB.prepare(`SELECT orb, COUNT(*) players, SUM(CASE WHEN seen > ? THEN 1 ELSE 0 END) online, SUM(CASE WHEN seen > ? THEN 1 ELSE 0 END) active,
+        MAX(score) top, CAST(AVG(score) AS INTEGER) avg, COUNT(DISTINCT team) teams FROM players GROUP BY orb ORDER BY active DESC, players DESC LIMIT 50`).bind(now - 120000, now - 7 * 86400000).all()).results;
+      for (const r of rows) { const t = await env.DB.prepare('SELECT name FROM players WHERE orb = ? ORDER BY score DESC LIMIT 1').bind(r.orb).first(); r.leader = t ? t.name : ''; }
+      return json({ ok: true, me: p.orb, size: ORB_SIZE, orbs: rows });
+    }
     if (path === 'migrate' && req.method === 'POST') {
       const fl = p.flags ? JSON.parse(p.flags) : {};
       if (!fl.migration) return bad('Research Migration first');
-      const row = await env.DB.prepare('SELECT orb, COUNT(*) n FROM players WHERE orb != ? GROUP BY orb HAVING n < ? ORDER BY orb LIMIT 1').bind(p.orb, ORB_SIZE).first();
-      const orb = row ? row.orb : ((await env.DB.prepare('SELECT MAX(orb) m FROM players').first())?.m || 0) + 1;
-      const taken = new Set((await env.DB.prepare('SELECT slot FROM players WHERE orb = ?').bind(orb).all()).results.map(r => r.slot));
-      let slot = 0; while (taken.has(slot)) slot++;
+      const b = await body().catch(() => ({}));
+      const want = b && b.orb != null ? Number(b.orb) : null;
+      if (want === p.orb) return bad('You are already in that orb');
+      const { orb, slot } = await seat(env.DB, want, p.orb);
+      if (want != null && orb !== want) return bad(`Orb #${want} is full`);
       // migrating costs your stockpile: resources go back to the starting amounts
       const sv = p.save ? JSON.parse(p.save) : null;
       if (sv) { sv.res = { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, copper: 6, silver: 0, gold: 0 }; sv.t = now; }

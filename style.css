@@ -191,3 +191,6 @@ table.mk td{cursor:default}
 .why{font-size:12px;margin-top:3px;color:var(--red);font-weight:600}
 .why.sm{font-size:10px;margin-top:2px}
 .mk button:disabled{pointer-events:auto;cursor:not-allowed}
+
+#modal .box.wide{max-width:min(720px,96vw);width:100%}
+#modal .box.wide .lb td,#modal .box.wide .lb th{padding:6px 8px;text-align:left}
