@@ -39,7 +39,10 @@ export class Zone extends DurableObject {
     const snaps = [...(await this.ctx.storage.list({ prefix: 'v:' })).values()];
     const wild = [...(await this.ctx.storage.list({ prefix: 'w:' })).entries()].map(([k, v]) => [k.slice(2), v.u, v.t]);
     const online = new Set(this.ctx.getWebSockets().map(ws => ws.deserializeAttachment()?.pid));
-    pair[1].send(JSON.stringify({ t: 'hello', now: Date.now(), snaps: snaps.map(s => ({ ...s, on: online.has(s.pid) })), wild, intents: [...this.intents.values()] }));
+    // harvests that happened while this player was offline
+    const losses = (await this.ctx.storage.get('loss:' + who.pid)) || [];
+    if (losses.length) await this.ctx.storage.delete('loss:' + who.pid);
+    pair[1].send(JSON.stringify({ t: 'hello', now: Date.now(), snaps: snaps.map(s => ({ ...s, on: online.has(s.pid) })), wild, intents: [...this.intents.values()], losses }));
     this.broadcast({ t: 'on', pid: who.pid, on: true }, pair[1]);
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -56,7 +59,7 @@ export class Zone extends DurableObject {
     const home = zoneOf(who.gx, who.gy), mine = home[0] === who.zx && home[1] === who.zy;
     // village snapshot: buildings + how much is left on each resource (only into your own zone)
     if (m.t === 'snap' && mine) {
-      const v = { pid: who.pid, name: who.name, team: who.team, gx: who.gx, gy: who.gy, seed: m.seed | 0, b: Array.isArray(m.b) ? m.b.slice(0, 400) : [], left: m.left && typeof m.left === 'object' ? m.left : {}, n: m.n && typeof m.n === 'object' ? m.n : {}, lvl: m.lvl | 0, at: now };
+      const v = { pid: who.pid, name: who.name, team: who.team, gx: who.gx, gy: who.gy, seed: m.seed | 0, b: Array.isArray(m.b) ? m.b.slice(0, 400) : [], left: m.left && typeof m.left === 'object' ? m.left : {}, n: m.n && typeof m.n === 'object' ? m.n : {}, pl: Array.isArray(m.pl) ? m.pl.slice(0, 120) : [], st: m.st && typeof m.st === 'object' ? m.st : {}, gd: m.gd && typeof m.gd === 'object' ? { n: m.gd.n | 0, lvl: m.gd.lvl | 0 } : { n: 0, lvl: 0 }, lvl: m.lvl | 0, at: now };
       await this.ctx.storage.put('v:' + who.pid, v);
       this.broadcast({ t: 'snap', v: { ...v, on: true } }, ws);
       return;
@@ -67,6 +70,34 @@ export class Zone extends DurableObject {
       for (const it of m.w.slice(0, 120)) if (it && it.id != null) { if (it.gone) delete prev.w[it.id]; else prev.w[it.id] = it; }
       this.intents.set(who.pid, prev);
       this.broadcast({ t: 'w', pid: who.pid, w: m.w.slice(0, 120) }, ws);
+      return;
+    }
+    // a harvester reached another player's pile or storage: roll against their guards, then load up
+    if (m.t === 'harvest') {
+      const r = o => ws.send(JSON.stringify({ t: 'hvr', id: m.id, ...o }));
+      const v = await this.ctx.storage.get('v:' + (m.pid | 0));
+      if (!v || v.pid === who.pid) return r({ ok: false, why: 'village not found' });
+      if (who.team && v.team === who.team) return r({ ok: false, why: 'teammate' });
+      const res = String(m.res).slice(0, 12), src = m.src === 'store' ? 'store' : 'pile';
+      const hp = Math.max(0, Math.min(30, m.hp | 0)), carry = Math.max(1, Math.min(5000, m.carry | 0));
+      const G = (v.gd?.n | 0) * (1 + (v.gd?.lvl | 0)), Hs = 1 + hp;
+      const owners = this.ctx.getWebSockets().filter(o => o.deserializeAttachment()?.pid === v.pid);
+      if (G > 0 && Math.random() < G / (G + Hs)) {
+        for (const o of owners) { try { o.send(JSON.stringify({ t: 'shoo', by: who.name })); } catch (e) {} }
+        return r({ ok: false, shoo: true });
+      }
+      const piles = (v.pl || []).filter(p => p[0] === res);
+      const avail = src === 'pile' ? piles.reduce((a, p) => a + (p[3] | 0), 0) : (v.st?.[res] | 0);
+      const take = Math.min(avail, Math.round(carry * (src === 'pile' ? 2 : .5)));
+      if (take <= 0) return r({ ok: false, why: 'nothing left' });
+      if (src === 'pile') { let left = take; for (const p of piles) { const d = Math.min(p[3], Math.ceil(take * p[3] / avail), left); p[3] -= d; left -= d; } v.pl = v.pl.filter(p => p[3] > 0); }
+      else v.st[res] = (v.st[res] | 0) - take;
+      await this.ctx.storage.put('v:' + v.pid, v);
+      r({ ok: true, amt: take });
+      const loss = { res, amt: take, src, by: who.name };
+      if (owners.length) for (const o of owners) { try { o.send(JSON.stringify({ t: 'loss', list: [loss] })); } catch (e) {} }
+      else { const q = (await this.ctx.storage.get('loss:' + v.pid)) || []; q.push(loss); await this.ctx.storage.put('loss:' + v.pid, q.slice(-50)); }
+      this.broadcast({ t: 'snap', v: { ...v, on: owners.length > 0 } });
       return;
     }
     // claim one trip from a shared tile: wild land, or a resource inside someone's village

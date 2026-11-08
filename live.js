@@ -153,6 +153,7 @@ function worldObjects(objs, t, vw, vh) {
       const B = { type: b[0], i: b[1], j: b[2], done: true, id: -1 };
       objs.push({ d: bi + bj, f: () => { try { drawBuilding(B, sx, sy, t); } catch (e) {} } });
     }
+    for (const p of v.pl) { const [sx, sy] = iso(vi + p[1], vj + p[2]); if (sx > -60 && sx < vw + 60 && sy > -40 && sy < vh + 40) objs.push({ d: vi + vj + p[1] + p[2], f: () => drawPile(sx, sy, p[0], p[3]) }); }
     const [tx, ty] = iso(vi + VTCI, vj + VTCJ);
     objs.push({ d: vi + vj + VTCI + VTCJ + 2, f: () => {
       mx.font = `bold ${Math.round(13 / ZM)}px system-ui`; mx.textAlign = 'center'; mx.lineWidth = 3 / ZM; mx.strokeStyle = 'rgba(0,0,0,.7)';
@@ -185,16 +186,29 @@ function intentPos(it, home, k, now) {
 }
 
 // ---------------------------------------------------------------- tapping shared land
-function extAt(i, j) { const [x, y] = toWorld(i, j); return !!tileInfo(x, y); }
+// a neighbour's pile or storage building on this tile (what harvesters go for)
+function hvTarget(x, y) {
+  const v = neighbourAt(x, y); if (!v) return null;
+  const li = x - v.ox, lj = y - v.oy;
+  const p = v.pl.find(q => q[1] === li && q[2] === lj);
+  if (p) return { v, src: 'pile', res: p[0], amt: v.pl.filter(q => q[0] === p[0]).reduce((a, q) => a + q[3], 0) };
+  const b = v.b.find(q => q[1] === li && q[2] === lj && (q[0] === 'storehouse' || q[0] === 'grainstore'));
+  if (b) { const list = b[0] === 'grainstore' ? ['food'] : STORE_RES; const res = list.slice().sort((a, c) => (v.st[c] | 0) - (v.st[a] | 0))[0]; return { v, src: 'store', res, amt: v.st[res] | 0, list }; }
+  return null;
+}
+function extAt(i, j) { const [x, y] = toWorld(i, j); return !!tileInfo(x, y) || !!hvTarget(x, y); }
 const taskFor = n => Object.keys(TASKS).find(k => TASKS[k].node === n && k !== 'deadwood');
 function extTip(i, j) {
-  const [x, y] = toWorld(i, j), T = tileInfo(x, y); if (!T) return null;
+  const [x, y] = toWorld(i, j), hv = hvTarget(x, y);
+  if (hv) return `<b>${esc(hv.v.name)}'s ${hv.src === 'pile' ? hv.res + ' pile' : 'storage'}</b> <span class="small">${hv.amt} ${hv.res}</span><br>${hv.src === 'pile' ? 'Piles give harvesters 2×' : 'Storage gives harvesters ½×'} · ${hv.v.gd.n} on guard<br><i>Click to send harvesters</i>`;
+  const T = tileInfo(x, y); if (!T) return null;
   const tk = taskFor(T.n), Tk = TASKS[tk];
   return `<b>${NODE_NAME[T.n]}</b> <span class="small">${T.left} trips left</span><br>${T.kind === 'wild' ? 'Wild land — any player can harvest' : `In ${esc(T.v.name)}'s village`}<br>${Tk.n}: ${Object.entries(taskYield(tk)).map(([k, v]) => '+' + v + ' ' + k).join(', ')} + walk ${fmt(travelSecs(i, j))} each way<br><i>Click to send the closest worker</i>`;
 }
 function travelSecs(i, j) { return Math.min(120, Math.round(Math.hypot(i - TCI, j - TCJ) * .9)); }
 let EXT_AT = null;
 function extTileSheet(i, j) {
+  const [x0, y0] = toWorld(i, j), hv = hvTarget(x0, y0); if (hv) return harvestSheet(i, j, hv);
   const [x, y] = toWorld(i, j), T = tileInfo(x, y); if (!T) return closeSheet();
   const tk = taskFor(T.n), Tk = TASKS[tk], locked = Tk.req && !reqMet(Tk.req), tr = travelSecs(i, j);
   EXT_AT = [i, j];
@@ -229,6 +243,12 @@ function startForage(w, i, j, loud) {
 }
 // a trip out to shared land finished (game.js already paid out the gains): go again if anything is left
 function liveTripDone(w, t, quiet) {
+  if (t.hv) {
+    const got = Object.entries(t.loot || {}).filter(([, v]) => v > 0);
+    for (const [k, v] of got) S.res[k] = (S.res[k] || 0) + v;
+    if (!quiet && got.length) { toast(`${w.name} brought home ${got.map(([k, v]) => `${v} ${k}`).join(', ')} from ${t.hv.name}`); sfx('harvest'); }
+    autoAssign(w); save(); return;
+  }
   if (quiet || !w.repeat || !ME) { autoAssign(w); return; }
   startForage(w, t.target[0], t.target[1], false);
 }
@@ -281,7 +301,7 @@ function addSnap(v) {
   const old = LIVE.snaps.get(v.pid); if (old) LIVE.byPlot.delete(old.gx + ',' + old.gy);
   [v.ox, v.oy] = plotOrigin(v.gx, v.gy);
   const r = rng(v.seed); v.g = []; for (let k = 0; k < VW * VH; k++) v.g[k] = r();
-  v.n = v.n || {};
+  v.n = v.n || {}; v.pl = v.pl || []; v.st = v.st || {}; v.gd = v.gd || { n: 0, lvl: 0 };
   LIVE.snaps.set(v.pid, v); LIVE.byPlot.set(v.gx + ',' + v.gy, v);
   for (let y = v.oy; y < v.oy + VH; y += CHK / 2) for (let x = v.ox; x < v.ox + VW; x += CHK / 2) bumpChunkAt(x, y);
   bumpChunkAt(v.ox + VW - 1, v.oy + VH - 1);
@@ -292,13 +312,16 @@ function liveMsg(key, m) {
     for (const v of m.snaps) addSnap(v);
     for (const [k, u, rt] of m.wild) { LIVE.wild.set(k, { u, rt }); const [x, y] = k.split(',').map(Number); bumpChunkAt(x, y); }
     for (const it of m.intents) if (!ME || it.pid !== ME.id) LIVE.intents.set(it.pid, it.w);
+    for (const x of m.losses || []) applyLoss(x);
     return;
   }
   if (m.t === 'snap') return addSnap(m.v);
   if (m.t === 'on') { const v = LIVE.snaps.get(m.pid); if (v) v.on = m.on; if (!m.on) LIVE.intents.delete(m.pid); return; }
   if (m.t === 'w') { const cur = LIVE.intents.get(m.pid) || {}; for (const it of m.w) { if (it.gone) delete cur[it.id]; else cur[it.id] = it; } LIVE.intents.set(m.pid, cur); return; }
   if (m.t === 'wild') { LIVE.wild.set(m.k, { u: m.u, rt: m.rt }); return; }
-  if (m.t === 'claim') { const c = LIVE.claims.get(m.id); if (c) { LIVE.claims.delete(m.id); c.cb(!!m.ok); } return; }
+  if (m.t === 'claim' || m.t === 'hvr') { const c = LIVE.claims.get(m.id); if (c) { LIVE.claims.delete(m.id); c.cb(!!m.ok, m); } return; }
+  if (m.t === 'loss') { for (const x of m.list) applyLoss(x); return; }
+  if (m.t === 'shoo') { toast(`Your guards chased off ${m.by}'s harvester`); return; }
   if (m.t === 'took') {
     if (ME && m.pid === ME.id) {
       // another player harvested a trip from a resource in our village
@@ -318,8 +341,10 @@ function livePublish(force) {
   const left = {}, n = {};
   for (let k = 0; k < W * H; k++) { const t = MAP.node[k]; if (NODES.includes(t)) { const l = Math.max(0, MAP.amt[k] - ((S.used && S.used[k]) || 0)); if (l > 0) { left[k] = l; n[k] = t; } } }
   const b = S.buildings.filter(x => x.done).map(x => [x.type, x.i, x.j]);
-  const sig = JSON.stringify([b, left, S.level]);
-  if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', seed: S.seed, b, left, n, lvl: S.level }); }
+  const pl = PILES.map(p => [p.k, p.i, p.j, p.amt]), st = {}; for (const k of PILE_RES) st[k] = storedOf(k);
+  const gd = { n: guards(), lvl: guardLvl() };
+  const sig = JSON.stringify([b, left, S.level, pl, st, gd]);
+  if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', seed: S.seed, b, left, n, lvl: S.level, pl, st, gd }); }
   const now = sNowL(), out = [], seen = new Set();
   S.workers.forEach(w => {
     seen.add(w.id);
@@ -335,3 +360,54 @@ function livePublish(force) {
 }
 setInterval(() => { if (ME && !document.hidden) livePublish(false); }, 2000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { for (const s of LIVE.socks.values()) if (!s.open) s.retry = 0; } });
+
+
+// ---------------------------------------------------------------- harvesting other players' piles and storage
+let HV_AT = null, HV_N = 1;
+function harvestOdds(v) { const H = 1 + harvStats().power, G = (v.gd.n || 0) * (1 + (v.gd.lvl || 0)); return G ? H / (G + H) : 1; }
+function harvestSheet(i, j, hv) {
+  HV_AT = [i, j]; const v = hv.v, st = harvStats(), tr = Math.round(travelSecs(i, j) / st.speed);
+  const mine = ME && v.team && ME.team === v.team;
+  const per = Math.min(hv.amt, Math.round(st.carry * (hv.src === 'pile' ? 2 : .5)));
+  const sock = LIVE.socks.get(zoneKeyAt(...toWorld(i, j)));
+  const why = !ME ? 'Sign in on the World tab to harvest' : mine ? 'Teammates are off limits' : !(sock && sock.open) ? 'Connecting to the live world…' : hv.amt <= 0 ? 'Nothing left to take' : '';
+  openSheet(`<div class="t">${esc(v.name)}'s ${hv.src === 'pile' ? hv.res + ' pile' : 'storage'} <span class="small">· ${hv.amt} ${hv.res}</span></div>
+    <div class="d">${hv.src === 'pile' ? 'Loose piles are easy pickings: harvesters load 2× their carry.' : 'Stored goods are locked up: harvesters load only ½ their carry.'} ${v.gd.n ? `${v.gd.n} worker${v.gd.n > 1 ? 's' : ''} on guard (level ${v.gd.lvl}).` : 'Nobody on guard.'}</div>
+    <div class="d">Each harvester: walks ${fmt(tr)}, loads ${fmt(st.load)}, carries up to ${per} ${hv.res} · ${Math.round(harvestOdds(v) * 100)}% chance to get past the guards (your harvester level ${st.power})</div>
+    <div class="row" style="justify-content:flex-start;gap:8px;margin-top:8px"><span class="small">Harvesters</span><button class="btn sm alt" data-hvn="-1">−</button><b>${HV_N}</b><button class="btn sm alt" data-hvn="1">+</button></div>
+    <div style="margin-top:8px">${why ? `<span class="small">${why}</span>` : `<button class="btn go" data-hvgo="${hv.src}|${hv.res}">Send ${HV_N} harvester${HV_N > 1 ? 's' : ''}</button>`}</div>`);
+}
+$('#sheet').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b || !HV_AT) return;
+  if (b.dataset.hvn) { HV_N = Math.max(1, Math.min(5, HV_N + +b.dataset.hvn)); const [x, y] = toWorld(...HV_AT), hv = hvTarget(x, y); if (hv) harvestSheet(HV_AT[0], HV_AT[1], hv); return; }
+  if (!b.dataset.hvgo) return;
+  const [src, res] = b.dataset.hvgo.split('|'), [i, j] = HV_AT, [x, y] = toWorld(i, j), hv = hvTarget(x, y); if (!hv) return closeSheet();
+  const pool = S.workers.map((w, k) => ({ w, k })).filter(o => !(o.w.task && ['build', 'raid', 'hv', 'guard'].includes(o.w.task.kind)) && !o.w.claiming)
+    .sort((a, c) => { const pa = workerPos(a.w, a.k).p, pc = workerPos(c.w, c.k).p; return Math.hypot(pa[0] - i, pa[1] - j) - Math.hypot(pc[0] - i, pc[1] - j); });
+  if (!pool.length) return toast('No free AI workers — take one off a job first');
+  const st = harvStats(), tr = Math.max(5, Math.round(travelSecs(i, j) / st.speed)), dur = tr * 2 + st.load;
+  pool.slice(0, HV_N).forEach(({ w }) => { w.task = { kind: 'hv', dur, prog: 0, target: [i, j], ext: [x, y], tf: tr / dur, hv: { pid: hv.v.pid, name: hv.v.name, res, src, tr, sent: false } }; w.repeat = false; });
+  toast(`${Math.min(HV_N, pool.length)} harvester${HV_N > 1 ? 's' : ''} heading to ${hv.v.name}'s ${src === 'pile' ? res + ' pile' : 'storage'}`);
+  closeSheet(); save(); refresh(true);
+});
+// when a harvester reaches the target, the zone server rolls against the guards and hands over the load
+setInterval(() => {
+  if (!S) return;
+  for (const w of S.workers) {
+    const t = w.task; if (!t || t.kind !== 'hv' || t.hv.sent || t.prog < t.hv.tr) continue;
+    t.hv.sent = true;
+    const st = harvStats(), id = LIVE.nextClaim++, key = zoneKeyAt(t.ext[0], t.ext[1]);
+    const done = r => {
+      if (w.task !== t) return;
+      if (r && r.ok) t.loot = { [t.hv.res]: r.amt };
+      else { t.loot = {}; t.prog = Math.max(t.prog, t.dur - t.hv.tr); toast(r && r.shoo ? `${t.hv.name}'s guards chased ${w.name} off` : `${w.name} came up empty${r && r.why ? ' — ' + r.why : ''}`); }
+    };
+    if (!liveSend(key, { t: 'harvest', id, pid: t.hv.pid, res: t.hv.res, src: t.hv.src, hp: st.power, carry: st.carry })) { done(null); continue; }
+    LIVE.claims.set(id, { key, cb: (ok, r) => done(r) });
+    setTimeout(() => { const c = LIVE.claims.get(id); if (c) { LIVE.claims.delete(id); done(null); } }, 10000);
+  }
+}, 500);
+function applyLoss(m) {
+  const k = m.res; S.res[k] = Math.max(0, (S.res[k] || 0) - m.amt); save(); refresh(true);
+  toast(`${m.by} harvested ${m.amt} ${k} from your ${m.src === 'pile' ? 'pile' : 'storage'}`); sfx('lose');
+}

@@ -71,7 +71,7 @@ function openSpot(type, except) { let best = null; for (const b of S.buildings) 
 // saves from before the cap: extra workers at a building go find other work
 function enforceSpotCap() { for (const b of S.buildings) if (BNODE.includes(b.type)) workersAt(b).slice(SPOT_CAP).forEach(w => { const kind = w.task.kind; w.task = null; const o = openSpot(b.type, w); if (o) w.task = mkTask(w, kind, [o.i, o.j]); else autoAssign(w); }); }
 // resource buildings: 1 more copy per Age researched and per prestige after the first; each copy costs double the last
-const isResB = t => BNODE.includes(t);
+const isResB = t => BNODE.includes(t) || t === 'storehouse' || t === 'grainstore';
 const maxCopies = () => 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length + Math.max(0, PRES() - 1);
 Object.assign(BLD, EXTRA_BLD); Object.assign(TASKS, EXTRA_TASKS);
 Object.assign(NODE_TASK, { quarry: 'dig', dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
@@ -250,7 +250,7 @@ function findSlot() {
   const list = U('expansion') ? SLOTS : SLOTS.slice(0, 44);
   for (const [di, dj] of list) {
     const i = mod(TCI + di, W), j = TCJ + dj;
-    if (!bAt(i, j)) return [i, j];
+    if (!bAt(i, j) && !pileAt(i, j)) return [i, j];
   }
   return null;
 }
@@ -265,7 +265,7 @@ function pickTarget(kind) {
   }
   let best = null, bd = 1e9;
   for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
-    if (MAP.node[j * W + i] !== T.node || bAt(i, j)) continue;
+    if (MAP.node[j * W + i] !== T.node || bAt(i, j) || pileAt(i, j)) continue;
     const ui = unwrapNear(i, TCI), dd = Math.hypot(ui - TCI, j - TCJ);
     if (dd < bd) { bd = dd; best = [ui, j]; }
   }
@@ -284,7 +284,7 @@ function addWorker() {
 function autoAssign(w) {
   let best = null, bd = 1e9;
   for (const kind of Object.keys(TASKS)) {
-    if (!taskOpen(kind) || TASKS[kind].cost || fallbackBlocked(kind)) continue;   // quarry cutting only once rocks are gone
+    if (!taskOpen(kind) || TASKS[kind].cost || fallbackBlocked(kind) || !Object.keys(TASKS[kind].gain).length) continue;   // quarry cutting only once rocks are gone
     const t = pickTarget(kind), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { kind, target: t }; }
   }
@@ -299,7 +299,8 @@ function finishTask(w, quiet) {
   const t = w.task;
   if (t.kind === 'build') {
     const b = S.buildings.find(x => x.id === t.bid);
-    if (b) { b.done = true; if (!quiet) { toast(`${BLD[b.type].n} complete`); sfx('build'); } }
+    if (b && t.up) { b.lvl = (b.lvl || 1) + 1; if (!quiet) { toast(`${BLD[b.type].n} upgraded to level ${b.lvl}`); sfx('build'); } }
+    else if (b) { b.done = true; if (!quiet) { toast(`${BLD[b.type].n} complete`); sfx('build'); } }
     w.task = null; return;
   }
   if (t.kind === 'raid') { w.task = null; resolveRaid(w, t); return; }
@@ -308,7 +309,7 @@ function finishTask(w, quiet) {
   if (t.kind === 'mine') { w.mineN = (w.mineN || 0) + 1; if (w.mineN % silverEvery() === 0) y.silver = 1; }
   for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
   if (!quiet && view === 'village') sfx('gather', 0, 250);
-  if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
+  if (!quiet && t.target && Object.keys(y).length) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
   if (t.ext) { w.task = null; if (typeof liveTripDone === 'function') liveTripDone(w, t, quiet); else autoAssign(w); return; }
   // deplete the resource node that was worked
   const NT = TASKS[t.kind].node;
@@ -565,8 +566,9 @@ const GROUPS = [
   { k: 'coal', n: 'Coal', tasks: ['coal'], icon: 'coal' },
   { k: 'steel', n: 'Steel', tasks: ['smelt', 'blast'], icon: 'steel' },
   { k: 'gold', n: 'Gold', tasks: ['strike', 'pan'], icon: 3 },
+  { k: 'guard', n: 'On guard', tasks: ['guard'], icon: 'guard' },
 ];
-function groupOf(w) { if (!w.task) return 'idle'; if (w.task.kind === 'build') return 'build'; if (w.task.kind === 'raid') return 'raid'; const g = GROUPS.find(g => g.tasks.includes(w.task.kind)); return g ? g.k : 'idle'; }
+function groupOf(w) { if (!w.task) return 'idle'; if (w.task.kind === 'build') return 'build'; if (w.task.kind === 'raid' || w.task.kind === 'hv') return 'raid'; const g = GROUPS.find(g => g.tasks.includes(w.task.kind)); return g ? g.k : 'idle'; }
 function drawResIcon(ctx, k, x, y, r) {
   if (typeof k === 'number') return drawIcon(ctx, k, x, y, r);
   ctx.save(); ctx.translate(x, y);
@@ -593,6 +595,9 @@ function drawResIcon(ctx, k, x, y, r) {
   } else if (k === 'raid') {
     ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#fecaca', '#ef4444', '#7f1d1d'); ctx.beginPath(); ctx.moveTo(0, -r * .75); ctx.lineTo(r * .65, -r * .45); ctx.lineTo(r * .55, r * .25); ctx.lineTo(0, r * .75); ctx.lineTo(-r * .55, r * .25); ctx.lineTo(-r * .65, -r * .45); ctx.closePath(); ctx.fill();
     ctx.fillStyle = '#fff'; ctx.font = `bold ${r * .8}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('⚔', 0, r * .02);
+  } else if (k === 'guard') {
+    ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#dbeafe', '#3b82f6', '#1e3a8a'); ctx.beginPath(); ctx.moveTo(0, -r * .75); ctx.lineTo(r * .65, -r * .45); ctx.lineTo(r * .55, r * .25); ctx.lineTo(0, r * .75); ctx.lineTo(-r * .55, r * .25); ctx.lineTo(-r * .65, -r * .45); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${r * .7}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🛡', 0, r * .02);
   } else if (k === 'idle') {
     ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#e0f2fe', '#7dd3fc', '#0369a1'); ctx.beginPath(); ctx.arc(0, 0, r * .62, 0, 7); ctx.fill();
     ctx.fillStyle = '#0f1b3d'; ctx.font = `bold ${r * .55}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Zz', 0, r * .03);
@@ -725,7 +730,7 @@ function tileSheet(i, j) {
   if (b && !kind && b.type === 'market' && b.done) return openMarket();
   if (b && !kind) {
     const D = BLD[b.type], bw = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
-    return openSheet(`<div class="t">${D.n}</div><div class="d">${b.done ? (b.type === 'tc' ? 'Your base. Houses 2 AI workers.' : D.desc) : 'Under construction' + (bw ? ' by ' + esc(bw.name) : '')}</div>${bw ? progRow(bw) + speedRow([bw]) : ''}`);
+    return openSheet(`<div class="t">${D.n}${b.lvl > 1 ? ' · level ' + b.lvl : ''}</div><div class="d">${b.done ? (b.type === 'tc' ? 'Your base. Houses 2 AI workers and stores 200 of each resource.' : D.desc) : 'Under construction' + (bw ? ' by ' + esc(bw.name) : '')}</div>${bw ? progRow(bw) + speedRow([bw]) : ''}${b.done ? storageSheet(b) : ''}`);
   }
   if (!kind) return closeSheet();
   const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !reqMet(T.req);
@@ -943,7 +948,7 @@ function updateDeer(dt) {
   for (const d of DEER) {
     if (d.wait > 0) { d.wait -= dt; continue; }
     const dx = d.ti - d.i, dy = d.tj - d.j, L = Math.hypot(dx, dy);
-    if (L < .05) { d.wait = 2 + Math.random() * 4; d.ti = clamp(d.i + (Math.random() - .5) * 3, 1, W - 2); d.tj = clamp(d.j + (Math.random() - .5) * 3, 1, H - 2); continue; }
+    if (L < .05) { d.wait = 2 + Math.random() * 4; d.ti = clamp(d.i + (Math.random() - .5) * 3, 1, W - 2); deerLure(d); d.tj = clamp(d.j + (Math.random() - .5) * 3, 1, H - 2); continue; }
     const s = Math.min(L, dt * .5); d.i += dx / L * s; d.j += dy / L * s;
   }
 }
@@ -959,7 +964,7 @@ function worldLayer() {
     const P = (i, j) => [(i - j) * TW / 2 + ox, (i + j) * TH / 2 + oy];
     for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const [x, y] = P(i, j); groundTile(x, y, grassColor(i, j)); }
     const list = [];
-    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const n = MAP.node[j * W + i]; if (NODES.includes(n) && !bAt(i, j)) list.push([i, j, n]); }
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) { const n = MAP.node[j * W + i]; if (NODES.includes(n) && !bAt(i, j) && !pileAt(i, j)) list.push([i, j, n]); }
     list.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1])).forEach(([i, j, n]) => { const [x, y] = P(i, j); nodeSprite(n, x, y, MAP.g[j * W + i], stageOf(i, j)); });
   } finally { mx = old; }
   LAYER = { c, ox, oy, w, h }; return LAYER;
@@ -976,6 +981,7 @@ function drawMap(now) {
   const L = worldLayer(), sx = vw / 2 - camX - L.ox, sy = vh / 2 - camY - L.oy;
   if (!(sx > vw || sy > vh || sx + L.w < 0 || sy + L.h < 0)) mx.drawImage(L.c, sx, sy, L.w, L.h);
   if (typeof worldObjects === 'function') worldObjects(objs, t, vw, vh);
+  pileObjects(objs, t, vw, vh);
   const cI = TCI;
   const markFront = (fi, fj) => { for (let a = 0; a <= 2; a++) for (let b = 0; b <= 2; b++) if (a + b) { const j = fj + b; if (j >= 0 && j < H) front.add((fi + a) + ',' + j); } };
   for (const b of S.buildings) {

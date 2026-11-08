@@ -27,7 +27,7 @@ const UPG = [
   { id: 'tracking', no: 3, n: 'Tracking', cat: 'Food', tier: 2, req: ['hunt'], d: '+50% deer on the map' },
   { id: 'irrigation', no: 4, n: 'Irrigation', cat: 'Food', tier: 3, req: ['farm'], d: 'Farm harvest 20% faster' },
   { id: 'rotation', no: 5, n: 'Crop Rotation', cat: 'Food', tier: 3, req: ['farm'], d: 'Farm +2 food' },
-  { id: 'granary', no: 6, n: 'Granary', cat: 'Food', tier: 4, d: 'Food spoils above 300 — Granary raises the cap to 2,300' },
+  { id: 'granary', no: 6, n: 'Granary', cat: 'Food', tier: 4, d: 'Unlocks the Granary building: food stored there does not rot' },
   { id: 'smokehouse', no: 7, n: 'Smokehouse', cat: 'Food', tier: 4, d: 'Workers eat every 75s instead of 60s' },
   { id: 'feast', no: 10, n: 'Feast Hall', cat: 'Food', tier: 5, d: '+10% work speed while food is above 200' },
   // Wood
@@ -106,11 +106,19 @@ const UPG = [
   { id: 'age7', no: 92, n: 'Iron Age', cat: 'Ages', tier: 6, req: ['age6', 'sawmill'], d: 'Unlocks tier 7: Blast Furnace, Gearworks, Bank, Barracks', age: true },
   { id: 'age8', no: 93, n: 'Industrial Age', cat: 'Ages', tier: 7, req: ['age7', 'gearworks'], d: 'Unlocks tier 8: Factory, Power Plant, Outpost', age: true },
   { id: 'age9', no: 94, n: 'Digital Age', cat: 'Ages', tier: 8, req: ['age8', 'factory'], d: 'Tier 9 + AI workers work 50% faster (GSD Automation)', age: true },
+  // Harvesting other players + guarding your own (live world)
+  { id: 'harvtrain', no: 103, n: 'Harvester Training', cat: 'World', tier: 2, max: 5, d: 'Harvesters carry +50%, walk and load 10% faster, and beat guards more often, per level' },
+  { id: 'wheelbarrow', no: 104, n: 'Wheelbarrows', cat: 'World', tier: 3, req: ['harvtrain'], d: 'Harvesters carry 2× and count as one level stronger' },
+  { id: 'wagon', no: 105, n: 'Wagons', cat: 'World', tier: 5, req: ['wheelbarrow'], d: 'Harvesters carry 3× and move 25% faster; +2 strength' },
+  { id: 'hauler', no: 106, n: 'Steam Haulers', cat: 'World', tier: 8, req: ['wagon'], d: 'Harvesters carry 5× and move 50% faster; +3 strength' },
+  { id: 'guardtrain', no: 107, n: 'Guard Training', cat: 'World', tier: 2, max: 5, d: 'Workers on guard are one level stronger per level' },
 ];
 const UPGI = Object.fromEntries(UPG.map(u => [u.id, u]));
 
 // buildings on the list (tier 6–9). time in seconds.
 const EXTRA_BLD = {
+  storehouse: { no: 101, n: 'Storehouse', tier: 2, time: 180, cost: { wood: 60, stone: 20, money: 10 }, desc: 'Keeps wood, stone, ore, coal, steel, planks and gears out of rotting piles (500 each; upgrades to 5,000)' },
+  grainstore: { no: 102, n: 'Granary', tier: 4, time: 300, req: ['granary'], cost: { wood: 150, stone: 60, money: 30 }, desc: 'Keeps food out of rotting piles (500; upgrades to 5,000)' },
   sawmill:   { no: 16, n: 'Sawmill', tier: 6, time: 900, req: ['age6'], cost: { wood: 300, stone: 150, steel: 20, money: 150 }, desc: '2 wood → 1 plank' },
   market:    { no: 51, n: 'Market', tier: 6, time: 900, req: ['age6'], cost: { wood: 250, stone: 200, money: 200 }, desc: 'Trade resources for copper (tap it, or Build tab)' },
   taxoffice: { no: 53, n: 'Tax Office', tier: 6, time: 900, req: ['age6'], cost: { stone: 300, steel: 30, money: 250 }, desc: '+1 copper per worker per hour' },
@@ -134,6 +142,8 @@ const EXTRA_BLD = {
   moneyprinter: { no: 99, n: 'Wonder: Money Printer', tier: 9, time: 14400, req: ['age9'], cost: { steel: 1200, gears: 500, gold: 400, money: 6000 }, desc: 'Prints 1 gold every 10 minutes' },
 };
 const EXTRA_TASKS = {
+  guard: { n: 'On guard', node: 'tc', time: 60, gain: {} },
+  hv:    { n: 'Harvesting', node: 'none', time: 20, gain: {} },
   fish:  { n: 'Fish', node: 'dock', time: 25, gain: { food: 4 }, req: 'dock' },
   stone2:{ n: 'Dig the pit', node: 'quarry2', time: 30, gain: { stone: 3 }, req: 'quarry2' },
   dig:   { n: 'Cut stone at the Quarry', node: 'quarry', time: 45, gain: { stone: 1 }, req: 'quarry' },   // endless fallback once rocks run out
@@ -291,7 +301,7 @@ function passive(dt, quiet) {
   const A = S.acc || (S.acc = {});
   const add = (k, v) => { A[k] = (A[k] || 0) + v; const whole = Math.floor(A[k]); if (whole >= 1) { A[k] -= whole; S.res[k] = (S.res[k] || 0) + whole; } };
   // spoilage above the food cap
-  const cap = foodCap(); if (S.res.food > cap) { A.spoil = (A.spoil || 0) + (S.res.food - cap) * .02 / 60 * dt; const w = Math.floor(A.spoil); if (w) { A.spoil -= w; S.res.food = Math.max(cap, S.res.food - w); } }
+  if (typeof rotPiles === 'function') rotPiles(dt);
   if (hasB('bank')) add('copper', Math.min(100, S.res.copper * .01) / 3600 * dt);
   if (hasB('taxoffice')) add('copper', S.workers.length / 3600 * dt);
   if (hasB('moneyprinter')) add('gold', dt / 600);
@@ -455,6 +465,7 @@ const BCOL = {
   factory: ['#9ca3af', '#6b7280', '#4b5563', '#374151', '#1f2937'], powerplant: ['#fef08a', '#facc15', '#ca8a04', '#334155', '#1e293b'],
   outpost: ['#c4b5fd', '#8b5cf6', '#6d28d9', '#1e3a8a', '#172554'], gsdtower: ['#e0f2fe', '#7dd3fc', '#0284c7', '#fbbf24', '#b45309'],
   moneyprinter: ['#bbf7d0', '#4ade80', '#15803d', '#e8b923', '#c9971a'],
+  storehouse: ['#d6b98c', '#b08e5c', '#8a6b3e', '#57534e', '#3f3a36'], grainstore: ['#fde68a', '#e8c35a', '#c99a2e', '#9a3412', '#7c2d12'],
 };
 function drawExtraBuilding(b, x, y, t) {
   const c = BCOL[b.type] || ['#ccc', '#aaa', '#888', '#666', '#444'];
