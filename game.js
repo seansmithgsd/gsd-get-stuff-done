@@ -1613,7 +1613,19 @@ function lose() {
     <div class="small" style="margin-top:4px">You have ${wallet()} coin value (copper ${S.res.copper}, silver ×3, gold ×10)</div>
     <div class="btns"><button class="btn alt" data-act="village">Village</button><button class="btn go" data-act="next">Try again</button></div>`);
 }
+let PENDING_SV = null;
+async function waitForClaim(rid) {
+  for (let n = 0; n < 240 && !ME; n++) {
+    await new Promise(r => setTimeout(r, 5000));
+    let cur = null; try { cur = localStorage.getItem('gsd_rid'); } catch (e) {}
+    if (cur && cur !== rid) return;
+    const r = await api('claim?rid=' + rid);
+    if (r.ok && r.signedIn) { try { localStorage.removeItem('gsd_rid'); } catch (e) {} toast('Signed in'); syncLogin(); return; }
+  }
+}
 const ACTS = {
+  keepLocal: async () => { S.owner = ME.id; save(); await pushSave(); toast('Kept this device\'s village'); refresh(true); },
+  keepServer: () => { if (PENDING_SV) { loadSave(PENDING_SV); S.owner = ME.id; save(); dirty = false; PENDING_SV = null; toast('Loaded your account\'s village'); refresh(true); } },
   prestige: () => doPrestige(),
   more: () => { if (!P || wallet() < MORE_MOVES_COST) return; pay({ money: MORE_MOVES_COST }); sfx('coin'); P.moves += 5; P.over = false; save(); refresh(); renderPuzzleHead(); drawBoard(); toast('+5 moves'); },
   next: () => { startLevel(); },
@@ -2038,7 +2050,14 @@ async function syncLogin() {
   if (!r.ok) { ME = null; refresh(true); return; }
   ME = r.player;
   const sv = r.save;
+  const prog = x => (x.level || 1) + (x.buildings || []).length * 2 + (x.workers || []).length * 3;
   if (!sv) { S.owner = ME.id; save(); await pushSave(); toast('Your village is now saved to your account'); }
+  // this device has its own guest village and the account already has one: ask which to keep
+  else if (S.owner !== ME.id && prog(S) > prog(newState()) && JSON.stringify([S.level, S.buildings.length]) !== JSON.stringify([sv.level, (sv.buildings || []).length])) {
+    PENDING_SV = sv;
+    modal(`<h2>Two villages</h2><p>This device: <b>level ${S.level}</b>, ${S.buildings.length} buildings, ${S.workers.length} AI workers.<br>Your account (${esc(ME.email)}): <b>level ${sv.level || 1}</b>, ${(sv.buildings || []).length} buildings, ${(sv.workers || []).length} AI workers.</p><p>Which one do you want to keep? The other is replaced.</p>
+      <div class="btns"><button class="btn go" data-act="keepLocal">Keep this device's</button><button class="btn alt" data-act="keepServer">Use the account's</button></div>`);
+  }
   else if (S.owner === ME.id && (S.t || 0) > (sv.t || 0)) { await pushSave(); }   // this device is ahead
   else { loadSave(sv); S.owner = ME.id; save(); dirty = false; }
   S.teamWonder = !!r.teamWonder;
@@ -2409,7 +2428,12 @@ $('#v-orb').addEventListener('click', async e => {
   if (t.dataset.login !== undefined) {
     const email = $('#lg-email').value.trim(), name = $('#lg-name').value.trim(), msg = $('#lg-msg');
     t.disabled = true; msg.textContent = 'Sending…';
-    const r = await api('login', { method: 'POST', body: JSON.stringify({ email, name }) });
+    // remember which device asked: if the link is opened in another browser, this one still signs in and keeps its village
+    const rid = [...crypto.getRandomValues(new Uint8Array(20))].map(b => b.toString(16).padStart(2, '0')).join('');
+    try { localStorage.setItem('gsd_rid', rid); } catch (e) {}
+    S.t = Date.now();
+    const r = await api('login', { method: 'POST', body: JSON.stringify({ email, name, rid, save: S }) });
+    if (r.ok) waitForClaim(rid);
     t.disabled = false;
     if (r.ok && r.devLink) { msg.innerHTML = `Dev link: <a href="${r.devLink}">${r.devLink}</a>`; return; }
     msg.textContent = r.ok ? `Check ${email} for your login link (it expires in 30 minutes).` : r.error;
@@ -2566,6 +2590,6 @@ setInterval(() => { if (ME && dirty) pushSave(); }, 15000);
 setInterval(() => { if (ME && (crewsOut().length || INCOMING.length || Date.now() - lastPoll > 30000)) pollLosses(); }, 8000);
 setInterval(() => { if (ME && view === 'orb') loadOrb(); }, 20000);
 setInterval(() => { if (ME && view === 'orb' && !document.hidden) loadWorld(true); }, 4000);
-syncLogin();
+syncLogin().then(() => { let rid = null; try { rid = localStorage.getItem('gsd_rid'); } catch (e) {} if (rid && !ME) waitForClaim(rid); });
 // count guest plays (no account) so the world screen can show how many people tried it without signing in
 setTimeout(() => { if (ME) return; let d; try { d = localStorage.getItem('gsd_dev'); if (!d) { d = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('gsd_dev', d); } } catch (e) { return; } api('hello', { method: 'POST', body: JSON.stringify({ device: d, level: S.level }) }); }, 8000);

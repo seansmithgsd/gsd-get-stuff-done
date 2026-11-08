@@ -79,7 +79,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS marches_status ON marches(status, arrive)`,
   `CREATE INDEX IF NOT EXISTS marches_owner ON marches(owner, status)`,
 ];
-const ALTERS = ['ALTER TABLE players ADD COLUMN flags TEXT', 'ALTER TABLE players ADD COLUMN harvested_at INTEGER DEFAULT 0', 'ALTER TABLE players ADD COLUMN decoy_day TEXT',
+const ALTERS = ['ALTER TABLE logins ADD COLUMN rid TEXT', 'ALTER TABLE logins ADD COLUMN gsave TEXT', 'ALTER TABLE logins ADD COLUMN player INTEGER', 'ALTER TABLE logins ADD COLUMN claimed INTEGER DEFAULT 0', 'ALTER TABLE players ADD COLUMN flags TEXT', 'ALTER TABLE players ADD COLUMN harvested_at INTEGER DEFAULT 0', 'ALTER TABLE players ADD COLUMN decoy_day TEXT',
   'ALTER TABLE teams ADD COLUMN ally INTEGER', 'ALTER TABLE teams ADD COLUMN wonder INTEGER DEFAULT 0',
   'ALTER TABLE players ADD COLUMN wx INTEGER', 'ALTER TABLE players ADD COLUMN wy INTEGER'];
 let schemaReady = false;
@@ -244,7 +244,10 @@ export async function onRequest(ctx) {
       const recent = await env.DB.prepare('SELECT COUNT(*) n FROM logins WHERE email = ? AND created > ?').bind(email, now - 60000).first();
       if (recent.n > 0) return bad('A link was just sent — check your inbox (and spam)', 429);
       const token = randToken();
-      await env.DB.prepare('INSERT INTO logins (token, email, name, created) VALUES (?, ?, ?, ?)').bind(token, email, name || email.split('@')[0].slice(0, 20), now).run();
+      // the device that asked for the link: its id (so it signs in too once the link is opened anywhere) and its guest village
+      const rid = /^[a-f0-9]{32,64}$/.test(String(b.rid || '')) ? String(b.rid) : null;
+      let gsave = null; try { if (b.save && typeof b.save === 'object') { const j = JSON.stringify(b.save); if (j.length < 400000) gsave = j; } } catch (e) {}
+      await env.DB.prepare('INSERT INTO logins (token, email, name, created, rid, gsave) VALUES (?, ?, ?, ?, ?, ?)').bind(token, email, name || email.split('@')[0].slice(0, 20), now, rid, gsave).run();
       const link = `${url.origin}/api/verify?t=${token}`;
       if (!env.NOTICE_URL || !env.NOTICE_TOKEN) {
         const local = ['localhost', '127.0.0.1'].includes(url.hostname);
@@ -268,10 +271,14 @@ export async function onRequest(ctx) {
       let p = await env.DB.prepare('SELECT * FROM players WHERE email = ?').bind(row.email).first();
       if (!p) {
         const { x, y } = await plot(env.DB);
-        await env.DB.prepare('INSERT INTO players (email, name, orb, slot, created, seen, wx, wy) VALUES (?, ?, ?, 0, ?, ?, ?, ?)').bind(row.email, row.name, WORLD, now, now, x, y).run();
+        // a brand-new account starts from the village on the device that asked for the link
+        const gs = row.gsave ? JSON.parse(row.gsave) : null;
+        await env.DB.prepare('INSERT INTO players (email, name, orb, slot, created, seen, wx, wy, save, save_t, level) VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)')
+          .bind(row.email, row.name, WORLD, now, now, x, y, gs ? row.gsave : null, gs ? now : null, gs ? (gs.level | 0) || 1 : 1).run();
         await clearWild(env.DB, x, y);
         p = await env.DB.prepare('SELECT * FROM players WHERE email = ?').bind(row.email).first();
       }
+      await env.DB.prepare('UPDATE logins SET player = ? WHERE token = ?').bind(p.id, t).run();
       const s = randToken();
       await env.DB.prepare('INSERT INTO sessions (token, player, created) VALUES (?, ?, ?)').bind(s, p.id, now).run();
       return new Response(null, { status: 302, headers: {
@@ -280,6 +287,17 @@ export async function onRequest(ctx) {
       } });
     }
 
+    // the device that asked for a login link signs in as soon as the link is opened, even in another browser
+    if (path === 'claim' && req.method === 'GET') {
+      const rid = String(url.searchParams.get('rid') || '');
+      if (!/^[a-f0-9]{32,64}$/.test(rid)) return bad('bad id');
+      const row = await env.DB.prepare('SELECT * FROM logins WHERE rid = ? AND used = 1 AND claimed = 0 AND player IS NOT NULL AND created > ? ORDER BY created DESC LIMIT 1').bind(rid, now - LINK_TTL_MS * 2).first();
+      if (!row) return json({ ok: true, pending: true });
+      await env.DB.prepare('UPDATE logins SET claimed = 1 WHERE token = ?').bind(row.token).run();
+      const s = randToken();
+      await env.DB.prepare('INSERT INTO sessions (token, player, created) VALUES (?, ?, ?)').bind(s, row.player, now).run();
+      return new Response(JSON.stringify({ ok: true, signedIn: true }), { status: 200, headers: { 'content-type': 'application/json', 'set-cookie': `gsd_s=${s}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}` } });
+    }
     const p = await me(req, env);
     if (path === 'hello' && req.method === 'POST') {
       const b = await body(), dev = String(b.device || '').replace(/[^a-z0-9]/gi, '').slice(0, 32), lvl = Math.max(1, Math.min(9999, Math.floor(Number(b.level) || 1)));
