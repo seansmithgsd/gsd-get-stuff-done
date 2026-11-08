@@ -60,6 +60,7 @@ const TASKS = {
   smelt:   { n: 'Smelt steel', node: 'smelter', time: 35, cost: { iron: 1, coal: 1 }, gain: { steel: 1 }, req: 'smelter' },
   strike:  { n: 'Strike gold', node: 'mint', time: 45, cost: { steel: 1 }, gain: { gold: 1 }, req: 'mint' },
   mine:    { n: 'Mine ore', node: 'mine', time: 40, gain: { iron: 2, copper: 1 }, req: 'mine' },
+  deadwood: { n: 'Gather deadwood', node: 'tc', time: 30, gain: { wood: 1 } },   // endless fallback once every tree is gone
 };
 const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine', smelter: 'smelt', mint: 'strike' };
 const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
@@ -127,7 +128,8 @@ setTimeout(muteIcon, 0);
 // ---------------------------------------------------------------- state
 const SAVE_KEY = 'gsd-get-stuff-done-v1';
 const W = 32, H = 24, TCI = 16, TCJ = 12;
-let S, ME = null, dirty = false, applied = [];
+let S, ME = null, dirty = false, applied = [], SIM_BACK = 0;
+const simNow = () => Date.now() - SIM_BACK;   // during offline catch-up, the moment being simulated
 
 function newState() {
   return {
@@ -217,6 +219,8 @@ function genMap(seed) {
   if (S && U('prospect')) { const rp = rng(seed ^ 0x77aa11); for (let n = 0; n < 7; n++) { const k = ((rp() * H) | 0) * W + ((rp() * W) | 0); if (!node[k]) node[k] = 'goldrock'; } }
   for (let k = 0; k < W * H; k++) { const n = node[k], r = ra(); if (n === 'tree') amt[k] = 6 + Math.floor(r * 10) + treeBonus(); else if (n === 'bush') amt[k] = 3 + Math.floor(r * 6); else if (n === 'rock') amt[k] = 8 + Math.floor(r * 13) + rockBonus(); else if (n === 'goldrock') amt[k] = 5; }
   MAP = { node, g, amt }; layerDirty = true;
+  // saves from before regrowth tracking have used-up trees/bushes with no depletion record: backfill so Forestry/Orchard can regrow them
+  if (S && S.used) for (const k in S.used) { const n = node[k]; if (S.used[k] >= amt[k] && (n === 'tree' || n === 'bush')) { S.dep = S.dep || {}; if (!S.dep[k]) S.dep[k] = { n, t: 0 }; } }
   if (S && S.used) for (const k in S.used) if (S.used[k] >= amt[k]) node[k] = null;
   const rd = rng(seed ^ 0x5bd1e995);
   DEER = [];
@@ -243,6 +247,7 @@ function findSlot() {
 }
 function pickTarget(kind) {
   const T = TASKS[kind];
+  if (T.node === 'tc') return [TCI, TCJ];
   if (BNODE.includes(T.node)) { const b = S.buildings.find(x => x.type === T.node && x.done); return b ? [unwrapNear(b.i, TCI), b.j] : null; }
   if (T.node === 'deer') {
     let best = null, bd = 1e9;
@@ -270,7 +275,7 @@ function addWorker() {
 function autoAssign(w) {
   let best = null, bd = 1e9;
   for (const kind of Object.keys(TASKS)) {
-    if (!taskOpen(kind) || TASKS[kind].cost || (kind === 'dig' && (taskOpen('stone') || taskOpen('stone2')))) continue;   // quarry cutting only once rocks are gone
+    if (!taskOpen(kind) || TASKS[kind].cost || fallbackBlocked(kind)) continue;   // quarry cutting only once rocks are gone
     const t = pickTarget(kind), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { kind, target: t }; }
   }
@@ -300,9 +305,11 @@ function finishTask(w, quiet) {
   let tgt = t.target;
   if (NODES.includes(NT) && tgt) {
     const k = tgt[1] * W + mod(tgt[0], W);
-    if (MAP.node[k] === NT) { const st0 = stageOf(tgt[0], tgt[1]); S.used = S.used || {}; S.used[k] = (S.used[k] || 0) + 1; if (stageOf(tgt[0], tgt[1]) !== st0) layerDirty = true; if (S.used[k] >= MAP.amt[k]) { MAP.node[k] = null; layerDirty = true; (S.dep = S.dep || {})[k] = { n: NT, t: Date.now() }; if (!quiet) toast(`${NODE_NAME[NT]} used up`); } }
+    if (MAP.node[k] === NT) { const st0 = stageOf(tgt[0], tgt[1]); S.used = S.used || {}; S.used[k] = (S.used[k] || 0) + 1; if (stageOf(tgt[0], tgt[1]) !== st0) layerDirty = true; if (S.used[k] >= MAP.amt[k]) { MAP.node[k] = null; layerDirty = true; (S.dep = S.dep || {})[k] = { n: NT, t: simNow() }; if (!quiet) toast(`${NODE_NAME[NT]} used up`); } }
     if (MAP.node[k] !== NT) tgt = null;
   }
+  // on a fallback (deadwood / quarry cutting) and the real source is back: go back to it
+  if (w.repeat && fallbackBlocked(t.kind)) { w.task = null; const G = GROUPS.find(g => g.tasks.includes(t.kind)); if (G) assignGroup(G.k, w, true); if (!w.task) autoAssign(w); return; }
   const carry = t.prog - t.dur;
   const TC = taskCost(t.kind);
   if (w.repeat && taskOpen(t.kind) && (!TC || canPay(TC))) {
@@ -314,6 +321,7 @@ function finishTask(w, quiet) {
     if (w.repeat && !taskOpen(t.kind)) { const G = GROUPS.find(g => g.tasks.includes(t.kind)); if (G) assignGroup(G.k, w, true); if (!w.task) autoAssign(w); }
   }
 }
+function fallbackBlocked(k) { return (k === 'dig' && (taskOpen('stone') || taskOpen('stone2'))) || (k === 'deadwood' && taskOpen('chop')); }
 function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || reqMet(T.req)) && !!pickTarget(kind); }
 function tick(dt, quiet) {
   if (S.workers.length) {
@@ -333,7 +341,8 @@ function catchUp(sec, report) {
   sec = Math.min(sec, MAX_OFFLINE);
   const before = { ...S.res };
   let r = sec;
-  while (r > 0) { const d = Math.min(1, r); tick(d, true); r -= d; }
+  while (r > 0) { const d = Math.min(1, r); SIM_BACK = (r - d) * 1000; tick(d, true); r -= d; }
+  SIM_BACK = 0;
   if (report && sec > 30) {
     const lines = RES.map(x => [x.n, S.res[x.k] - before[x.k]]).filter(x => x[1] !== 0).map(([n, v]) => `<li>${v > 0 ? '+' : ''}${v} ${n}</li>`);
     if (lines.length) modal(`<h2>While you were away</h2><div class="small">${fmt(sec)} passed</div><ul>${lines.join('')}</ul><div class="btns"><button class="btn" data-close>OK</button></div>`);
@@ -538,7 +547,7 @@ function taskLabel(t) { if (t.kind === 'raid') return 'Harvesting ' + t.name + "
 // worker groups by what they produce
 const GROUPS = [
   { k: 'food', n: 'Food', tasks: ['berries', 'hunt', 'farm', 'fish'], icon: 0 },
-  { k: 'wood', n: 'Wood', tasks: ['chop'], icon: 1 },
+  { k: 'wood', n: 'Wood', tasks: ['chop', 'deadwood'], icon: 1 },
   { k: 'stone', n: 'Stone', tasks: ['stone', 'stone2', 'dig'], icon: 2 },
   { k: 'planks', n: 'Planks', tasks: ['saw'], icon: 'planks' },
   { k: 'gears', n: 'Gears', tasks: ['gear'], icon: 'gears' },
@@ -599,7 +608,7 @@ function assignGroup(gk, w, quiet) {
   w = w || idle()[0]; if (!w) return toast('No idle AI workers — tap − on another group first');
   let best = null, bd = 1e9;
   for (const k of G.tasks) {
-    const TC = taskCost(k); if (!taskOpen(k) || (TC && !canPay(TC)) || (k === 'dig' && (taskOpen('stone') || taskOpen('stone2')))) continue;
+    const TC = taskCost(k); if (!taskOpen(k) || (TC && !canPay(TC)) || fallbackBlocked(k)) continue;
     const t = pickTarget(k), d = Math.hypot(t[0] - TCI, t[1] - TCJ);
     if (d < bd) { bd = d; best = { k, t }; }
   }

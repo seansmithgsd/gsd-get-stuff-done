@@ -286,7 +286,7 @@ function passive(dt, quiet) {
   if (hasB('nursery')) { A.nur = (A.nur || 0) + dt; if (A.nur >= 300) { A.nur -= 300; plantTree(); } }
   // regrowth of depleted trees / bushes
   if ((U('forestry') || hasB('orchard')) && S.dep) {
-    const now = Date.now();
+    const now = simNow();
     for (const k in S.dep) { const d = S.dep[k]; if (now - d.t < 600000) continue; if ((d.n === 'tree' && U('forestry')) || (d.n === 'bush' && hasB('orchard'))) { if (!S.buildings.some(b => b.j * W + b.i === +k)) { MAP.node[k] = d.n; S.used[k] = 0; layerDirty = true; } delete S.dep[k]; } }
   }
   if (S.bank > bankCap()) S.bank = bankCap();
