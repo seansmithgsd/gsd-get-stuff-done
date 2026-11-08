@@ -1,0 +1,11 @@
+{
+  // Deploy from this folder: npx wrangler deploy
+  "name": "gsd-world",
+  "main": "index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "routes": [{ "pattern": "world.gsdconsultantsllc.com", "custom_domain": true }],
+  "d1_databases": [{ "binding": "DB", "database_name": "gsd-game", "database_id": "b6927a4f-788c-4393-ad12-a0035c482661" }],
+  "durable_objects": { "bindings": [{ "name": "ZONE", "class_name": "Zone" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Zone"] }]
+}

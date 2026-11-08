@@ -65,6 +65,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS events (orb INTEGER NOT NULL, week INTEGER NOT NULL, total INTEGER DEFAULT 0, PRIMARY KEY (orb, week))`,
   `CREATE TABLE IF NOT EXISTS event_claims (player INTEGER NOT NULL, week INTEGER NOT NULL, PRIMARY KEY (player, week))`,
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`,
+  // short-lived tickets the live world server (gsd-world Worker) checks when a player's device connects
+  `CREATE TABLE IF NOT EXISTS ws_tickets (token TEXT PRIMARY KEY, player INTEGER NOT NULL, created INTEGER NOT NULL)`,
   // devices playing without signing in (guests never appear on the map) — counted so we can see who tried it
   `CREATE TABLE IF NOT EXISTS guests (device TEXT PRIMARY KEY, first INTEGER NOT NULL, last INTEGER NOT NULL, level INTEGER DEFAULT 1, plays INTEGER DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS wild (id INTEGER PRIMARY KEY AUTOINCREMENT, x INTEGER NOT NULL, y INTEGER NOT NULL, type TEXT NOT NULL, amt INTEGER NOT NULL, max INTEGER NOT NULL, regrow INTEGER DEFAULT 0)`,
@@ -373,12 +375,19 @@ export async function onRequest(ctx) {
       await env.DB.batch([env.DB.prepare('UPDATE teams SET ally = NULL WHERE ally = ?').bind(p.team), env.DB.prepare('UPDATE teams SET ally = ? WHERE id = ?').bind(t.id, p.team), env.DB.prepare('UPDATE teams SET ally = ? WHERE id = ?').bind(p.team, t.id)]);
       return json({ ok: true });
     }
+    if (path === 'wsticket' && req.method === 'POST') {
+      await env.DB.prepare('DELETE FROM ws_tickets WHERE created < ?').bind(now - 13 * 3600 * 1000).run();
+      const t = randToken();
+      await env.DB.prepare('INSERT INTO ws_tickets (token, player, created) VALUES (?, ?, ?)').bind(t, p.id, now).run();
+      return json({ ok: true, ticket: t, gx: Math.round(p.wx / SPACING), gy: Math.round(p.wy / SPACING), now });
+    }
     if (path === 'relocate' && req.method === 'POST') {
       const fl = p.flags ? JSON.parse(p.flags) : {};
       if (!fl.migration) return bad('Research Migration first');
-      const b = await body(), x = Math.round(Number(b.x)), y = Math.round(Number(b.y));
+      // villages sit on a fixed plot grid so the live world can lay them side by side
+      const b = await body(), x = Math.round(Number(b.x) / SPACING) * SPACING, y = Math.round(Number(b.y) / SPACING) * SPACING;
       if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 5000 || Math.abs(y) > 5000) return bad('Pick a spot on the map');
-      const near = await env.DB.prepare('SELECT name FROM players WHERE id != ? AND wx BETWEEN ? AND ? AND wy BETWEEN ? AND ? LIMIT 1').bind(p.id, x - 6, x + 6, y - 6, y + 6).first();
+      const near = await env.DB.prepare('SELECT name FROM players WHERE id != ? AND wx BETWEEN ? AND ? AND wy BETWEEN ? AND ? LIMIT 1').bind(p.id, x - 7, x + 7, y - 7, y + 7).first();
       if (near) return bad(`Too close to ${near.name} — pick open land`);
       const out = await env.DB.prepare("SELECT COUNT(*) n FROM marches WHERE owner = ? AND status = 'out'").bind(p.id).first();
       if (out.n) return bad('Wait for your crews to come home first');

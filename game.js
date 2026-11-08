@@ -193,7 +193,7 @@ function costHTML(c) {
 
 // ---------------------------------------------------------------- map
 let MAP, DEER = [];
-function near(i, j, a, b) { let di = Math.abs(mod(i, W) - a); di = Math.min(di, W - di); return Math.max(di, Math.abs(j - b)); }
+function near(i, j, a, b) { return Math.max(Math.abs(i - a), Math.abs(j - b)); }
 function genMap(seed) {
   const r = rng(seed);
   const node = new Array(W * H).fill(null), g = [];
@@ -231,9 +231,9 @@ function genMap(seed) {
   }
   DEER.push({ i: TCI + 6.5, j: TCJ + 2.5, ti: TCI + 6.5, tj: TCJ + 2.5, wait: 1 });
 }
-function nodeAt(i, j) { if (j < 0 || j >= H) return null; return MAP.node[j * W + mod(i, W)]; }
-function bAt(i, j) { const mi = mod(i, W); return S.buildings.find(b => b.i === mi && b.j === j); }
-function unwrapNear(i, ref) { let d = i - ref; d = mod(d + W / 2, W) - W / 2; return ref + d; }
+function nodeAt(i, j) { if (j < 0 || j >= H || i < 0 || i >= W) return null; return MAP.node[j * W + i]; }
+function bAt(i, j) { return S.buildings.find(b => b.i === i && b.j === j); }
+function unwrapNear(i) { return i; }   // the village no longer wraps around: it is one block of the shared world
 
 const SLOTS = [[2, 0], [0, 2], [-2, 0], [0, -2], [2, 2], [-2, 2], [2, -2], [-2, -2], [3, 1], [1, 3], [-3, 1], [1, -3], [3, -1], [-1, 3], [-3, -1], [-1, -3], [4, 2], [2, 4], [-4, 2], [2, -4]];
 (() => { const more = []; for (let r = 4; r <= 6; r++) for (let di = -r; di <= r; di++) for (let dj = -r; dj <= r; dj++) if (Math.max(Math.abs(di), Math.abs(dj)) === r && (di + dj) % 2 === 0 && !SLOTS.some(([a, b]) => a === di && b === dj)) more.push([di, dj]); more.sort((a, b) => Math.hypot(...a) - Math.hypot(...b)); SLOTS.push(...more); })();
@@ -300,6 +300,7 @@ function finishTask(w, quiet) {
   for (const k in y) S.res[k] = (S.res[k] || 0) + y[k];
   if (!quiet && view === 'village') sfx('gather', 0, 250);
   if (!quiet && t.target) floaters.push({ i: t.target[0], j: t.target[1], text: Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(' '), age: 0 });
+  if (t.ext) { w.task = null; if (typeof liveTripDone === 'function') liveTripDone(w, t, quiet); else autoAssign(w); return; }
   // deplete the resource node that was worked
   const NT = TASKS[t.kind].node;
   let tgt = t.target;
@@ -749,12 +750,12 @@ function nodeSprite(n, x, y, g, st) {
   else if (n === 'goldrock') { const c = sprite(`gr${st}`, 44, 34, 20, 26, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawRock(0, 0); mx.fillStyle = '#facc15'; [[-6, -10], [3, -14], [7, -6], [-2, -5]].forEach(([p, q]) => { mx.beginPath(); mx.arc(p, q, 2.2, 0, 7); mx.fill(); }); }); mx.drawImage(c, x - 20, y - 26, 44, 34); }
   else { const c = sprite(`r${st}`, 44, 34, 20, 26, (a, b) => { mx.translate(a, b); mx.scale(sc, sc); drawRock(0, 0); }); mx.drawImage(c, x - 20, y - 26, 44, 34); }
 }
-let cw = 0, ch = 0, camX = (TCI - TCJ) * TW / 2, camY = (TCI + TCJ) * TH / 2;
+let cw = 0, ch = 0, camX = (TCI - TCJ) * TW / 2, camY = (TCI + TCJ) * TH / 2, ZM = 1;   // ZM: village zoom (pinch / wheel)
 function sizeMap() {
   const r = mapC.getBoundingClientRect(); if (!r.width) return;
   cw = r.width; ch = r.height; mapC.width = cw * DPR; mapC.height = ch * DPR;
 }
-const iso = (i, j) => [(i - j) * TW / 2 - camX + cw / 2, (i + j) * TH / 2 - camY + ch / 2];
+const iso = (i, j) => [(i - j) * TW / 2 - camX + cw / ZM / 2, (i + j) * TH / 2 - camY + ch / ZM / 2];
 
 function grassColor(i, j) {
   const g = Math.round(MAP.g[j * W + mod(i, W)] * 8) / 8;
@@ -914,7 +915,7 @@ function drawWorker(x, y, w, t, working) {
   mx.fillStyle = rg(mx, x - 1, y - 20 - bob, 5, '#f8dcc0', '#e8c39a', '#b8875a'); mx.beginPath(); mx.arc(x, y - 19 - bob, 4.5, 0, 7); mx.fill();
   mx.fillStyle = lg(mx, x - 4, 0, x + 4, 0, [[0, '#e0f2fe'], [1, '#38bdf8']]); mx.fillRect(x - 3.5, y - 20.5 - bob, 7, 2.5); // visor: AI worker
   if (working) { const sw = Math.sin(t * 8 + w.id); mx.strokeStyle = '#6b4220'; mx.lineWidth = 2; mx.beginPath(); mx.moveTo(x + 4, y - 10 - bob); mx.lineTo(x + 9 + sw * 3, y - 16 - bob + sw * 2); mx.stroke(); }
-  if (starving()) { mx.fillStyle = '#ff6b5b'; mx.font = 'bold 10px Georgia'; mx.textAlign = 'center'; mx.fillText('!', x, y - 26); }
+  if (!w.ext && starving()) { mx.fillStyle = '#ff6b5b'; mx.font = 'bold 10px Georgia'; mx.textAlign = 'center'; mx.fillText('!', x, y - 26); }
 }
 function workerPos(w, k) {
   const t = w.task;
@@ -923,15 +924,16 @@ function workerPos(w, k) {
   const tgt = [t.target[0] + .5, t.target[1] + .5 + (t.kind === 'build' ? .4 : .45)];
   const f = t.prog / t.dur, lerp = (a, b, u) => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
   if (t.kind === 'build') return f < .1 ? { p: lerp(home, tgt, f / .1), working: false } : { p: tgt, working: true };
-  if (f < .2) return { p: lerp(home, tgt, f / .2), working: false };
-  if (f > .85) return { p: lerp(tgt, home, (f - .85) / .15), working: false };
+  const go = t.tf || .2, back = t.tf || .15;
+  if (f < go) return { p: lerp(home, tgt, f / go), working: false };
+  if (f > 1 - back) return { p: lerp(tgt, home, (f - 1 + back) / back), working: false };
   return { p: tgt, working: true };
 }
 function updateDeer(dt) {
   for (const d of DEER) {
     if (d.wait > 0) { d.wait -= dt; continue; }
     const dx = d.ti - d.i, dy = d.tj - d.j, L = Math.hypot(dx, dy);
-    if (L < .05) { d.wait = 2 + Math.random() * 4; d.ti = d.i + (Math.random() - .5) * 3; d.tj = clamp(d.j + (Math.random() - .5) * 3, 1, H - 2); continue; }
+    if (L < .05) { d.wait = 2 + Math.random() * 4; d.ti = clamp(d.i + (Math.random() - .5) * 3, 1, W - 2); d.tj = clamp(d.j + (Math.random() - .5) * 3, 1, H - 2); continue; }
     const s = Math.min(L, dt * .5); d.i += dx / L * s; d.j += dy / L * s;
   }
 }
@@ -954,23 +956,21 @@ function worldLayer() {
 }
 function drawMap(now) {
   const t = now / 1000; WSCR = [];
-  mx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  mx.fillStyle = lg(mx, 0, 0, 0, ch, [[0, '#0e5aa8'], [1, '#08356b']]); mx.fillRect(0, 0, cw, ch);
-  mx.strokeStyle = 'rgba(255,255,255,.07)'; mx.lineWidth = 2;
-  for (let k = 0; k < 14; k++) { const yy = (k * 53 + t * 8) % (ch + 40) - 20, xx = (k * 137) % cw; mx.beginPath(); mx.moveTo(xx - 30, yy); mx.quadraticCurveTo(xx, yy - 6, xx + 30, yy); mx.stroke(); }
+  mx.setTransform(DPR * ZM, 0, 0, DPR * ZM, 0, 0);
+  const vw = cw / ZM, vh = ch / ZM;
+  mx.fillStyle = '#4e8a3e'; mx.fillRect(0, 0, vw, vh);
   const objs = [], front = new Set();
-  const cI = (camX / (TW / 2) + camY / (TH / 2)) / 2;
-  // static ground + resources: one pre-rendered layer, copied once per wrap
-  const L = worldLayer(), sx = cw / 2 - camX - L.ox, sy = ch / 2 - camY - L.oy;
-  for (let k = -2; k <= 2; k++) {
-    const dx = sx + k * W * TW / 2, dy = sy + k * W * TH / 2;
-    if (dx > cw || dy > ch || dx + L.w < 0 || dy + L.h < 0) continue;
-    mx.drawImage(L.c, dx, dy, L.w, L.h);
-  }
+  // the shared world around the village: wild land and neighbours' villages (pre-rendered in chunks)
+  if (typeof drawWorldGround === 'function') drawWorldGround(vw, vh);
+  // our own village: ground + resources, one pre-rendered layer
+  const L = worldLayer(), sx = vw / 2 - camX - L.ox, sy = vh / 2 - camY - L.oy;
+  if (!(sx > vw || sy > vh || sx + L.w < 0 || sy + L.h < 0)) mx.drawImage(L.c, sx, sy, L.w, L.h);
+  if (typeof worldObjects === 'function') worldObjects(objs, t, vw, vh);
+  const cI = TCI;
   const markFront = (fi, fj) => { for (let a = 0; a <= 2; a++) for (let b = 0; b <= 2; b++) if (a + b) { const j = fj + b; if (j >= 0 && j < H) front.add((fi + a) + ',' + j); } };
   for (const b of S.buildings) {
     const ui = unwrapNear(b.i, cI), [x, y] = iso(ui, b.j);
-    if (x < -120 || x > cw + 120 || y < -140 || y > ch + 60) continue;
+    if (x < -120 || x > cw / ZM + 120 || y < -140 || y > ch / ZM + 60) continue;
     objs.push({ d: ui + b.j, f: () => drawBuilding(b, x, y, t) }); markFront(ui, b.j);
   }
   // world edge (poles of the orb)
@@ -1001,52 +1001,69 @@ function drawMap(now) {
     mx.strokeText(f.text, x, y - 30 - f.age * 25); mx.fillText(f.text, x, y - 30 - f.age * 25); mx.globalAlpha = 1;
   }
 }
-// pan + tap
+// pan + pinch/wheel zoom + tap
 (() => {
-  let down = null;
-  mapC.addEventListener('pointerdown', e => { mapC.setPointerCapture(e.pointerId); down = { x: e.clientX, y: e.clientY, cx: camX, cy: camY, moved: false }; });
+  let down = null; const pts = new Map(); let pinch = null;
+  const zoomAt = (z, cx, cy) => {
+    const r = mapC.getBoundingClientRect(), px = cx - r.left, py = cy - r.top, nz = clamp(z, .3, 1.6);
+    const wx = px / ZM - cw / ZM / 2 + camX, wy = py / ZM - ch / ZM / 2 + camY;
+    ZM = nz; camX = wx - px / ZM + cw / ZM / 2; camY = wy - py / ZM + ch / ZM / 2;
+  };
+  mapC.addEventListener('pointerdown', e => {
+    mapC.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), z: ZM }; down = null; return; }
+    down = { x: e.clientX, y: e.clientY, cx: camX, cy: camY, moved: false };
+  });
   mapC.addEventListener('pointermove', e => {
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pinch && pts.size === 2) { const [a, b] = [...pts.values()]; zoomAt(pinch.z * Math.hypot(a[0] - b[0], a[1] - b[1]) / pinch.d, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); return; }
     if (!down) return;
     const dx = e.clientX - down.x, dy = e.clientY - down.y;
     if (Math.hypot(dx, dy) > 8) down.moved = true;
-    if (down.moved) {
-      camX = down.cx - dx; camY = clamp(down.cy - dy, 0, (W + H) * TH / 2);
-      // keep camX inside one wrap so numbers stay small
-      const span = W * TW / 2; while (camX - camY * 2 > span * 1.5) camX -= span, camY -= span / 2; while (camX - camY * 2 < -span * 1.5) camX += span, camY += span / 2;
-    }
+    if (down.moved) { camX = down.cx - dx / ZM; camY = down.cy - dy / ZM; }
   });
-  mapC.addEventListener('pointerup', e => {
+  const up = e => {
+    pts.delete(e.pointerId);
+    if (pinch) { if (pts.size < 2) pinch = null; down = null; return; }
     if (!down) return;
-    if (!down.moved) {
+    if (!down.moved && e.type === 'pointerup') {
       const hit = tileAt(e.clientX, e.clientY);
-      if (hit) { if (!sendClosest(hit[0], hit[1])) tileSheet(hit[0], hit[1]); } else closeSheet();
+      if (hit && hit.ext) { if (typeof extTileSheet === 'function') extTileSheet(hit[0], hit[1]); }
+      else if (hit) { if (!sendClosest(hit[0], hit[1])) tileSheet(hit[0], hit[1]); } else closeSheet();
     }
     down = null;
-  });
+  };
+  mapC.addEventListener('pointerup', up); mapC.addEventListener('pointercancel', up);
+  mapC.addEventListener('wheel', e => { e.preventDefault(); zoomAt(ZM * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY); }, { passive: false });
   mapC.addEventListener('pointermove', e => { if (e.pointerType !== 'mouse' || down) { if (down) hideTip(); return; } showTip(e); });
   mapC.addEventListener('pointerleave', hideTip);
 })();
 
 function tileAt(cx, cy) {
   const r = mapC.getBoundingClientRect();
-  const wx = cx - r.left - cw / 2 + camX, wy = cy - r.top - ch / 2 + camY;
+  const wx = (cx - r.left) / ZM - cw / ZM / 2 + camX, wy = (cy - r.top) / ZM - ch / ZM / 2 + camY;
   const fi = (wx / (TW / 2) + wy / (TH / 2)) / 2, fj = (wy / (TH / 2) - wx / (TW / 2)) / 2;
   // objects are drawn above their tile: test tile under the pointer and the one just below it
   const cands = [[Math.floor(fi + .5), Math.floor(fj + .5)], [Math.floor(fi), Math.floor(fj)], [Math.floor(fi + 1), Math.floor(fj + 1)]];
-  for (const [i, j] of cands) { if (j < 0 || j >= H) continue; if (bAt(i, j) || nodeAt(i, j) || DEER.some(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j)) return [i, j]; }
+  for (const [i, j] of cands) {
+    if (i < 0 || i >= W || j < 0 || j >= H) { if (typeof extAt === 'function' && extAt(i, j)) { const h = [i, j]; h.ext = true; return h; } continue; }
+    if (bAt(i, j) || nodeAt(i, j) || DEER.some(d => Math.floor(d.i) === i && Math.floor(d.j) === j)) return [i, j];
+  }
   return null;
 }
 const tipEl = document.createElement('div'); tipEl.id = 'tip'; document.body.appendChild(tipEl);
 function hideTip() { tipEl.style.display = 'none'; }
 function workerAtTile(type, b) { return S.workers.filter(w => w.task && ((w.task.kind === 'build' && w.task.bid === b.id) || (TASKS[w.task.kind] && TASKS[w.task.kind].node === type))).map(w => esc(w.name)); }
 function tipHTML(cx, cy) {
-  const r = mapC.getBoundingClientRect(), px = cx - r.left, py = cy - r.top;
+  const r = mapC.getBoundingClientRect(), px = (cx - r.left) / ZM, py = (cy - r.top) / ZM;
   const wk = WSCR.find(q => Math.hypot(q.x - px, q.y - py) < 12);
+  if (wk && wk.w.ext) return `<b>${esc(wk.w.owner)}'s ${esc(wk.w.name)}</b><br>${esc(wk.w.label)}`;
   if (wk) {
     const w = wk.w, sp = starving() ? starveMul() : 1;
     return `<b>${esc(w.name)}</b><br>${w.task ? taskLabel(w.task) + ` · ${fmt((w.task.dur - w.task.prog) / sp)} left${w.repeat && w.task.kind !== 'build' ? ' · repeating' : ''}` : 'Idle — click a resource to put it to work'}${starving() ? '<br><span class="warn">Hungry: working at half speed</span>' : ''}`;
   }
   const hit = tileAt(cx, cy); if (!hit) return null;
+  if (hit.ext) return typeof extTip === 'function' ? extTip(hit[0], hit[1]) : null;
   const [i, j] = hit, b = bAt(i, j);
   const deer = !b && DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
   if (b) {
