@@ -1,9 +1,16 @@
 // GSD: Get Stuff Done — game API (Cloudflare Pages Functions + D1)
 // Bindings (set in the Pages project): DB = D1 database; secrets NOTICE_URL, NOTICE_TOKEN (GSD Client Notices Apps Script).
 
-const ORB_SIZE = 100, MAX_TEAMS = 10, TEAM_MAX = 13;
+const WORLD = 1, MAX_TEAMS = 100, TEAM_MAX = 13;
+// one shared world map: villages sit on plots ~SPACING tiles apart, spiralling out from 0,0
+const SPACING = 14, CHUNK = 24, NODES_PER_CHUNK = 5, VIEW_MAX = 160, MAX_CREWS = 6;
+const WORK_SECS = 30, REGROW_MS = 30 * 60 * 1000;
+// contested wild resources on the world map: what one worker carries home per trip
+const WILD = { grove: { res: 'wood', max: 500, carry: 25 }, rocks: { res: 'stone', max: 400, carry: 20 }, ore: { res: 'iron', max: 250, carry: 12 }, goldvein: { res: 'gold', max: 40, carry: 2 } };
+const WILD_ODDS = [['grove', .4], ['rocks', .3], ['ore', .2], ['goldvein', .1]];
+const travelSecs = (d, fast) => Math.min(1800, Math.round((15 + d * 4) * (fast ? .7 : 1)));
+const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 const SHIELD_MS = 24 * 3600 * 1000;       // new players can't be harvested for 24h
-const HARVEST_COOLDOWN_MS = 60 * 1000;     // one harvest per player per minute
 const HARVEST_SHARE = 0.33;
 const LINK_TTL_MS = 30 * 60 * 1000;
 const SESSION_DAYS = 365;
@@ -57,14 +64,33 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS listings (id INTEGER PRIMARY KEY AUTOINCREMENT, orb INTEGER NOT NULL, seller INTEGER NOT NULL, seller_name TEXT NOT NULL, res TEXT NOT NULL, amt INTEGER NOT NULL, price INTEGER NOT NULL, created INTEGER NOT NULL, sold INTEGER DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS events (orb INTEGER NOT NULL, week INTEGER NOT NULL, total INTEGER DEFAULT 0, PRIMARY KEY (orb, week))`,
   `CREATE TABLE IF NOT EXISTS event_claims (player INTEGER NOT NULL, week INTEGER NOT NULL, PRIMARY KEY (player, week))`,
+  `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`,
+  `CREATE TABLE IF NOT EXISTS wild (id INTEGER PRIMARY KEY AUTOINCREMENT, x INTEGER NOT NULL, y INTEGER NOT NULL, type TEXT NOT NULL, amt INTEGER NOT NULL, max INTEGER NOT NULL, regrow INTEGER DEFAULT 0)`,
+  `CREATE INDEX IF NOT EXISTS wild_xy ON wild(x, y)`,
+  `CREATE TABLE IF NOT EXISTS chunks (cx INTEGER NOT NULL, cy INTEGER NOT NULL, PRIMARY KEY (cx, cy))`,
+  // crews walking the world: raid (to a village), gather (to a wild node), intercept (out to meet a raid on the road)
+  `CREATE TABLE IF NOT EXISTS marches (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, owner INTEGER NOT NULL, owner_name TEXT NOT NULL, owner_team INTEGER,
+     target INTEGER NOT NULL, target_name TEXT, target_player INTEGER, fx REAL NOT NULL, fy REAL NOT NULL, tx REAL NOT NULL, ty REAL NOT NULL, crew INTEGER NOT NULL,
+     start INTEGER NOT NULL, arrive INTEGER NOT NULL, back_at INTEGER NOT NULL, ret INTEGER NOT NULL, status TEXT NOT NULL, result TEXT, loot TEXT)`,
+  `CREATE INDEX IF NOT EXISTS marches_status ON marches(status, arrive)`,
+  `CREATE INDEX IF NOT EXISTS marches_owner ON marches(owner, status)`,
 ];
 const ALTERS = ['ALTER TABLE players ADD COLUMN flags TEXT', 'ALTER TABLE players ADD COLUMN harvested_at INTEGER DEFAULT 0', 'ALTER TABLE players ADD COLUMN decoy_day TEXT',
-  'ALTER TABLE teams ADD COLUMN ally INTEGER', 'ALTER TABLE teams ADD COLUMN wonder INTEGER DEFAULT 0'];
+  'ALTER TABLE teams ADD COLUMN ally INTEGER', 'ALTER TABLE teams ADD COLUMN wonder INTEGER DEFAULT 0',
+  'ALTER TABLE players ADD COLUMN wx INTEGER', 'ALTER TABLE players ADD COLUMN wy INTEGER'];
 let schemaReady = false;
 async function ensureSchema(db) {
   if (schemaReady) return;
   await db.batch(SCHEMA.map(s => db.prepare(s)));
   for (const a of ALTERS) { try { await db.prepare(a).run(); } catch (e) { /* column exists */ } }
+  // one-time move from 100-player orbs to the single world map
+  const m = await db.prepare("INSERT OR IGNORE INTO meta (k, v) VALUES ('world1', ?)").bind(String(Date.now())).run();
+  if (m.meta.changes) {
+    await db.batch([db.prepare('UPDATE players SET orb = ?').bind(WORLD), db.prepare('UPDATE teams SET orb = ?').bind(WORLD), db.prepare('UPDATE listings SET orb = ?').bind(WORLD),
+      db.prepare('DELETE FROM events WHERE orb != ?').bind(WORLD), db.prepare('DELETE FROM incoming')]);
+  }
+  const homeless = (await db.prepare('SELECT id FROM players WHERE wx IS NULL ORDER BY score DESC').all()).results;
+  for (const h of homeless) { const { x, y } = await plot(db); await db.prepare('UPDATE players SET wx = ?, wy = ? WHERE id = ?').bind(x, y, h.id).run(); await clearWild(db, x, y); }
   schemaReady = true;
 }
 
@@ -86,23 +112,115 @@ async function me(req, env) {
   const t = cookie(req, 'gsd_s'); if (!t) return null;
   return await env.DB.prepare('SELECT p.* FROM sessions s JOIN players p ON p.id = s.player WHERE s.token = ?').bind(t).first();
 }
-function pub(p) { return { id: p.id, name: p.name, email: p.email, orb: p.orb, slot: p.slot, team: p.team, created: p.created, score: p.score }; }
+function pub(p) { return { id: p.id, name: p.name, email: p.email, orb: p.orb, x: p.wx, y: p.wy, team: p.team, created: p.created, score: p.score }; }
 
-async function seat(db, want, avoid) {
-  // a chosen orb if it has room; otherwise the busiest orb with a free seat (most players active this week), else a new orb
-  let orb = null;
-  if (want != null) { const r = await db.prepare('SELECT COUNT(*) n FROM players WHERE orb = ?').bind(want).first(); if (r && r.n > 0 && r.n < ORB_SIZE) orb = want; }
-  if (orb == null) {
-    const row = await db.prepare('SELECT orb, COUNT(*) n, SUM(CASE WHEN seen > ? THEN 1 ELSE 0 END) act FROM players WHERE orb != ? GROUP BY orb HAVING n < ? ORDER BY act DESC, n DESC, orb LIMIT 1')
-      .bind(Date.now() - 7 * 86400000, avoid ?? -1, ORB_SIZE).first();
-    orb = row ? row.orb : ((await db.prepare('SELECT MAX(orb) m FROM players').first())?.m || 0) + 1;
+// small deterministic hash -> [0,1)
+function h01(a, b, c = 0) { let h = (a * 374761393 + b * 668265263 + c * 2147483647) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
+// next free village plot, spiralling out from the centre
+async function plot(db) {
+  const taken = (await db.prepare('SELECT wx, wy FROM players WHERE wx IS NOT NULL').all()).results;
+  for (let r = 0; r < 200; r++) {
+    const ring = [];
+    for (let gx = -r; gx <= r; gx++) for (let gy = -r; gy <= r; gy++) if (Math.max(Math.abs(gx), Math.abs(gy)) === r) ring.push([gx, gy]);
+    ring.sort((A, B) => Math.atan2(A[1], A[0]) - Math.atan2(B[1], B[0]));
+    for (const [gx, gy] of ring) {
+      const x = gx * SPACING + Math.round((h01(gx, gy, 1) - .5) * 6), y = gy * SPACING + Math.round((h01(gx, gy, 2) - .5) * 6);
+      if (!taken.some(t => dist(t.wx, t.wy, x, y) < SPACING * .6)) return { x, y };
+    }
   }
-  const taken = new Set((await db.prepare('SELECT slot FROM players WHERE orb = ?').bind(orb).all()).results.map(r => r.slot));
-  // spread seats around the orb: 0, 50, 25, 75, ...
-  const order = []; for (let step = ORB_SIZE; step >= 1; step = Math.floor(step / 2)) for (let i = 0; i < ORB_SIZE; i += step) if (!order.includes(i)) order.push(i);
-  const slot = order.find(i => !taken.has(i));
-  return { orb, slot };
+  return { x: Math.round(Math.random() * 4000), y: Math.round(Math.random() * 4000) };
 }
+const clearWild = (db, x, y) => db.prepare('DELETE FROM wild WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?').bind(x - 4, x + 4, y - 4, y + 4).run();
+// lay out wild resource nodes the first time anyone looks at a chunk
+async function ensureChunks(db, x0, y0, x1, y1) {
+  const want = [];
+  for (let cx = Math.floor(x0 / CHUNK); cx <= Math.floor(x1 / CHUNK); cx++) for (let cy = Math.floor(y0 / CHUNK); cy <= Math.floor(y1 / CHUNK); cy++) want.push([cx, cy]);
+  if (!want.length) return;
+  const have = new Set((await db.prepare('SELECT cx, cy FROM chunks WHERE cx BETWEEN ? AND ? AND cy BETWEEN ? AND ?').bind(Math.floor(x0 / CHUNK), Math.floor(x1 / CHUNK), Math.floor(y0 / CHUNK), Math.floor(y1 / CHUNK)).all()).results.map(r => r.cx + ',' + r.cy));
+  const todo = want.filter(([cx, cy]) => !have.has(cx + ',' + cy)); if (!todo.length) return;
+  const homes = (await db.prepare('SELECT wx, wy FROM players WHERE wx BETWEEN ? AND ? AND wy BETWEEN ? AND ?').bind(x0 - CHUNK - 5, x1 + CHUNK + 5, y0 - CHUNK - 5, y1 + CHUNK + 5).all()).results;
+  const stmts = [];
+  for (const [cx, cy] of todo) {
+    stmts.push(db.prepare('INSERT OR IGNORE INTO chunks (cx, cy) VALUES (?, ?)').bind(cx, cy));
+    for (let n = 0; n < NODES_PER_CHUNK; n++) {
+      const x = cx * CHUNK + Math.floor(h01(cx, cy, 10 + n) * CHUNK), y = cy * CHUNK + Math.floor(h01(cx, cy, 30 + n) * CHUNK);
+      if (homes.some(hh => dist(hh.wx, hh.wy, x, y) < 5)) continue;
+      let roll = h01(cx, cy, 50 + n), type = 'grove'; for (const [t, o] of WILD_ODDS) { if (roll < o) { type = t; break; } roll -= o; }
+      stmts.push(db.prepare('INSERT INTO wild (x, y, type, amt, max) VALUES (?, ?, ?, ?, ?)').bind(x, y, type, WILD[type].max, WILD[type].max));
+    }
+  }
+  for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+}
+const flagsOfRow = r => (r && r.flags ? JSON.parse(r.flags) : {});
+const crewNote = (txt, res) => ({ note: 'crew:' + txt, res: res || {} });
+// resolve every crew whose moment has come: intercepts meet raids, raids dismantle, gatherers load up, everyone home delivers
+async function settle(db, now) {
+  await db.prepare('UPDATE wild SET amt = max, regrow = 0 WHERE regrow > 0 AND regrow < ?').bind(now).run();
+  await db.prepare("UPDATE marches SET status = 'out' WHERE status = 'busy' AND arrive < ?").bind(now - 120000).run();
+  const due = (await db.prepare("SELECT * FROM marches WHERE (status = 'out' AND arrive <= ?) OR (status = 'back' AND ret <= ?) ORDER BY CASE status WHEN 'out' THEN arrive ELSE ret END LIMIT 200").bind(now, now).all()).results;
+  for (const m of due) {
+    if (m.status === 'back') {
+      // crew is home: deliver the haul (or the report) as a gift
+      const r = await db.prepare("UPDATE marches SET status = 'done' WHERE id = ? AND status = 'back'").bind(m.id).run(); if (!r.meta.changes) continue;
+      const n = m.result ? JSON.parse(m.result) : {};
+      await db.prepare('INSERT INTO gifts (to_player, from_name, res, note, created) VALUES (?, ?, ?, ?, ?)').bind(m.owner, m.owner_name, m.loot || '{}', 'crew:' + (n.msg || 'Crew is home'), now).run();
+      continue;
+    }
+    const claim = await db.prepare("UPDATE marches SET status = 'busy' WHERE id = ? AND status = 'out'").bind(m.id).run(); if (!claim.meta.changes) continue;   // another request is resolving it
+    const home = async (msg, loot, backFrom) => {   // turn the crew around
+      const bx = backFrom ? backFrom[0] : m.tx, by = backFrom ? backFrom[1] : m.ty, at = backFrom ? backFrom[2] : m.arrive + (m.kind === 'gather' ? WORK_SECS * 1000 : 0);
+      const ret = at + travelSecs(dist(bx, by, m.fx, m.fy), m.kind !== 'intercept' && m.fast) * 1000;
+      await db.prepare("UPDATE marches SET status = 'back', tx = ?, ty = ?, arrive = ?, back_at = ?, ret = ?, result = ?, loot = ? WHERE id = ?")
+        .bind(bx, by, backFrom ? backFrom[2] : m.arrive, at, ret, JSON.stringify({ msg }), JSON.stringify(loot || {}), m.id).run();
+    };
+    const owner = await db.prepare('SELECT flags FROM players WHERE id = ?').bind(m.owner).first(); m.fast = !!flagsOfRow(owner).fastcrews;
+    if (m.kind === 'intercept') {
+      const raid = await db.prepare('SELECT * FROM marches WHERE id = ?').bind(m.target).first();
+      if (!raid || raid.status !== 'out') { await home(`Interceptors found no one on the road`); continue; }
+      const df = flagsOfRow(owner), atk = await db.prepare('SELECT flags FROM players WHERE id = ?').bind(raid.owner).first(), af = flagsOfRow(atk);
+      const defStr = m.crew + (df.militia ? 1 : 0), atkStr = raid.crew + (af.bigcrews ? 1 : 0);
+      if (Math.random() < defStr / (defStr + atkStr)) {
+        // raid stopped: the raiders walk home from the meeting point with nothing
+        const back = travelSecs(dist(m.tx, m.ty, raid.fx, raid.fy), af.fastcrews) * 1000;
+        const st = await db.prepare("UPDATE marches SET status = 'back', tx = ?, ty = ?, arrive = ?, back_at = ?, ret = ?, result = ?, loot = '{}' WHERE id = ? AND status = 'out'")
+          .bind(m.tx, m.ty, m.arrive, m.arrive, m.arrive + back, JSON.stringify({ msg: `${m.owner_name}'s crew stopped your raid on ${raid.target_name} on the road` }), raid.id).run();
+        await home(st.meta.changes ? `Your interceptors stopped ${raid.owner_name}'s raid on ${raid.target_name}` : 'Interceptors found no one on the road');
+      } else await home(`${raid.owner_name}'s raiders broke through your interceptors`);
+      continue;
+    }
+    if (m.kind === 'gather') {
+      const node = await db.prepare('SELECT * FROM wild WHERE id = ?').bind(m.target).first();
+      if (!node || node.amt <= 0) { await home(`The ${node ? node.type : 'site'} was picked clean before your crew got there`); continue; }
+      const W = WILD[node.type], take = Math.min(node.amt, W.carry * m.crew), left = node.amt - take;
+      await db.prepare('UPDATE wild SET amt = ?, regrow = ? WHERE id = ?').bind(left, left <= 0 ? now + REGROW_MS : 0, node.id).run();
+      await home(`Crew back from the wild with ${take} ${W.res}`, { [W.res]: take }); continue;
+    }
+    // raid: dismantle the target's lowest-tier building
+    const tg = await db.prepare('SELECT * FROM players WHERE id = ?').bind(m.target).first();
+    if (!tg) { await home('The village was gone'); continue; }
+    const tf = flagsOfRow(tg), af = flagsOfRow(owner);
+    if (tf.treaty && now - (tg.harvested_at || 0) < TREATY_MS) { await home(`${tg.name} was under a peace treaty`); continue; }
+    if (tf.militia && Math.random() < .25) { await home(`${tg.name}'s militia drove your crew off`); continue; }
+    const day = new Date(now).toISOString().slice(0, 10);
+    if (tf.decoys && tg.decoy_day !== day) { await db.prepare('UPDATE players SET decoy_day = ? WHERE id = ?').bind(day, tg.id).run(); await home(`Your crew dismantled a decoy hut at ${tg.name}'s — nothing gained`); continue; }
+    const save = tg.save ? JSON.parse(tg.save) : null;
+    const pending = new Set((await db.prepare('SELECT building_id FROM losses WHERE target = ? AND applied = 0').bind(tg.id).all()).results.map(r => r.building_id));
+    const cands = (save?.buildings || []).filter(x => x.done && BCOST[x.type] && !pending.has(x.id));
+    if (!cands.length) { await home(`${tg.name} had nothing left to dismantle`); continue; }
+    cands.sort((a, c) => BTIER[a.type] - BTIER[c.type]);
+    let share = af.spoils ? .40 : HARVEST_SHARE; if (tf.walls) share = Math.min(share, .20); if (tf.vault) share /= 2;
+    const take = af.bigcrews ? 2 : 1, picks = [], gained = {};
+    for (let n = 0; n < take && cands.length; n++) {
+      const low = cands.filter(x => BTIER[x.type] === BTIER[cands[0].type]);
+      const pick = low[Math.floor(Math.random() * low.length)]; picks.push(pick); cands.splice(cands.indexOf(pick), 1);
+      for (const [k, v] of Object.entries(BCOST[pick.type])) { const g = Math.floor(v * share); if (g > 0) { const kk = k === 'money' ? 'copper' : k; gained[kk] = (gained[kk] || 0) + g; } }
+    }
+    await db.batch([...picks.map(pick => db.prepare('INSERT INTO losses (target, attacker, building_id, building_type, created) VALUES (?, ?, ?, ?, ?)').bind(tg.id, m.owner, pick.id, pick.type, now)),
+      db.prepare('UPDATE players SET harvested_at = ? WHERE id = ?').bind(now, tg.id)]);
+    await home(`Your crew dismantled ${tg.name}'s ${picks.map(x => x.type).join(' + ')}`, gained);
+  }
+}
+const MARCH_COLS = 'id, kind, owner, owner_name, owner_team, target, target_name, target_player, fx, fy, tx, ty, crew, start, arrive, back_at, ret, status, result';
 
 export async function onRequest(ctx) {
   const { request: req, env } = ctx;
@@ -145,8 +263,9 @@ export async function onRequest(ctx) {
       await env.DB.prepare('UPDATE logins SET used = 1 WHERE token = ?').bind(t).run();
       let p = await env.DB.prepare('SELECT * FROM players WHERE email = ?').bind(row.email).first();
       if (!p) {
-        const { orb, slot } = await seat(env.DB);
-        await env.DB.prepare('INSERT INTO players (email, name, orb, slot, created, seen) VALUES (?, ?, ?, ?, ?, ?)').bind(row.email, row.name, orb, slot, now, now).run();
+        const { x, y } = await plot(env.DB);
+        await env.DB.prepare('INSERT INTO players (email, name, orb, slot, created, seen, wx, wy) VALUES (?, ?, ?, 0, ?, ?, ?, ?)').bind(row.email, row.name, WORLD, now, now, x, y).run();
+        await clearWild(env.DB, x, y);
         p = await env.DB.prepare('SELECT * FROM players WHERE email = ?').bind(row.email).first();
       }
       const s = randToken();
@@ -192,23 +311,18 @@ export async function onRequest(ctx) {
     }
 
     if (path === 'losses' && req.method === 'GET') {
+      await settle(env.DB, now);
       const losses = (await env.DB.prepare('SELECT l.id, l.building_id, l.building_type, l.created, a.name attacker FROM losses l JOIN players a ON a.id = l.attacker WHERE l.target = ? AND l.applied = 0').bind(p.id).all()).results;
       const gifts = (await env.DB.prepare('SELECT id, from_name, res, note FROM gifts WHERE to_player = ? AND applied = 0').bind(p.id).all()).results.map(g => ({ ...g, res: JSON.parse(g.res) }));
-      const fl = p.flags ? JSON.parse(p.flags) : {};
-      await env.DB.prepare('DELETE FROM incoming WHERE eta < ?').bind(now - 60000).run();
-      const incoming = fl.watchtower ? (await env.DB.prepare('SELECT i.eta, a.name attacker FROM incoming i JOIN players a ON a.id = i.attacker WHERE i.target = ?').bind(p.id).all()).results : [];
-      return json({ ok: true, losses, gifts, incoming });
-    }
-    if (path === 'raidstart' && req.method === 'POST') {
-      const b = await body();
-      await env.DB.prepare('INSERT INTO incoming (target, attacker, eta, created) VALUES (?, ?, ?, ?)').bind(Number(b.target), p.id, now + Math.min(3600, Math.max(10, Number(b.secs) || 60)) * 1000, now).run();
-      return json({ ok: true });
+      const incoming = (await env.DB.prepare("SELECT id, arrive eta, owner_name attacker FROM marches WHERE kind = 'raid' AND target = ? AND status = 'out'").bind(p.id).all()).results;
+      const mine = (await env.DB.prepare(`SELECT ${MARCH_COLS} FROM marches WHERE owner = ? AND status != 'done'`).bind(p.id).all()).results;
+      return json({ ok: true, losses, gifts, incoming, marches: mine, now });
     }
     if (path === 'scout' && req.method === 'GET') {
       const fl = p.flags ? JSON.parse(p.flags) : {};
       if (!fl.scout) return bad('Research Scouting first');
       const t = await env.DB.prepare('SELECT name, save, orb FROM players WHERE id = ?').bind(Number(url.searchParams.get('id'))).first();
-      if (!t || t.orb !== p.orb) return bad('Not in your orb');
+      if (!t) return bad('No such village');
       const sv = t.save ? JSON.parse(t.save) : {}, counts = {};
       for (const x of sv.buildings || []) if (x.done && x.type !== 'tc') counts[x.type] = (counts[x.type] || 0) + 1;
       return json({ ok: true, name: t.name, buildings: counts, workers: (sv.workers || []).length });
@@ -247,29 +361,25 @@ export async function onRequest(ctx) {
       const b = await body(), fl = p.flags ? JSON.parse(p.flags) : {};
       if (!fl.envoy) return bad('Research Envoy first'); if (!p.team) return bad('Join a team first');
       const t = await env.DB.prepare('SELECT * FROM teams WHERE id = ? AND orb = ?').bind(Number(b.team), p.orb).first();
-      if (!t || t.id === p.team) return bad('Pick another team in your orb');
+      if (!t || t.id === p.team) return bad('Pick another team');
       await env.DB.batch([env.DB.prepare('UPDATE teams SET ally = NULL WHERE ally = ?').bind(p.team), env.DB.prepare('UPDATE teams SET ally = ? WHERE id = ?').bind(t.id, p.team), env.DB.prepare('UPDATE teams SET ally = ? WHERE id = ?').bind(p.team, t.id)]);
       return json({ ok: true });
     }
-    if (path === 'orbs' && req.method === 'GET') {
-      const rows = (await env.DB.prepare(`SELECT orb, COUNT(*) players, SUM(CASE WHEN seen > ? THEN 1 ELSE 0 END) online, SUM(CASE WHEN seen > ? THEN 1 ELSE 0 END) active,
-        MAX(score) top, CAST(AVG(score) AS INTEGER) avg, COUNT(DISTINCT team) teams FROM players GROUP BY orb ORDER BY active DESC, players DESC LIMIT 50`).bind(now - 120000, now - 7 * 86400000).all()).results;
-      for (const r of rows) { const t = await env.DB.prepare('SELECT name FROM players WHERE orb = ? ORDER BY score DESC LIMIT 1').bind(r.orb).first(); r.leader = t ? t.name : ''; }
-      return json({ ok: true, me: p.orb, size: ORB_SIZE, orbs: rows });
-    }
-    if (path === 'migrate' && req.method === 'POST') {
+    if (path === 'relocate' && req.method === 'POST') {
       const fl = p.flags ? JSON.parse(p.flags) : {};
       if (!fl.migration) return bad('Research Migration first');
-      const b = await body().catch(() => ({}));
-      const want = b && b.orb != null ? Number(b.orb) : null;
-      if (want === p.orb) return bad('You are already in that orb');
-      const { orb, slot } = await seat(env.DB, want, p.orb);
-      if (want != null && orb !== want) return bad(`Orb #${want} is full`);
-      // migrating costs your stockpile: resources go back to the starting amounts
+      const b = await body(), x = Math.round(Number(b.x)), y = Math.round(Number(b.y));
+      if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 5000 || Math.abs(y) > 5000) return bad('Pick a spot on the map');
+      const near = await env.DB.prepare('SELECT name FROM players WHERE id != ? AND wx BETWEEN ? AND ? AND wy BETWEEN ? AND ? LIMIT 1').bind(p.id, x - 6, x + 6, y - 6, y + 6).first();
+      if (near) return bad(`Too close to ${near.name} — pick open land`);
+      const out = await env.DB.prepare("SELECT COUNT(*) n FROM marches WHERE owner = ? AND status = 'out'").bind(p.id).first();
+      if (out.n) return bad('Wait for your crews to come home first');
+      // moving costs your stockpile: resources go back to the starting amounts
       const sv = p.save ? JSON.parse(p.save) : null;
       if (sv) { sv.res = { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, copper: 6, silver: 0, gold: 0 }; sv.t = now; }
-      await env.DB.prepare('UPDATE players SET orb = ?, slot = ?, team = NULL, save = COALESCE(?, save), save_t = ? WHERE id = ?').bind(orb, slot, sv ? JSON.stringify(sv) : null, now, p.id).run();
-      return json({ ok: true, orb });
+      await env.DB.prepare('UPDATE players SET wx = ?, wy = ?, save = COALESCE(?, save), save_t = ? WHERE id = ?').bind(x, y, sv ? JSON.stringify(sv) : null, now, p.id).run();
+      await clearWild(env.DB, x, y);
+      return json({ ok: true, x, y });
     }
     if (path === 'listings' && req.method === 'GET') {
       const rows = (await env.DB.prepare('SELECT id, seller, seller_name, res, amt, price FROM listings WHERE orb = ? AND sold = 0 ORDER BY created DESC LIMIT 50').bind(p.orb).all()).results;
@@ -315,12 +425,74 @@ export async function onRequest(ctx) {
       return json({ ok: true, total: e.total, goal: EVENT_GOAL, res: 'wood', ends: (week + 1) * WEEK_MS, claimed });
     }
 
-    if (path === 'orb' && req.method === 'GET') {
-      const players = (await env.DB.prepare('SELECT id, name, slot, team, score, level, bcount, created, seen, flags, harvested_at FROM players WHERE orb = ? ORDER BY score DESC').bind(p.orb).all()).results
-        .map(x => { const f = x.flags ? JSON.parse(x.flags) : {}; delete x.flags;
-          return { ...x, shield: now - x.created < SHIELD_MS, treaty: !!(f.treaty && now - (x.harvested_at || 0) < TREATY_MS), online: now - x.seen < 120000, palisade: !!f.palisade, banner: !!f.banner, tier: f.tier || 0 }; });
+    // the world around a viewport: villages, wild nodes and every crew on the road
+    if (path === 'world' && req.method === 'GET') {
+      await settle(env.DB, now);
+      const q = k => Math.round(Number(url.searchParams.get(k)) || 0);
+      let x0 = q('x0'), y0 = q('y0'), x1 = q('x1'), y1 = q('y1');
+      if (x1 < x0 || y1 < y0) return bad('bad box');
+      if (x1 - x0 > VIEW_MAX) { const c = (x0 + x1) >> 1; x0 = c - VIEW_MAX / 2; x1 = c + VIEW_MAX / 2; }
+      if (y1 - y0 > VIEW_MAX) { const c = (y0 + y1) >> 1; y0 = c - VIEW_MAX / 2; y1 = c + VIEW_MAX / 2; }
+      await ensureChunks(env.DB, x0, y0, x1, y1);
+      const villages = (await env.DB.prepare('SELECT id, name, wx x, wy y, team, score, level, bcount, created, seen, flags, harvested_at FROM players WHERE wx BETWEEN ? AND ? AND wy BETWEEN ? AND ?').bind(x0 - 2, x1 + 2, y0 - 2, y1 + 2).all()).results
+        .map(v => { const f = flagsOfRow(v); delete v.flags; return { ...v, shield: now - v.created < SHIELD_MS, treaty: !!(f.treaty && now - (v.harvested_at || 0) < TREATY_MS), online: now - v.seen < 120000, palisade: !!f.palisade, banner: !!f.banner, tier: f.tier || 0 }; });
+      const wild = (await env.DB.prepare('SELECT id, x, y, type, amt, max, regrow FROM wild WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?').bind(x0, x1, y0, y1).all()).results;
+      const marches = (await env.DB.prepare(`SELECT ${MARCH_COLS} FROM marches WHERE status IN ('out', 'back') AND MAX(fx, tx) >= ? AND MIN(fx, tx) <= ? AND MAX(fy, ty) >= ? AND MIN(fy, ty) <= ? LIMIT 400`).bind(x0, x1, y0, y1).all()).results;
+      return json({ ok: true, now, me: pub(p), villages, wild, marches, box: [x0, y0, x1, y1] });
+    }
+    if (path === 'board' && req.method === 'GET') {
+      const players = (await env.DB.prepare('SELECT id, name, wx x, wy y, team, score, level, bcount, created, seen, flags, harvested_at FROM players ORDER BY score DESC LIMIT 100').all()).results
+        .map(x => { const f = flagsOfRow(x); delete x.flags; return { ...x, shield: now - x.created < SHIELD_MS, treaty: !!(f.treaty && now - (x.harvested_at || 0) < TREATY_MS), online: now - x.seen < 120000, palisade: !!f.palisade, banner: !!f.banner, tier: f.tier || 0 }; });
+      const rank = (await env.DB.prepare('SELECT COUNT(*) n FROM players WHERE score > ?').bind(p.score || 0).first()).n + 1;
+      const total = (await env.DB.prepare('SELECT COUNT(*) n FROM players').first()).n;
       const teams = (await env.DB.prepare('SELECT t.id, t.name, t.ally, COALESCE(t.wonder,0) wonder, COUNT(p.id) members, COALESCE(SUM(p.score),0) score FROM teams t LEFT JOIN players p ON p.team = t.id WHERE t.orb = ? GROUP BY t.id ORDER BY score DESC').bind(p.orb).all()).results;
-      return json({ ok: true, orb: p.orb, size: ORB_SIZE, me: pub(p), players, teams, limits: { teams: MAX_TEAMS, teamMax: TEAM_MAX }, wonderGoal: WONDER_GOAL });
+      return json({ ok: true, me: pub(p), rank, total, players, teams, limits: { teams: MAX_TEAMS, teamMax: TEAM_MAX }, wonderGoal: WONDER_GOAL });
+    }
+    // send a crew: raid a village, gather at a wild node, or intercept a raid on the road
+    if (path === 'march' && req.method === 'POST') {
+      await settle(env.DB, now);
+      const b = await body(), kind = b.kind, crew = Math.max(1, Math.min(5, Math.floor(Number(b.crew) || 1)));
+      const fl = flagsOfRow(p);
+      const out = await env.DB.prepare("SELECT COALESCE(SUM(crew), 0) n FROM marches WHERE owner = ? AND status != 'done'").bind(p.id).first();
+      if (out.n + crew > MAX_CREWS + (fl.bigcrews ? 2 : 0)) return bad(`Too many workers on the road (max ${MAX_CREWS + (fl.bigcrews ? 2 : 0)})`);
+      const ins = (o) => env.DB.prepare(`INSERT INTO marches (kind, owner, owner_name, owner_team, target, target_name, target_player, fx, fy, tx, ty, crew, start, arrive, back_at, ret, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'out')`)
+        .bind(kind, p.id, p.name, p.team || null, o.target, o.target_name || null, o.target_player || null, p.wx, p.wy, o.tx, o.ty, crew, now, o.arrive, o.back_at, o.ret).run();
+      if (kind === 'raid') {
+        const tg = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(Number(b.target)).first();
+        if (!tg || tg.id === p.id) return bad('Pick another village');
+        if (p.team && tg.team === p.team) return bad('Teammates are immune');
+        if (p.team && tg.team) { const mt = await env.DB.prepare('SELECT ally FROM teams WHERE id = ?').bind(p.team).first(); if (mt && mt.ally === tg.team) return bad('Allied teams are immune'); }
+        if (now - tg.created < SHIELD_MS) return bad(`${tg.name} is under new-player protection`);
+        const tf = flagsOfRow(tg);
+        if (tf.treaty && now - (tg.harvested_at || 0) < TREATY_MS) return bad(`${tg.name} is under a peace treaty`);
+        const go = travelSecs(dist(p.wx, p.wy, tg.wx, tg.wy), fl.fastcrews) * (tf.palisade ? 2 : 1) * 1000, back = travelSecs(dist(p.wx, p.wy, tg.wx, tg.wy), fl.fastcrews) * 1000;
+        const r = await ins({ target: tg.id, target_name: tg.name, target_player: tg.id, tx: tg.wx, ty: tg.wy, arrive: now + go, back_at: now + go, ret: now + go + back });
+        return json({ ok: true, id: r.meta.last_row_id, now, arrive: now + go, ret: now + go + back });
+      }
+      if (kind === 'gather') {
+        const node = await env.DB.prepare('SELECT * FROM wild WHERE id = ?').bind(Number(b.target)).first();
+        if (!node) return bad('That spot is gone');
+        if (node.amt <= 0) return bad('Picked clean — it grows back soon');
+        const t = travelSecs(dist(p.wx, p.wy, node.x, node.y), fl.fastcrews) * 1000, arrive = now + t, back_at = arrive + WORK_SECS * 1000;
+        const r = await ins({ target: node.id, target_name: node.type, tx: node.x, ty: node.y, arrive, back_at, ret: back_at + t });
+        return json({ ok: true, id: r.meta.last_row_id, now, arrive, ret: back_at + t });
+      }
+      if (kind === 'intercept') {
+        const raid = await env.DB.prepare('SELECT * FROM marches WHERE id = ?').bind(Number(b.target)).first();
+        if (!raid || raid.kind !== 'raid' || raid.status !== 'out') return bad('That crew is no longer on the road');
+        const tgt = await env.DB.prepare('SELECT team FROM players WHERE id = ?').bind(raid.target).first();
+        if (raid.target !== p.id && !(p.team && tgt && tgt.team === p.team)) return bad('You can only intercept raids on you or your teammates');
+        // find the first moment our crew can reach the raiders on their road
+        const speed = 1 / (4 * (fl.watchtower ? .5 : 1) * (fl.fastcrews ? .7 : 1));   // tiles per second after a 15s muster
+        const at = s => { const f = Math.min(1, Math.max(0, (s - raid.start) / (raid.arrive - raid.start))); return [raid.fx + (raid.tx - raid.fx) * f, raid.fy + (raid.ty - raid.fy) * f]; };
+        let meet = null;
+        for (let s = now + 1000; s < raid.arrive - 2000; s += 1000) { const [x, y] = at(s), need = 15 + dist(p.wx, p.wy, x, y) / speed; if (need * 1000 <= s - now) { meet = [s, x, y]; break; } }
+        if (!meet) return bad('Too late — they will reach the village before your crew can catch them');
+        const back = travelSecs(dist(p.wx, p.wy, meet[1], meet[2]), fl.fastcrews) * 1000;
+        const r = await ins({ target: raid.id, target_name: raid.owner_name, target_player: raid.owner, tx: meet[1], ty: meet[2], arrive: meet[0], back_at: meet[0], ret: meet[0] + back });
+        return json({ ok: true, id: r.meta.last_row_id, now, arrive: meet[0], ret: meet[0] + back });
+      }
+      return bad('unknown crew type');
     }
 
     if (path === 'team' && req.method === 'POST') {
@@ -333,7 +505,7 @@ export async function onRequest(ctx) {
       if (b.action === 'create') {
         const name = cleanName(b.name); if (!name) return bad('Team name required');
         const n = await env.DB.prepare('SELECT COUNT(*) n FROM teams WHERE orb = ?').bind(p.orb).first();
-        if (n.n >= MAX_TEAMS) return bad(`This orb already has ${MAX_TEAMS} teams`);
+        if (n.n >= MAX_TEAMS) return bad(`The world already has ${MAX_TEAMS} teams`);
         const r = await env.DB.prepare('INSERT INTO teams (orb, name, created) VALUES (?, ?, ?)').bind(p.orb, name, now).run();
         await env.DB.prepare('UPDATE players SET team = ? WHERE id = ?').bind(r.meta.last_row_id, p.id).run();
         await env.DB.prepare('DELETE FROM teams WHERE orb = ? AND id NOT IN (SELECT team FROM players WHERE team IS NOT NULL)').bind(p.orb).run();
@@ -341,7 +513,7 @@ export async function onRequest(ctx) {
       }
       if (b.action === 'join') {
         const t = await env.DB.prepare('SELECT * FROM teams WHERE id = ? AND orb = ?').bind(Number(b.id), p.orb).first();
-        if (!t) return bad('No such team in your orb');
+        if (!t) return bad('No such team');
         const n = await env.DB.prepare('SELECT COUNT(*) n FROM players WHERE team = ?').bind(t.id).first();
         if (n.n >= TEAM_MAX) return bad(`Team is full (${TEAM_MAX})`);
         await env.DB.prepare('UPDATE players SET team = ? WHERE id = ?').bind(t.id, p.id).run();
@@ -349,39 +521,6 @@ export async function onRequest(ctx) {
         return json({ ok: true });
       }
       return bad('unknown action');
-    }
-
-    if (path === 'harvest' && req.method === 'POST') {
-      const b = await body();
-      const tg = await env.DB.prepare('SELECT * FROM players WHERE id = ?').bind(Number(b.target)).first();
-      if (!tg || tg.orb !== p.orb || tg.id === p.id) return bad('Target not in your orb');
-      if (p.team && tg.team === p.team) return bad('Teammates are immune');
-      if (p.team && tg.team) { const mt = await env.DB.prepare('SELECT ally FROM teams WHERE id = ?').bind(p.team).first(); if (mt && mt.ally === tg.team) return bad('Allied teams are immune'); }
-      if (now - tg.created < SHIELD_MS) return bad(`${tg.name} is under new-player protection`);
-      if (now - p.last_harvest < HARVEST_COOLDOWN_MS) return bad('Your crews are still unloading — try again in a minute', 429);
-      const tf = tg.flags ? JSON.parse(tg.flags) : {}, af = p.flags ? JSON.parse(p.flags) : {};
-      await env.DB.prepare('DELETE FROM incoming WHERE attacker = ? AND target = ?').bind(p.id, tg.id).run();
-      if (tf.treaty && now - (tg.harvested_at || 0) < TREATY_MS) return bad(`${tg.name} is under a peace treaty`);
-      if (tf.militia && Math.random() < .25) { await env.DB.prepare('UPDATE players SET last_harvest = ? WHERE id = ?').bind(now, p.id).run(); return json({ ok: true, repelled: true, gained: {} }); }
-      const day = new Date(now).toISOString().slice(0, 10);
-      if (tf.decoys && tg.decoy_day !== day) { await env.DB.batch([env.DB.prepare('UPDATE players SET decoy_day = ? WHERE id = ?').bind(day, tg.id), env.DB.prepare('UPDATE players SET last_harvest = ? WHERE id = ?').bind(now, p.id)]); return json({ ok: true, decoy: true, gained: {} }); }
-      const save = tg.save ? JSON.parse(tg.save) : null;
-      const pending = new Set((await env.DB.prepare('SELECT building_id FROM losses WHERE target = ? AND applied = 0').bind(tg.id).all()).results.map(r => r.building_id));
-      const cands = (save?.buildings || []).filter(x => x.done && BCOST[x.type] && !pending.has(x.id));
-      await env.DB.prepare('UPDATE players SET last_harvest = ? WHERE id = ?').bind(now, p.id).run();
-      if (!cands.length) return json({ ok: true, empty: true, gained: {} });
-      // lowest tier first: outer buildings fall before the core
-      cands.sort((a, c) => BTIER[a.type] - BTIER[c.type]);
-      let share = af.spoils ? .40 : HARVEST_SHARE; if (tf.walls) share = Math.min(share, .20); if (tf.vault) share /= 2;
-      const take = af.bigcrews ? 2 : 1, picks = [], gained = {};
-      for (let n = 0; n < take && cands.length; n++) {
-        const low = cands.filter(x => BTIER[x.type] === BTIER[cands[0].type]);
-        const pick = low[Math.floor(Math.random() * low.length)]; picks.push(pick); cands.splice(cands.indexOf(pick), 1);
-        for (const [k, v] of Object.entries(BCOST[pick.type])) { const g = Math.floor(v * share); if (g > 0) { const kk = k === 'money' ? 'copper' : k; gained[kk] = (gained[kk] || 0) + g; } }
-      }
-      await env.DB.batch([...picks.map(pick => env.DB.prepare('INSERT INTO losses (target, attacker, building_id, building_type, created) VALUES (?, ?, ?, ?, ?)').bind(tg.id, p.id, pick.id, pick.type, now)),
-        env.DB.prepare('UPDATE players SET harvested_at = ? WHERE id = ?').bind(now, tg.id)]);
-      return json({ ok: true, building: picks.map(x => x.type).join(' + '), from: tg.name, gained });
     }
 
     return bad('not found', 404);

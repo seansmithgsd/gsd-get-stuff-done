@@ -194,3 +194,10 @@ table.mk td{cursor:default}
 
 #modal .box.wide{max-width:min(720px,96vw);width:100%}
 #modal .box.wide .lb td,#modal .box.wide .lb th{padding:6px 8px;text-align:left}
+/* world map */
+#wmap{position:relative;margin:-4px -4px 10px;border-radius:14px;overflow:hidden;box-shadow:0 2px 10px rgba(30,58,138,.25);background:#3f7d3a}
+#worldc{display:block;width:100%;height:min(62vh,560px);touch-action:none;cursor:grab}
+#worldc:active{cursor:grabbing}
+#wmap .wbtns{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:6px}
+#wmap .wbtns .btn{min-width:36px;font-size:18px;padding:4px 8px}
+#wmap .wleg{position:absolute;left:8px;bottom:8px;right:8px;font-size:11px;color:#fff;text-shadow:0 1px 2px #000;pointer-events:none}

@@ -46,7 +46,7 @@ const BLD = {
   kiln:   { n: 'Charcoal Kiln', tier: 3, time: 120, req: ['lumber'], cost: { wood: 30, stone: 15, money: 8 }, desc: 'Wood + Wood → Coal' },
   smelter: { n: 'Smelter', tier: 4, time: 180, req: ['kiln', 'mine'], cost: { wood: 40, stone: 40, money: 15 }, desc: 'Iron + Coal → Steel' },
   mint:   { n: 'Mint', tier: 4, time: 180, req: ['mine'], cost: { stone: 50, iron: 10, money: 20 }, desc: 'Strikes gold: 1 steel → 1 gold' },
-  townhall: { n: 'Town Hall', tier: 5, time: 300, house: 5, req: ['smelter', 'mint'], cost: { wood: 80, stone: 60, steel: 10, money: 40 }, desc: 'Houses 5 more AI workers; orb rank (multiplayer)' },
+  townhall: { n: 'Town Hall', tier: 5, time: 300, house: 5, req: ['smelter', 'mint'], cost: { wood: 80, stone: 60, steel: 10, money: 40 }, desc: 'Houses 5 more AI workers; world rank (multiplayer)' },
   mine:   { n: 'Mine', tier: 3, time: 150, req: ['quarry', 'farm'], cost: { wood: 30, stone: 20, money: 10 }, desc: 'Iron and copper; silver every 3rd trip' },
 };
 const FUTURE = [];
@@ -543,7 +543,7 @@ function renderBuild(force) {
 }
 $('#v-build').addEventListener('click', e => { if (e.target.closest('[data-market]')) return openMarket(); const b = e.target.closest('[data-build]'); if (b && !b.disabled) startBuild(b.dataset.build); });
 
-function taskLabel(t) { if (t.kind === 'raid') return 'Harvesting ' + t.name + "'s village"; if (t.kind === 'build') { const b = S.buildings.find(x => x.id === t.bid); return 'Building ' + (b ? BLD[b.type].n : ''); } return TASKS[t.kind].n; }
+function taskLabel(t) { if (t.kind === 'raid') return t.label || ('Harvesting ' + t.name + "'s village"); if (t.kind === 'build') { const b = S.buildings.find(x => x.id === t.bid); return 'Building ' + (b ? BLD[b.type].n : ''); } return TASKS[t.kind].n; }
 // worker groups by what they produce
 const GROUPS = [
   { k: 'food', n: 'Food', tasks: ['berries', 'hunt', 'farm', 'fish'], icon: 0 },
@@ -644,17 +644,17 @@ function renderWorkers(force) {
         <div class="wb"><button class="btn sm alt" data-minus="${G.k}" ${n ? '' : 'disabled'} title="${n ? 'Take one worker off' : 'No workers on this'}">−</button><button class="btn sm" data-plus="${G.k}" ${open && idle().length ? '' : 'disabled'} title="${!open ? 'Locked — ' + esc(need) : idle().length ? 'Add an idle worker' : 'No idle worker — tap − on another group first'}">+</button>
         ${n ? `<button class="btn sm go" title="Finish this group's current trips with speedup" data-sp="${S.workers.filter(w => groupOf(w) === G.k).map(w => w.id).join(',')}" data-amt="all" ${S.bank > 0 ? '' : 'disabled'}>⏱</button>` : ''}</div></div>`;
     }
-    for (const [k, n] of [['build', 'Building'], ['raid', 'Harvesting'], ['idle', 'Idle']]) {
+    for (const [k, n] of [['build', 'Building'], ['raid', 'On the road'], ['idle', 'Idle']]) {
       const c = cnt(k);
       html += `<div class="wt status${k === 'idle' && c ? ' alert' : ''}"><canvas data-gi="${k}" width="${44 * DPR}" height="${44 * DPR}"></canvas><div class="wn">${n}</div><div class="wc">${c}</div>
-        <div class="wr">${k === 'idle' ? (c ? 'Tap + on a group' : 'Everyone busy') : k === 'build' ? 'Build tab' : 'Orb tab'}</div>
+        <div class="wr">${k === 'idle' ? (c ? 'Tap + on a group' : 'Everyone busy') : k === 'build' ? 'Build tab' : 'World tab'}</div>
         ${k !== 'idle' && c ? `<div class="wb"><button class="btn sm go" title="Finish with speedup" data-sp="${S.workers.filter(w => groupOf(w) === k).map(w => w.id).join(',')}" data-amt="all" ${S.bank > 0 ? '' : 'disabled'}>⏱ Finish</button></div>` : ''}</div>`;
     }
     html += '</div>';
-    html += `<div class="card"><div class="t">Speedup bank: ${fmt(S.bank)}</div><div class="d">Earned from leftover puzzle moves. ⏱ on a group finishes that group's current trips; builds and harvest crews can also be sped up on the Build and Orb tabs or by tapping them in the village.</div>
+    html += `<div class="card"><div class="t">Speedup bank: ${fmt(S.bank)}</div><div class="d">Earned from leftover puzzle moves. ⏱ on a group finishes that group's current trips; builds can also be sped up on the Build tab or by tapping them in the village. Crews on the world map walk at their own pace.</div>
       ${speedRow(S.workers.filter(w => w.task))}</div>`;
     if (!S.workers.length) html += `<div class="card"><div class="d">No AI workers yet. Win ${WINS_PER_WORKER} puzzles to recruit one.</div></div>`;
-    html += `<div class="foot">${ME ? `Signed in as <b>${esc(ME.name)}</b> — progress saves to your account.` : 'Guest save on this device only. Sign in on the Orb tab to keep it.'}<br>
+    html += `<div class="foot">${ME ? `Signed in as <b>${esc(ME.name)}</b> — progress saves to your account.` : 'Guest save on this device only. Sign in on the World tab to keep it.'}<br>
       <a href="https://gsdconsultantsllc.com" target="_blank" rel="noopener">GSD Consultants, LLC</a> · v0.3<br><br>
       <button class="btn sm alt" data-reset>Reset progress</button></div>`;
     $('#v-workers').innerHTML = html;
@@ -981,7 +981,7 @@ function drawMap(now) {
     objs.push({ d: ui + d.j, f: () => drawDeer(x, y, t) }); markFront(Math.floor(ui), Math.floor(d.j));
   }
   S.workers.forEach((w, k) => {
-    if (w.task && w.task.kind === 'raid') return; // off across the orb
+    if (w.task && w.task.kind === 'raid') return; // out on the world map
     const { p, working } = workerPos(w, k);
     const ui = unwrapNear(p[0], cI);
     const [x, y] = iso(ui - .5, p[1] - .5);
@@ -2018,19 +2018,27 @@ async function pushSave(beacon) {
   else if (r.auth === false) { ME = null; refresh(true); }
 }
 let appliedGifts = [], INCOMING = [], seenGifts = new Set();
+let lastPoll = 0;
 async function pollLosses() {
+  lastPoll = Date.now();
   const r = await api('losses'); if (!r.ok) return;
+  if (r.now) SKEW = r.now - Date.now();
   if (r.losses.length) applyLosses(r.losses);
   for (const g of r.gifts || []) {
     if (seenGifts.has(g.id)) continue; seenGifts.add(g.id);
     for (const [k, v] of Object.entries(g.res)) S.res[k] = (S.res[k] || 0) + v;
     appliedGifts.push(g.id); dirty = true;
-    toast(`${g.from_name} ${g.note === 'auction sale' ? 'bought your listing' : 'sent a caravan'}: ` + Object.entries(g.res).map(([k, v]) => `+${v} ${k}`).join(', '));
+    const got = Object.entries(g.res).map(([k, v]) => `+${v} ${k}`).join(', ');
+    if (g.note && g.note.startsWith('crew:')) { toast(crewMsg(g.note.slice(5)) + (got && !g.note.includes(' with ') ? ': ' + got : '')); if (got) sfx('harvest'); }
+    else toast(`${g.from_name} ${g.note === 'auction sale' ? 'bought your listing' : 'sent a caravan'}: ` + got);
   }
   if (appliedGifts.length) { save(); pushSave(); }
-  const fresh = (r.incoming || []).filter(i => !INCOMING.some(x => x.eta === i.eta && x.attacker === i.attacker));
-  for (const i of fresh) { toast(`Watchtower: ${i.attacker}'s crew arrives in ${fmt(Math.max(0, (i.eta - Date.now()) / 1000))}`); sfx('lose'); }
+  // a crew the server already brought home frees its workers here too
+  if (r.marches) { const live = new Set(r.marches.map(m => m.id)); for (const w of S.workers) if (w.task && w.task.kind === 'raid' && w.task.mid && !live.has(w.task.mid)) { w.task = null; autoAssign(w); } }
+  const fresh = (r.incoming || []).filter(i => !INCOMING.some(x => x.id === i.id));
+  for (const i of fresh) { toast(`⚠ ${i.attacker}'s raid arrives in ${fmt(Math.max(0, (i.eta - sNow()) / 1000))} — World tab to intercept`); sfx('lose'); }
   INCOMING = r.incoming || [];
+  refresh(true);
 }
 function applyLosses(list) {
   for (const L of list) {
@@ -2047,97 +2055,301 @@ function applyLosses(list) {
   idle().forEach(autoAssign);
   save(); pushSave(); refresh(true);
 }
-// harvesting: a worker crosses the orb to another village
-function raidTime(slotA, slotB, size, pl) { const d = Math.abs(slotA - slotB), r = Math.min(d, size - d); return Math.min(1200, (60 + r * 15) * (U('fastcrews') ? .7 : 1) * (pl && pl.palisade ? 2 : 1)); }
-function startRaid(pl) {
-  if (!ME || !ORB) return;
-  const w = idle()[0] || free().find(x => !x.task || x.task.kind !== 'raid');
-  if (!w) return toast('No free AI worker');
-  const dur = raidTime(ORB.me.slot, pl.slot, ORB.size, pl);
-  w.task = { kind: 'raid', target: null, pid: pl.id, name: pl.name, dur, prog: 0 }; w.repeat = false;
-  api('raidstart', { method: 'POST', body: JSON.stringify({ target: pl.id, secs: dur }) });
-  toast(`${w.name} heads to ${pl.name}'s village (${fmt(dur)})`); closeSheet(); save(); refresh(true);
+// ---------------------------------------------------------------- world map (multiplayer): one shared map, crews march in the open
+const WILD_INFO = { grove: { n: 'Wild grove', res: 'wood', carry: 25 }, rocks: { n: 'Rock field', res: 'stone', carry: 20 }, ore: { n: 'Iron outcrop', res: 'iron', carry: 12 }, goldvein: { n: 'Gold vein', res: 'gold', carry: 2 } };
+const W_WORK = 30, W_CREW = 5;
+const wTravel = (d, fast) => Math.min(1800, Math.round((15 + d * 4) * (fast ? .7 : 1)));
+let ORB = null, orbLoading = false, WLD = null, wLoading = false, CAM = null, SKEW = 0, CREW_N = 1, wLastBox = null;
+const sNow = () => Date.now() + SKEW;
+const crewsOut = () => S.workers.filter(w => w.task && w.task.kind === 'raid');
+const myTeam = () => ME && ME.team && ORB && ORB.teams.find(x => x.id === ME.team);
+const isMate = v => ME && ME.team && v.team === ME.team && v.id !== ME.id;
+const isAlly = v => { const t = myTeam(); return !!(t && v.team && t.ally === v.team); };
+const vName = (id, fallback) => { const v = WLD && WLD.villages.find(x => x.id === id); return v ? v.name : fallback || ''; };
+function crewMsg(msg) { return msg.replace(/dismantled (.+?)'s (.+)$/, (m, who, what) => `dismantled ${who}'s ${what.split(' + ').map(b => BLD[b] ? BLD[b].n : b).join(' + ')}`); }
+
+// harvesting: crews walk the world map; the server resolves them and mails the haul home as a gift
+function resolveRaid(w, t) {
+  if (!t.mid) toast(`${w.name} is back home`);
+  autoAssign(w);
+  setTimeout(() => { if (ME) pollLosses(); }, 2500);
 }
-async function resolveRaid(w, t) {
-  const r = await api('harvest', { method: 'POST', body: JSON.stringify({ target: t.pid }) });
-  if (!r.ok) { toast(`${w.name} came back empty: ${r.error}`); return; }
-  if (r.empty) { toast(`${t.name} had nothing left to dismantle`); return; }
-  if (r.repelled) { toast(`${t.name}'s militia drove ${w.name} off`); return; }
-  if (r.decoy) { toast(`${w.name} dismantled a decoy hut at ${t.name}'s — nothing gained`); return; }
-  for (const [k, v] of Object.entries(r.gained)) S.res[k] = (S.res[k] || 0) + v;
-  sfx('harvest');
-  toast(`${w.name} dismantled ${r.from}'s ${r.building.split(' + ').map(b => BLD[b] ? BLD[b].n : b).join(' + ')}: ` + Object.entries(r.gained).map(([k, v]) => `+${v} ${k}`).join(', '));
-  idle().forEach(autoAssign); save(); pushSave(); refresh(true);
+async function sendCrew(kind, target, n, label) {
+  if (!ME) return;
+  const pool = [...idle(), ...free().filter(x => x.task && x.task.kind !== 'raid')];
+  if (pool.length < n) return toast(`Need ${n} free AI worker${n > 1 ? 's' : ''} (${pool.length} free)`);
+  const r = await api('march', { method: 'POST', body: JSON.stringify({ kind, target, crew: n }) });
+  if (!r.ok) return toast(r.error);
+  const dur = Math.max(5, (r.ret - r.now) / 1000);
+  pool.slice(0, n).forEach(w => { w.task = { kind: 'raid', mode: kind, mid: r.id, name: label, label: { raid: `Raiding ${label}`, gather: `Gathering at ${label}`, intercept: `Intercepting ${label}` }[kind], target: null, dur, prog: 0 }; w.repeat = false; });
+  sfx('build'); toast(`${n} AI worker${n > 1 ? 's' : ''} set out (${fmt(dur)} round trip)`);
+  closeSheet(); save(); refresh(true); loadWorld(true);
 }
-// orb view
-let ORB = null, orbLoading = false;
+
+// data
 async function loadOrb() {
   if (!ME || orbLoading) return; orbLoading = true;
-  const r = await api('orb'); orbLoading = false;
-  if (r.ok) { ORB = r; ME = r.me; S.teamWonder = !!(ME.team && (r.teams.find(x => x.id === ME.team) || {}).wonder >= r.wonderGoal); refresh(true); }
+  const r = await api('board'); orbLoading = false;
+  if (r.ok) { ORB = r; ME = r.me; S.teamWonder = !!(ME.team && (r.teams.find(x => x.id === ME.team) || {}).wonder >= r.wonderGoal); if (!CAM) CAM = { x: ME.x, y: ME.y, z: 18 }; refresh(true); loadWorld(); }
 }
+function viewBox() {
+  const c = $('#worldc'), w = c ? c.clientWidth : 400, h = c ? c.clientHeight : 400, z = CAM.z;
+  return [Math.floor(CAM.x - w / 2 / z) - 4, Math.floor(CAM.y - h / 2 / z) - 4, Math.ceil(CAM.x + w / 2 / z) + 4, Math.ceil(CAM.y + h / 2 / z) + 4];
+}
+async function loadWorld(force) {
+  if (!ME || !CAM || wLoading) return;
+  const b = viewBox();
+  if (!force && wLastBox && b[0] >= wLastBox[0] && b[1] >= wLastBox[1] && b[2] <= wLastBox[2] && b[3] <= wLastBox[3] && WLD && Date.now() - WLD.at < 3500) return;
+  wLoading = true;
+  // fetch a margin around the view so small pans don't refetch
+  const m = 12, q = [b[0] - m, b[1] - m, b[2] + m, b[3] + m];
+  const r = await api(`world?x0=${q[0]}&y0=${q[1]}&x1=${q[2]}&y1=${q[3]}`); wLoading = false;
+  if (!r.ok) { if (r.auth === false) { ME = null; refresh(true); } return; }
+  r.at = Date.now(); WLD = r; wLastBox = r.box; SKEW = r.now - Date.now(); ME = { ...ME, ...r.me };
+  if (view === 'orb') renderOrb();
+}
+
+// march position at a moment (server time)
+function marchPos(m, t) {
+  const lerp = (f, ax, ay, bx, by) => [ax + (bx - ax) * f, ay + (by - ay) * f];
+  if (m.status === 'back') {
+    if (t < m.back_at) return { p: [m.tx, m.ty], home: false, work: true };
+    const f = Math.min(1, Math.max(0, (t - m.back_at) / Math.max(1, m.ret - m.back_at)));
+    return { p: lerp(f, m.tx, m.ty, m.fx, m.fy), home: true };
+  }
+  const f = Math.min(1, Math.max(0, (t - m.start) / Math.max(1, m.arrive - m.start)));
+  return { p: lerp(f, m.fx, m.fy, m.tx, m.ty), home: false };
+}
+function marchColor(m) {
+  if (m.owner === ME.id) return '#fbbf24';
+  if (m.kind === 'raid' && m.status !== 'back' && (m.target === ME.id || (ME.team && WLD.villages.some(v => v.id === m.target && v.team === ME.team)))) return '#ef4444';
+  if (ME.team && m.owner_team === ME.team) return '#86efac';
+  return '#e2e8f0';
+}
+
+// rendering
+function wNoise(x, y) { const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453; return s - Math.floor(s); }
+function wSmooth(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = wNoise(xi, yi), b = wNoise(xi + 1, yi), c = wNoise(xi, yi + 1), d = wNoise(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+const GRASS = ['#3f7d3a', '#468a3f', '#4e9645', '#5aa14c', '#66a957', '#7aa95d', '#8b9a5b'];
+let wTerrain = null, wTKey = '';
+function terrainLayer(c, w, h) {
+  const key = [Math.round(CAM.x * CAM.z), Math.round(CAM.y * CAM.z), CAM.z, w, h].join(',');
+  if (key === wTKey && wTerrain) return wTerrain;
+  wTKey = key;
+  if (!wTerrain) wTerrain = document.createElement('canvas');
+  wTerrain.width = w * DPR; wTerrain.height = h * DPR;
+  const g = wTerrain.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const z = CAM.z, step = z < 7 ? 3 : z < 11 ? 2 : 1;
+  const x0 = Math.floor(CAM.x - w / 2 / z) - 1, y0 = Math.floor(CAM.y - h / 2 / z) - 1, x1 = Math.ceil(CAM.x + w / 2 / z) + 1, y1 = Math.ceil(CAM.y + h / 2 / z) + 1;
+  for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) {
+    const n = wSmooth(x / 11, y / 11) * .7 + wSmooth(x / 3, y / 3) * .3;
+    g.fillStyle = GRASS[Math.min(GRASS.length - 1, Math.floor(n * GRASS.length))];
+    const [sx, sy] = w2s(x, y, w, h); g.fillRect(Math.floor(sx), Math.floor(sy), Math.ceil(z * step) + 1, Math.ceil(z * step) + 1);
+  }
+  // faint plot grid every 14 tiles
+  g.strokeStyle = 'rgba(255,255,255,.06)'; g.lineWidth = 1;
+  for (let x = Math.floor(x0 / 14) * 14; x <= x1; x += 14) { const [sx] = w2s(x, 0, w, h); g.beginPath(); g.moveTo(sx, 0); g.lineTo(sx, h); g.stroke(); }
+  for (let y = Math.floor(y0 / 14) * 14; y <= y1; y += 14) { const [, sy] = w2s(0, y, w, h); g.beginPath(); g.moveTo(0, sy); g.lineTo(w, sy); g.stroke(); }
+  return wTerrain;
+}
+function w2s(x, y, w, h) { return [(x - CAM.x) * CAM.z + w / 2, (y - CAM.y) * CAM.z + h / 2]; }
+function s2w(sx, sy, w, h) { return [(sx - w / 2) / CAM.z + CAM.x, (sy - h / 2) / CAM.z + CAM.y]; }
+function drawWild(g, n, x, y, z) {
+  const k = Math.max(5, z * .55), dead = n.amt <= 0;
+  g.save(); g.translate(x, y); g.globalAlpha = dead ? .35 : 1;
+  if (n.type === 'grove') {
+    for (const [dx, dy, s] of [[-.6, .2, .8], [.55, .25, .75], [0, -.35, 1]]) {
+      g.fillStyle = '#5b3a1e'; g.fillRect(dx * k - k * .08, dy * k, k * .16, k * .45 * s);
+      g.fillStyle = '#14532d'; g.beginPath(); g.moveTo(dx * k, dy * k - k * .85 * s); g.lineTo(dx * k + k * .45 * s, dy * k + k * .1); g.lineTo(dx * k - k * .45 * s, dy * k + k * .1); g.closePath(); g.fill();
+      g.fillStyle = 'rgba(134,239,172,.35)'; g.beginPath(); g.moveTo(dx * k, dy * k - k * .85 * s); g.lineTo(dx * k + k * .2 * s, dy * k - k * .2); g.lineTo(dx * k - k * .3 * s, dy * k); g.closePath(); g.fill();
+    }
+  } else {
+    const col = n.type === 'rocks' ? ['#cbd5e1', '#64748b'] : n.type === 'ore' ? ['#78716c', '#292524'] : ['#fde68a', '#a16207'];
+    for (const [dx, dy, s] of [[-.45, .15, .7], [.4, .2, .6], [0, -.2, .85]]) {
+      const gr = g.createRadialGradient(dx * k - k * .15, dy * k - k * .2, k * .05, dx * k, dy * k, k * .5 * s); gr.addColorStop(0, col[0]); gr.addColorStop(1, col[1]);
+      g.fillStyle = gr; g.beginPath(); g.ellipse(dx * k, dy * k, k * .5 * s, k * .38 * s, 0, 0, 7); g.fill();
+    }
+    if (n.type === 'ore') { g.fillStyle = '#f97316'; for (const [dx, dy] of [[-.4, .1], [.1, -.25], [.35, .25]]) { g.beginPath(); g.arc(dx * k, dy * k, k * .07, 0, 7); g.fill(); } }
+    if (n.type === 'goldvein') { g.fillStyle = '#fff7'; g.beginPath(); g.arc(-k * .1, -k * .35, k * .08, 0, 7); g.fill(); }
+  }
+  g.restore();
+  if (z >= 14 && !dead) { const f = n.amt / n.max; g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(x - k * .6, y + k * .7, k * 1.2, 3); g.fillStyle = '#facc15'; g.fillRect(x - k * .6, y + k * .7, k * 1.2 * f, 3); }
+}
+function drawVillage(g, v, x, y, z, t) {
+  const mine = v.id === ME.id, mate = isMate(v), ally = isAlly(v), r = Math.max(6, z * (.75 + Math.min(.6, v.bcount / 30)));
+  if (v.shield || v.treaty) { g.strokeStyle = 'rgba(96,165,250,.8)'; g.lineWidth = 2; g.setLineDash([4, 3]); g.beginPath(); g.arc(x, y, r * 1.55, 0, 7); g.stroke(); g.setLineDash([]); }
+  if (v.palisade) { g.strokeStyle = '#7c4a1e'; g.lineWidth = Math.max(2, r * .18); g.beginPath(); g.arc(x, y, r * 1.25, 0, 7); g.stroke(); }
+  const base = mine ? ['#fde68a', '#d97706'] : mate ? ['#bbf7d0', '#16a34a'] : ally ? ['#a5f3fc', '#0e7490'] : ['#f1f5f9', '#64748b'];
+  const gr = g.createRadialGradient(x - r * .3, y - r * .3, r * .1, x, y, r); gr.addColorStop(0, base[0]); gr.addColorStop(1, base[1]);
+  g.fillStyle = 'rgba(0,0,0,.25)'; g.beginPath(); g.ellipse(x + 2, y + r * .35, r, r * .55, 0, 0, 7); g.fill();
+  g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  // little roofs for the buildings
+  const nh = Math.min(5, 1 + Math.floor(v.bcount / 4));
+  for (let i = 0; i < nh; i++) {
+    const a = i / nh * Math.PI * 2 + .4, hx = x + Math.cos(a) * r * (nh > 1 ? .45 : 0), hy = y + Math.sin(a) * r * (nh > 1 ? .4 : 0), s = r * .32;
+    g.fillStyle = '#fef3c7'; g.fillRect(hx - s * .7, hy - s * .2, s * 1.4, s * .9);
+    g.fillStyle = v.tier >= 8 ? '#475569' : v.tier >= 6 ? '#1e3a8a' : '#9a3412'; g.beginPath(); g.moveTo(hx - s, hy - s * .1); g.lineTo(hx, hy - s * .9); g.lineTo(hx + s, hy - s * .1); g.closePath(); g.fill();
+  }
+  if (mine) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath(); g.arc(x, y, r + 2 + Math.sin(t / 300) * 1.5, 0, 7); g.stroke(); }
+  if (v.online) { g.fillStyle = '#22c55e'; g.beginPath(); g.arc(x + r * .75, y - r * .75, Math.max(3, r * .18), 0, 7); g.fill(); g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.stroke(); }
+  if (z >= 9 || mine || mate || U('orbmap')) {
+    g.font = `bold ${Math.max(10, Math.min(13, z * .6))}px system-ui`; g.textAlign = 'center'; g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.7)';
+    const label = (v.banner ? '👑 ' : '') + v.name.slice(0, 16); g.strokeText(label, x, y + r + 13); g.fillStyle = '#fff'; g.fillText(label, x, y + r + 13);
+  }
+  return r;
+}
+function drawMarch(g, m, x, y, z, t, w, h) {
+  const col = marchColor(m), at = marchPos(m, sNow());
+  const dest = at.home ? [m.fx, m.fy] : [m.tx, m.ty], [dx, dy] = w2s(dest[0], dest[1], w, h);
+  g.strokeStyle = col; g.globalAlpha = .55; g.lineWidth = 2; g.setLineDash([6, 5]); g.lineDashOffset = -t / 60;
+  g.beginPath(); g.moveTo(x, y); g.lineTo(dx, dy); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+  const r = Math.max(6, z * .38) + Math.min(4, m.crew);
+  g.fillStyle = 'rgba(0,0,0,.35)'; g.beginPath(); g.arc(x + 1.5, y + 2, r, 0, 7); g.fill();
+  g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); g.strokeStyle = '#0f1b3d'; g.lineWidth = 1.5; g.stroke();
+  g.fillStyle = '#0f1b3d'; g.font = `bold ${r * 1.05}px system-ui`; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(m.kind === 'raid' ? '⚔' : m.kind === 'gather' ? (at.work ? '⛏' : at.home ? '📦' : '⛏') : '🛡', x, y + 1); g.textBaseline = 'alphabetic';
+  if (m.crew > 1) { g.fillStyle = '#fff'; g.font = `bold 10px system-ui`; g.fillText('×' + m.crew, x + r + 6, y - r + 4); }
+  return r;
+}
+let wHits = [];
+function drawWorld(t) {
+  const c = $('#worldc'); if (!c || !CAM || !WLD) return;
+  const w = c.clientWidth, h = c.clientHeight; if (!w || !h) return;
+  if (c.width !== Math.round(w * DPR) || c.height !== Math.round(h * DPR)) { c.width = Math.round(w * DPR); c.height = Math.round(h * DPR); wTKey = ''; }
+  const g = c.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0);
+  g.drawImage(terrainLayer(c, w, h), 0, 0); g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const z = CAM.z, hits = [], on = (x, y, pad = 30) => x > -pad && y > -pad && x < w + pad && y < h + pad;
+  for (const n of WLD.wild) { const [x, y] = w2s(n.x + .5, n.y + .5, w, h); if (!on(x, y)) continue; drawWild(g, n, x, y, z); hits.push({ k: 'wild', o: n, x, y, r: Math.max(10, z * .7) }); }
+  for (const v of WLD.villages) { const [x, y] = w2s(v.x + .5, v.y + .5, w, h); if (!on(x, y, 60)) continue; const r = drawVillage(g, v, x, y, z, t); hits.push({ k: 'v', o: v, x, y, r: r + 6 }); }
+  for (const m of WLD.marches) { if (m.status === 'done') continue; const p = marchPos(m, sNow()).p, [x, y] = w2s(p[0] + .5, p[1] + .5, w, h); if (!on(x, y, 200)) continue; const r = drawMarch(g, m, x, y, z, t, w, h); hits.push({ k: 'm', o: m, x, y, r: r + 8 }); }
+  // compass to home when it is off screen
+  const [hx, hy] = w2s(ME.x + .5, ME.y + .5, w, h);
+  if (!on(hx, hy, -10)) { const a = Math.atan2(hy - h / 2, hx - w / 2), ex = w / 2 + Math.cos(a) * (w / 2 - 22), ey = h / 2 + Math.sin(a) * (h / 2 - 22);
+    g.save(); g.translate(ex, ey); g.rotate(a); g.fillStyle = '#fbbf24'; g.beginPath(); g.moveTo(12, 0); g.lineTo(-8, -8); g.lineTo(-8, 8); g.closePath(); g.fill(); g.restore(); }
+  wHits = hits;
+}
+
+// panel (everything under the map)
 function renderOrb(force) {
   const el = $('#v-orb');
-  const s = 'o' + JSON.stringify([!!ME, ORB && ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB && ORB.teams, S.workers.filter(w => w.task && w.task.kind === 'raid').map(w => w.id), S.workers.some(w => w.task && w.task.kind === 'raid') && Math.floor(S.bank), INCOMING.length, TBANK, EVT && [EVT.total, EVT.claimed], LISTS && LISTS.map(l => l.id), ORB && ORB.teams.map(t => [t.ally, t.wonder])]);
-  if (s === sig && !force) return; sig = s;
   if (!ME) {
-    el.innerHTML = `<h2>The Orb</h2>
-      <div class="card"><div class="t">Sign in to save your village and join a 100-player orb</div>
+    if (sig === 'o-out' && !force) return; sig = 'o-out';
+    el.innerHTML = `<h2>The World</h2>
+      <div class="card"><div class="t">Sign in to save your village and join the shared world map</div>
       <div class="d">We email you a one-time login link. No password. Your current progress carries over.</div>
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
         <input id="lg-name" maxlength="20" placeholder="Village name (shown to other players)" class="inp">
         <input id="lg-email" type="email" placeholder="Email" class="inp" autocomplete="email">
         <button class="btn go" data-login>Email me a login link</button>
         <div id="lg-msg" class="small"></div></div></div>
-      <div class="card"><div class="t">What happens on the orb</div><div class="d">Up to 100 players share one world. Climb the leaderboard, form teams of up to 13, and send AI workers to dismantle rival villages for 33% of what they cost. New players are protected for 24 hours; teammates can't harvest each other.</div></div>`;
+      <div class="card"><div class="t">What happens in the world</div><div class="d">Every village sits on one shared map. Send AI worker crews to gather from wild groves, rocks, ore and gold veins before others pick them clean, or march on rival villages to dismantle a building for 33% of its cost. Every crew walks in the open — if a raid is heading for you or a teammate, send a crew out to stop it on the road. New players are protected for 24 hours.</div></div>`;
     return;
   }
-  if (!ORB) { el.innerHTML = '<h2>The Orb</h2><div class="small">Loading…</div>'; loadOrb(); return; }
+  if (!ORB) { if (sig !== 'o-load') { sig = 'o-load'; el.innerHTML = '<h2>The World</h2><div class="small">Loading…</div>'; } loadOrb(); return; }
+  if (!$('#worldc')) {
+    el.innerHTML = `<div id="wmap"><canvas id="worldc"></canvas>
+      <div class="wbtns"><button class="btn sm" data-wz="1">+</button><button class="btn sm" data-wz="-1">−</button><button class="btn sm" data-whome title="Home">⌂</button></div>
+      <div class="wleg">⚔ raid · ⛏ gather · 🛡 intercept · <b style="color:#fbbf24">gold</b> = yours · <b style="color:#ef4444">red</b> = coming for you</div></div><div id="wpanel"></div>`;
+    bindWorldInput(); sig = '';
+  }
+  const crews = crewsOut();
+  const s = 'o' + JSON.stringify([ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB.teams, ORB.rank, crews.map(w => [w.id, w.task.mid]), INCOMING.map(i => i.id), TBANK, EVT && [EVT.total, EVT.claimed], LISTS && LISTS.map(l => l.id), ORB.teams.map(t => [t.ally, t.wonder]), Math.floor(Date.now() / 5000)]);
+  if (s === sig && !force) return; sig = s;
   const tName = id => { const t = ORB.teams.find(x => x.id === id); return t ? t.name : ''; };
-  const myRank = ORB.players.findIndex(p => p.id === ME.id) + 1;
-  let html = `<h2>Orb #${ORB.orb} <span class="small">${ORB.players.length}/${ORB.size} players · you are #${myRank}</span></h2>
-    <canvas id="orbc" style="width:100%;max-width:420px;aspect-ratio:1;display:block;margin:0 auto"></canvas>
-    <div class="small" style="text-align:center">Gold ring = you · green = teammates · tap a village below to send a harvest crew</div>
-    <h3>Leaderboard</h3>
-    <table class="lb"><tr><th>#</th><th>Village</th><th>Team</th><th>Lvl</th><th>Bldgs</th><th>Score</th></tr>
+  let html = `<h2>World <span class="small">you are #${ORB.rank} of ${ORB.total} · home ${ME.x}, ${ME.y}</span></h2>`;
+  if (crews.length) {
+    const byM = {}; crews.forEach(w => { (byM[w.task.mid || 'old' + w.id] = byM[w.task.mid || 'old' + w.id] || []).push(w); });
+    html += `<h3>Your crews on the road</h3>` + Object.values(byM).map(ws => { const w = ws[0]; return `<div class="card"><div class="t">${esc(w.task.label || w.task.name)} <span class="small">· ${ws.length} worker${ws.length > 1 ? 's' : ''}</span></div>${progRow(w)}</div>`; }).join('');
+  }
+  html += orbExtras();
+  html += `<h3>Leaderboard</h3><table class="lb"><tr><th>#</th><th>Village</th><th>Team</th><th>Lvl</th><th>Bldgs</th><th>Score</th></tr>
     ${ORB.players.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${p.banner && i < 10 ? '👑 ' : ''}${esc(p.name)}${p.shield || p.treaty ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}
-    </table>
-    ${(() => { const crews = S.workers.filter(w => w.task && w.task.kind === 'raid'); return crews.length ? `<h3>Harvest crews out</h3>` + crews.map(w => `<div class="card"><div class="t">${esc(w.name)} → ${esc(w.task.name)}</div>${progRow(w)}${speedRow([w])}</div>`).join('') : ''; })()}
-    ${orbExtras()}
+    </table><div class="small">Tap a row to find that village on the map.</div>
     <h3>Teams <span class="small">${ORB.teams.length}/${ORB.limits.teams}</span></h3>`;
   if (ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(tName(ME.team))}</div><div class="d">Your team</div></div><button class="btn sm alt" data-team="leave">Leave</button></div></div>`;
-  const myT = ORB.teams.find(x => x.id === ME.team);
+  const myT = myTeam();
   for (const t of ORB.teams) if (t.id !== ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(t.name)}${myT && myT.ally === t.id ? ' <span class="small">· ally</span>' : ''}</div><div class="d">${t.members}/${ORB.limits.teamMax} members · ${t.score} pts</div></div>
-    <div style="display:flex;gap:4px">${ME.team && U('envoy') && myT.ally !== t.id ? `<button class="btn sm alt" data-ally="${t.id}">Ally</button>` : ''}
+    <div style="display:flex;gap:4px">${ME.team && U('envoy') && myT && myT.ally !== t.id ? `<button class="btn sm alt" data-ally="${t.id}">Ally</button>` : ''}
     <button class="btn sm" data-team="join" data-id="${t.id}" ${t.members >= ORB.limits.teamMax ? 'disabled' : ''}>Join</button></div></div></div>`;
   if (!ME.team && ORB.teams.length < ORB.limits.teams) html += `<div class="card"><div class="t">Start a team</div><div style="display:flex;gap:6px;margin-top:6px"><input id="tm-name" maxlength="20" placeholder="Team name" class="inp" style="flex:1"><button class="btn sm go" data-team="create">Create</button></div></div>`;
-  html += `<div class="card"><div class="row"><div><div class="t">Other orbs</div><div class="d">See every orb's players and leaders${U('migration') ? ' and pick one to migrate to' : ''}.</div>${U('migration') ? '' : whyHTML('Migrating needs Migration research (#90, Tech tab)')}</div><button class="btn sm" data-orbs>Browse orbs</button></div></div>`;
+  html += `<div class="card"><div class="t">Move your village</div><div class="d">${U('migration') ? 'Tap open land on the map and choose “Move village here”. Buildings, workers and research come with you; resources reset to the starting amounts.' : 'Research Migration (#90, Tech tab) to move your village to any open land on the map.'}</div></div>`;
   html += `<div class="foot">Signed in as ${esc(ME.name)} (${esc(ME.email)}) · <button class="btn sm alt" data-logout>Sign out</button></div>`;
-  el.innerHTML = html;
-  drawOrb();
+  $('#wpanel').innerHTML = html;
 }
-function drawOrb() {
-  const c = $('#orbc'); if (!c || !ORB) return;
-  const sz = c.getBoundingClientRect().width; if (!sz) return;
-  c.width = c.height = sz * DPR; const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0);
-  const R = sz / 2, cx = R, cy = R;
-  const grd = g.createRadialGradient(cx - R * .3, cy - R * .3, R * .1, cx, cy, R * .95);
-  grd.addColorStop(0, '#4ade80'); grd.addColorStop(.6, '#15803d'); grd.addColorStop(1, '#0b4a8f');
-  g.fillStyle = grd; g.beginPath(); g.arc(cx, cy, R * .92, 0, 7); g.fill();
-  g.strokeStyle = 'rgba(255,255,255,.25)'; g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, R * .72, 0, 7); g.stroke();
-  for (const p of ORB.players) {
-    const a = p.slot / ORB.size * Math.PI * 2 - Math.PI / 2, x = cx + Math.cos(a) * R * .72, y = cy + Math.sin(a) * R * .72;
-    const mine = p.id === ME.id, mate = ME.team && p.team === ME.team;
-    g.fillStyle = mine ? '#fbbf24' : mate ? '#86efac' : '#f8fafc';
-    g.beginPath(); g.arc(x, y, mine ? 8 : 5 + Math.min(4, p.bcount / 3), 0, 7); g.fill();
-    if (mine) { g.strokeStyle = '#fff'; g.lineWidth = 2; g.stroke(); }
-    if (U('orbmap') && (mine || mate || ORB.players.length <= 30 || ORB.players.indexOf(p) < 10)) {
-      g.font = '10px system-ui'; g.textAlign = 'center'; g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.6)';
-      const ny = y + (y > cy ? 16 : -10); g.strokeText(p.name.slice(0, 12), x, ny); g.fillStyle = '#fff'; g.fillText(p.name.slice(0, 12), x, ny);
-    }
-  }
-  g.fillStyle = '#fff'; g.font = 'bold 14px system-ui'; g.textAlign = 'center'; g.fillText(`Orb #${ORB.orb}`, cx, cy + 5);
+
+// map input: drag to pan, wheel / pinch to zoom, tap to inspect
+function bindWorldInput() {
+  const c = $('#worldc'), pts = new Map(); let moved = 0, pinch = null, last = null;
+  const clampZ = z => Math.max(5, Math.min(40, z));
+  const zoomAt = (f, sx, sy) => { const w = c.clientWidth, h = c.clientHeight, [wx, wy] = s2w(sx, sy, w, h); CAM.z = clampZ(CAM.z * f); const [nx, ny] = s2w(sx, sy, w, h); CAM.x += wx - nx; CAM.y += wy - ny; };
+  c.addEventListener('pointerdown', e => { c.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.offsetX, e.offsetY]); if (pts.size === 1) { moved = 0; last = [e.offsetX, e.offsetY]; } if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), z: CAM.z }; } });
+  c.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.offsetX, e.offsetY]);
+    if (pts.size === 2 && pinch) { const [a, b] = [...pts.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]); zoomAt(pinch.z * d / pinch.d / CAM.z, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2); moved = 99; return; }
+    if (pts.size === 1 && last) { const dx = e.offsetX - last[0], dy = e.offsetY - last[1]; moved += Math.abs(dx) + Math.abs(dy); CAM.x -= dx / CAM.z; CAM.y -= dy / CAM.z; last = [e.offsetX, e.offsetY]; }
+  });
+  const up = e => {
+    if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (pts.size === 0) { if (moved < 8) wTap(e.offsetX, e.offsetY); else loadWorld(); last = null; }
+    else last = [...pts.values()][0];
+  };
+  c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
+  c.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.offsetX, e.offsetY); clearTimeout(c._wt); c._wt = setTimeout(loadWorld, 250); }, { passive: false });
 }
+function wTap(sx, sy) {
+  let best = null, bd = 1e9;
+  for (const h of wHits) { const d = Math.hypot(h.x - sx, h.y - sy); if (d <= h.r && d - (h.k === 'm' ? 6 : 0) < bd) { bd = d - (h.k === 'm' ? 6 : 0); best = h; } }
+  if (!best) { const c = $('#worldc'), [x, y] = s2w(sx, sy, c.clientWidth, c.clientHeight); return landSheet(Math.floor(x), Math.floor(y)); }
+  if (best.k === 'v') return villageSheet(best.o);
+  if (best.k === 'wild') return wildSheet(best.o);
+  if (best.k === 'm') return marchSheet(best.o);
+}
+const crewPicker = (max = W_CREW) => `<div class="row" style="justify-content:flex-start;gap:8px;margin-top:8px"><span class="small">Crew</span><button class="btn sm alt" data-crew="-1">−</button><b id="crew-n">${CREW_N}</b><button class="btn sm alt" data-crew="1">+</button><span class="small">of ${max}</span></div>`;
+let SHEET_FOR = null;
+function villageSheet(v) {
+  SHEET_FOR = { k: 'v', o: v };
+  const d = Math.hypot(v.x - ME.x, v.y - ME.y);
+  if (v.id === ME.id) return openSheet(`<div class="t">${esc(v.name)} (you)</div><div class="d">Score ${v.score} · level ${v.level} · ${v.bcount} buildings · at ${v.x}, ${v.y}</div>`);
+  const mate = isMate(v), ally = isAlly(v);
+  const blocked = mate ? 'Teammate — immune' : ally ? 'Allied team — immune' : v.shield ? 'New-player protection (24h)' : v.treaty ? 'Peace treaty (recently harvested)' : '';
+  const go = wTravel(d, U('fastcrews')) * (v.palisade ? 2 : 1), back = wTravel(d, U('fastcrews'));
+  openSheet(`<div class="t">${esc(v.name)}</div><div class="d">Score ${v.score} · level ${v.level} · ${v.bcount} buildings${v.online ? ' · online now' : ''} · ${Math.round(d)} tiles away</div>
+    <div style="margin-top:8px">${blocked ? `<span class="small">${blocked}</span>` : `<button class="btn go" data-raid="${v.id}">Send raid crew · arrives in ${fmt(go)}</button>
+    <div class="small" style="margin-top:4px">One AI worker marches there in the open and dismantles their lowest-tier building for ${U('spoils') ? 40 : 33}% of its cost${U('bigcrews') ? ' (Big Crews: 2 buildings)' : ''}, then walks ${fmt(back)} home with the haul. They can send a crew to stop it on the road.${v.palisade ? ' Palisade: the march there takes twice as long.' : ''}</div>
+    ${U('scout') ? `<button class="btn sm alt" style="margin-top:6px" data-scout="${v.id}">Scout</button><div id="scout-out" class="small"></div>` : ''}`}</div>
+    ${mate && U('caravan') ? `<div style="margin-top:8px">${giftForm(v.id)}</div>` : ''}`);
+}
+function wildSheet(n) {
+  SHEET_FOR = { k: 'wild', o: n };
+  const I = WILD_INFO[n.type], d = Math.hypot(n.x - ME.x, n.y - ME.y), t = wTravel(d, U('fastcrews')), haul = Math.min(n.amt, I.carry * CREW_N);
+  const heading = WLD.marches.filter(m => m.kind === 'gather' && m.target === n.id && m.status === 'out');
+  openSheet(`<div class="t">${I.n}</div><div class="d">${n.amt > 0 ? `${n.amt}/${n.max} ${I.res} left` : `Picked clean — grows back in ${fmt((n.regrow - sNow()) / 1000)}`} · ${Math.round(d)} tiles away · open to every player</div>
+    ${heading.length ? `<div class="small" style="margin-top:4px">Crews already heading here: ${heading.map(m => `${esc(m.owner_name)} (${m.crew})`).join(', ')}</div>` : ''}
+    ${n.amt > 0 ? `${crewPicker()}<div class="small" id="crew-info">Each worker carries ${I.carry} ${I.res} · this crew brings home up to ${haul} ${I.res} · ${fmt(t * 2 + W_WORK)} round trip. First crew there takes it.</div>
+    <button class="btn go" style="margin-top:8px" data-gather="${n.id}">Send gather crew</button>` : ''}`);
+}
+function marchSheet(m) {
+  SHEET_FOR = { k: 'm', o: m };
+  const at = marchPos(m, sNow()), mine = m.owner === ME.id;
+  const what = m.kind === 'raid' ? `raiding ${esc(m.target_name)}` : m.kind === 'gather' ? `gathering at a ${esc((WILD_INFO[m.target_name] || {}).n || 'wild spot')}` : `intercepting ${esc(m.target_name)}'s raid`;
+  const eta = m.status === 'back' ? `heading home · ${fmt((m.ret - sNow()) / 1000)}` : `arrives in ${fmt((m.arrive - sNow()) / 1000)}`;
+  const threat = m.kind === 'raid' && m.status === 'out' && !mine && (m.target === ME.id || (ME.team && WLD.villages.some(v => v.id === m.target && v.team === ME.team)));
+  openSheet(`<div class="t">${mine ? 'Your crew' : esc(m.owner_name) + "'s crew"} · ${m.crew} worker${m.crew > 1 ? 's' : ''}</div><div class="d">${what} · ${eta}${at.work ? ' · working' : ''}</div>
+    ${threat ? `${crewPicker()}<div class="small" id="crew-info">Your crew musters, marches out and meets them on the road. Each worker you send adds to your odds${U('militia') ? ' (Militia: +1)' : ''}${hasB('watchtower') ? '; Watchtower: your crew moves twice as fast' : ''}. If you win, the raiders go home empty-handed.</div>
+    <button class="btn go" style="margin-top:8px" data-icpt="${m.id}">Intercept</button>` : ''}`);
+}
+function landSheet(x, y) {
+  SHEET_FOR = { k: 'land', o: { x, y } };
+  openSheet(`<div class="t">Open land · ${x}, ${y}</div><div class="d">${Math.round(Math.hypot(x - ME.x, y - ME.y))} tiles from home</div>
+    ${U('migration') ? `<button class="btn go" style="margin-top:8px" data-move="${x},${y}">Move village here</button><div class="small" style="margin-top:4px">Buildings, workers and research come with you; resources reset to the starting amounts. Must be 7+ tiles from other villages.</div>` : whyHTML('Moving your village needs Migration research (#90, Tech tab)')}`);
+}
+function centerOn(x, y) { if (!CAM) return; CAM.x = x; CAM.y = y; loadWorld(true); }
+
 $('#v-orb').addEventListener('click', async e => {
   const t = e.target;
   if (t.dataset.login !== undefined) {
@@ -2149,7 +2361,9 @@ $('#v-orb').addEventListener('click', async e => {
     msg.textContent = r.ok ? `Check ${email} for your login link (it expires in 30 minutes).` : r.error;
     return;
   }
-  if (t.dataset.logout !== undefined) { await pushSave(); await api('logout', { method: 'POST' }); ME = null; ORB = null; S.owner = null; save(); refresh(true); toast('Signed out — playing as guest on this device'); return; }
+  if (t.dataset.logout !== undefined) { await pushSave(); await api('logout', { method: 'POST' }); ME = null; ORB = null; WLD = null; CAM = null; S.owner = null; save(); refresh(true); toast('Signed out — playing as guest on this device'); return; }
+  if (t.dataset.wz) { CAM.z = Math.max(5, Math.min(40, CAM.z * (t.dataset.wz === '1' ? 1.3 : 1 / 1.3))); loadWorld(); return; }
+  if (t.dataset.whome !== undefined) { centerOn(ME.x, ME.y); return; }
   if (t.dataset.team) {
     const body = { action: t.dataset.team };
     if (t.dataset.team === 'create') body.name = $('#tm-name').value;
@@ -2157,25 +2371,28 @@ $('#v-orb').addEventListener('click', async e => {
     const r = await api('team', { method: 'POST', body: JSON.stringify(body) });
     if (!r.ok) toast(r.error); loadOrb(); return;
   }
+  const inc = t.closest('[data-incoming]');
+  if (inc) { const m = WLD && WLD.marches.find(x => x.id === +inc.dataset.incoming); if (m) { const p = marchPos(m, sNow()).p; centerOn(p[0], p[1]); marchSheet(m); } window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   const row = t.closest('tr[data-pl]');
-  if (row) {
-    const pl = ORB.players.find(p => p.id === +row.dataset.pl); if (!pl) return;
-    if (pl.id === ME.id) return openSheet(`<div class="t">${esc(pl.name)} (you)</div><div class="d">Score ${pl.score} · level ${pl.level} · ${pl.bcount} buildings</div>`);
-    const mate = ME.team && pl.team === ME.team, myT = ORB.teams.find(x => x.id === ME.team), ally = myT && pl.team && myT.ally === pl.team;
-    const blocked = mate ? 'Teammate — immune' : ally ? 'Allied team — immune' : pl.shield ? 'New-player protection (24h)' : pl.treaty ? 'Peace treaty (recently harvested)' : '';
-    const giftBtn = mate && U('caravan') ? `<div style="margin-top:8px">${giftForm(pl.id)}</div>` : '';
-    openSheet(`<div class="t">${esc(pl.name)}</div><div class="d">Score ${pl.score} · level ${pl.level} · ${pl.bcount} buildings${pl.online ? ' · online now' : ''}</div>
-      <div style="margin-top:8px">${blocked ? `<span class="small">${blocked}</span>` : `<button class="btn go" data-raid="${pl.id}">Send harvest crew (${fmt(raidTime(ORB.me.slot, pl.slot, ORB.size, pl))})</button>
-      <div class="small" style="margin-top:4px">One AI worker travels there and dismantles their lowest-tier building for ${U('spoils') ? 40 : 33}% of its cost${U('bigcrews') ? ' (Big Crews: 2 buildings)' : ''}.${pl.palisade ? ' Palisade: travel time doubled.' : ''}</div>
-      ${U('scout') ? `<button class="btn sm alt" style="margin-top:6px" data-scout="${pl.id}">Scout</button><div id="scout-out" class="small"></div>` : ''}`}</div>${giftBtn}`);
-  }
+  if (row) { const pl = ORB.players.find(p => p.id === +row.dataset.pl); if (pl) { centerOn(pl.x, pl.y); window.scrollTo({ top: 0, behavior: 'smooth' }); } }
 });
 $('#sheet').addEventListener('click', async e => {
-  const b = e.target.closest('[data-raid]'); if (b && ORB) { const pl = ORB.players.find(p => p.id === +b.dataset.raid); if (pl) startRaid(pl); return; }
-  const sc = e.target.closest('[data-scout]');
-  if (sc) { const r = await api('scout?id=' + sc.dataset.scout); const o = $('#scout-out'); if (o) o.textContent = r.ok ? `${r.workers} workers · ` + (Object.entries(r.buildings).map(([k, v]) => `${v}× ${BLD[k] ? BLD[k].n : k}`).join(', ') || 'no buildings') : r.error; return; }
-  const gf = e.target.closest('[data-gift]');
-  if (gf) { const res = readResForm('gf'); if (!res) return; const r = await api('gift', { method: 'POST', body: JSON.stringify({ to: +gf.dataset.gift, res }) });
+  const b = e.target.closest('button'); if (!b || !ME) return;
+  if (b.dataset.crew) {
+    CREW_N = Math.max(1, Math.min(W_CREW, CREW_N + +b.dataset.crew));
+    if (SHEET_FOR && SHEET_FOR.k === 'wild') wildSheet(SHEET_FOR.o); else if (SHEET_FOR && SHEET_FOR.k === 'm') marchSheet(SHEET_FOR.o); return;
+  }
+  if (b.dataset.raid) { const v = WLD.villages.find(x => x.id === +b.dataset.raid); if (v) sendCrew('raid', v.id, 1, v.name); return; }
+  if (b.dataset.gather) { const n = WLD.wild.find(x => x.id === +b.dataset.gather); if (n) sendCrew('gather', n.id, CREW_N, WILD_INFO[n.type].n); return; }
+  if (b.dataset.icpt) { const m = WLD.marches.find(x => x.id === +b.dataset.icpt); if (m) sendCrew('intercept', m.id, CREW_N, m.owner_name); return; }
+  if (b.dataset.move) {
+    if (!b.dataset.armed) { b.dataset.armed = 1; b.textContent = 'Confirm: resources reset'; return; }
+    const [x, y] = b.dataset.move.split(',').map(Number);
+    const r = await api('relocate', { method: 'POST', body: JSON.stringify({ x, y }) }); if (!r.ok) return toast(r.error);
+    S.res = newState().res; ME.x = r.x; ME.y = r.y; closeSheet(); save(); pushSave(); centerOn(r.x, r.y); loadOrb(); toast('Village moved — resources reset'); return;
+  }
+  if (b.dataset.scout) { const r = await api('scout?id=' + b.dataset.scout); const o = $('#scout-out'); if (o) o.textContent = r.ok ? `${r.workers} workers · ` + (Object.entries(r.buildings).map(([k, v]) => `${v}× ${BLD[k] ? BLD[k].n : k}`).join(', ') || 'no buildings') : r.error; return; }
+  if (b.dataset.gift) { const res = readResForm('gf'); if (!res) return; const r = await api('gift', { method: 'POST', body: JSON.stringify({ to: +b.dataset.gift, res }) });
     if (!r.ok) { refundRes(res); return toast(r.error); } toast('Caravan sent'); closeSheet(); save(); pushSave(); refresh(true); }
 });
 
@@ -2201,14 +2418,14 @@ function refundRes(res) { for (const [k, v] of Object.entries(res)) S.res[k] = (
 const WONDER_PTS = { steel: 1, gears: 2, gold: 5 };
 function orbExtras() {
   let h = '';
-  if (INCOMING.length) h += `<div class="card"><div class="t">⚠ Incoming harvest crews</div>${INCOMING.map(i => `<div class="d">${esc(i.attacker)} · arrives in ${fmt(Math.max(0, (i.eta - Date.now()) / 1000))}</div>`).join('')}</div>`;
+  if (INCOMING.length) h += `<div class="card" style="border-color:#ef4444"><div class="t">⚠ Raids heading for you</div>${INCOMING.map(i => `<div class="row" style="margin-top:4px"><div class="d">${esc(i.attacker)} · arrives in ${fmt(Math.max(0, (i.eta - sNow()) / 1000))}</div><button class="btn sm go" data-incoming="${i.id}">Intercept</button></div>`).join('')}</div>`;
   const myT = ME.team && ORB.teams.find(x => x.id === ME.team);
   if (myT && U('storage')) h += `<div class="card"><div class="t">Team bank</div><div class="d">${TBANK ? (Object.entries(TBANK).filter(([, v]) => v > 0).map(([k, v]) => `${v} ${k}`).join(' · ') || 'Empty') : 'Loading…'}</div>
     <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">${resSelect('tb')}<button class="btn sm go" data-tb="deposit">Deposit</button><button class="btn sm alt" data-tb="withdraw">Withdraw</button></div></div>`;
   if (myT && U('wonder')) { const w = myT.wonder || 0, goal = ORB.wonderGoal || 5000;
     h += `<div class="card"><div class="t">Team Wonder ${w >= goal ? '— complete: +10% gathering for the team' : `${w}/${goal}`}</div><div class="bar"><b style="width:${Math.min(100, w / goal * 100)}%"></b></div>
     ${w < goal ? `<div class="d">Steel = 1 pt · gears = 2 · gold = 5</div><div style="display:flex;gap:6px;margin-top:6px">${resSelect('wd', Object.keys(WONDER_PTS))}<button class="btn sm go" data-wonder>Contribute</button></div>` : ''}</div>`; }
-  if (U('events') && EVT) h += `<div class="card"><div class="t">Weekly orb event: ${EVT.goal.toLocaleString()} ${EVT.res}</div><div class="bar"><b style="width:${Math.min(100, EVT.total / EVT.goal * 100)}%"></b></div>
+  if (U('events') && EVT) h += `<div class="card"><div class="t">Weekly world event: ${EVT.goal.toLocaleString()} ${EVT.res}</div><div class="bar"><b style="width:${Math.min(100, EVT.total / EVT.goal * 100)}%"></b></div>
     <div class="d">${EVT.total.toLocaleString()} delivered · ends in ${Math.ceil((EVT.ends - Date.now()) / 3600000)}h · reward 300 copper, 15 gold, 30 min speedup</div>
     <div style="display:flex;gap:6px;margin-top:6px">${EVT.total >= EVT.goal ? (EVT.claimed ? '<span class="small">Claimed</span>' : '<button class="btn sm go" data-evclaim>Claim reward</button>') : `<input id="ev-n" class="inp" type="number" min="1" placeholder="${EVT.res}" style="width:110px"><button class="btn sm go" data-ev>Deliver</button>`}</div></div>`;
   if (U('auction')) h += `<div class="card"><div class="t">Auction house</div>
@@ -2257,29 +2474,7 @@ $('#v-orb').addEventListener('click', async e => {
     S.res[r.res] = (S.res[r.res] || 0) + r.amt; return done(r.cancelled ? 'Listing cancelled' : `Bought ${r.amt} ${r.res}`);
   }
   if (t.dataset.ally) { const r = await api('ally', { method: 'POST', body: JSON.stringify({ team: +t.dataset.ally }) }); return r.ok ? done('Alliance formed') : toast(r.error); }
-  if (t.dataset.orbs !== undefined) return openOrbs();
 });
-async function openOrbs() {
-  modal('<h2>Orbs</h2><div class="small">Loading…</div>');
-  const r = await api('orbs'); if (!r.ok) return modal(`<h2>Orbs</h2><p>${esc(r.error)}</p><div class="btns"><button class="btn alt" data-close>Close</button></div>`);
-  const rows = r.orbs.map(o => {
-    const mine = o.orb === r.me, full = o.players >= r.size;
-    const why = mine ? 'You are here' : full ? 'Full' : !U('migration') ? 'Needs Migration research' : '';
-    return `<tr class="${mine ? 'me' : ''}"><td>#${o.orb}</td><td>${o.players}/${r.size}</td><td>${o.online} / ${o.active}</td><td>${o.teams}</td><td>${esc(o.leader)}<div class="small">${o.top} pts · avg ${o.avg}</div></td>
-      <td>${why ? `<span class="small">${why}</span>` : `<button class="btn sm go" data-mig="${o.orb}">Migrate</button>`}</td></tr>`;
-  }).join('');
-  modal(`<h2>Orbs</h2><div class="small">Online = playing now · 7d = played this week. Migrating keeps buildings, workers and research; resources reset to the starting amounts and you leave your team.</div>
-    <div style="overflow-x:auto"><table class="lb"><tr><th>Orb</th><th>Players</th><th>Online / 7d</th><th>Teams</th><th>Leader</th><th></th></tr>${rows}</table></div>
-    <div class="btns"><button class="btn alt" data-close>Close</button></div>`);
-  $('#modal .box').classList.add('wide');
-}
-document.addEventListener('click', async e => {
-  const t = e.target.closest('#modal [data-mig]'); if (!t) return;
-  if (!t.dataset.armed) { t.dataset.armed = 1; t.textContent = 'Confirm: resources reset'; return; }
-  const r = await api('migrate', { method: 'POST', body: JSON.stringify({ orb: +t.dataset.mig }) }); if (!r.ok) return toast(r.error);
-  S.res = newState().res; ORB = null; $('#modal').hidden = true; save(); pushSave(); loadOrb(); loadOrbExtras(); toast(`Moved to orb #${r.orb} — resources reset`);
-});
-
 // ---------------------------------------------------------------- boot + loop
 S = load();
 genMap(S.seed);
@@ -2296,6 +2491,7 @@ function frame(now) {
   updateDeer(Math.min(dt, .1));
   floaters.forEach(f => f.age += Math.min(dt, .1));
   if (view === 'village') drawMap(now);
+  if (view === 'orb') drawWorld(now);
   if (view === 'puzzle' && P && !P.busy) drawBoard();
   if (now - lastUI > 300) { lastUI = now; refresh(); }
   if (wall - lastSave > 5000) { lastSave = wall; save(); }
@@ -2305,6 +2501,7 @@ requestAnimationFrame(frame);
 document.addEventListener('visibilitychange', () => { if (document.hidden) { save(); pushSave(true); } });
 window.addEventListener('pagehide', () => { save(); pushSave(true); });
 setInterval(() => { if (ME && dirty) pushSave(); }, 15000);
-setInterval(() => { if (ME) pollLosses(); }, 30000);
+setInterval(() => { if (ME && (crewsOut().length || INCOMING.length || Date.now() - lastPoll > 30000)) pollLosses(); }, 8000);
 setInterval(() => { if (ME && view === 'orb') loadOrb(); }, 20000);
+setInterval(() => { if (ME && view === 'orb' && !document.hidden) loadWorld(true); }, 4000);
 syncLogin();
