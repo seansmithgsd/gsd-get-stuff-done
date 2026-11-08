@@ -1010,6 +1010,7 @@ function drawMap(now) {
     const [x, y] = iso(i, j); nodeSprite(n, x, y, MAP.g[j * W + mod(i, W)], stageOf(i, j));
   });
   mx.textAlign = 'center'; mx.font = 'bold 13px Georgia';
+  flushLabels();
   if (typeof drawEdgeArrows === 'function') drawEdgeArrows(cw / ZM, ch / ZM);
   floaters = floaters.filter(f => f.age < 1.6);
   for (const f of floaters) {

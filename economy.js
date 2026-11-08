@@ -84,7 +84,20 @@ function drawPile(x, y, k, amt, side) {
   for (let q = 0; q < 6 + side * 4; q++) {
     const a = q * 2.399, f = (q * .61) % 1, rr = rx * (1 - f) * .8, px = x + Math.cos(a) * rr, py = y - h * f * .9 + Math.sin(a) * ry * (1 - f) * .6;
     mx.fillStyle = rg(mx, px - 2, py - 2, 6, c[0], c[1], c[2]); mx.beginPath(); mx.ellipse(px, py, 5 + side, 3.5 + side * .6, 0, 0, 7); mx.fill();
+  }  // label: resource name + amount above the mound
+  const z = typeof ZM === 'number' ? ZM : 1, label = `${k[0].toUpperCase() + k.slice(1)} ${Math.round(amt).toLocaleString()}`;
+  LABEL_Q.push({ x, y: y - h - 10 / z, label, col: c[0] });   // drawn after everything so trees never cover it
+}
+let LABEL_Q = [];
+function flushLabels() {
+  const z = typeof ZM === 'number' ? ZM : 1;
+  mx.font = `bold ${Math.round(12 / z)}px system-ui`; mx.textAlign = 'center'; mx.textBaseline = 'alphabetic';
+  for (const L of LABEL_Q) {
+    const tw = mx.measureText(L.label).width;
+    mx.fillStyle = 'rgba(15,27,61,.85)'; mx.beginPath(); mx.roundRect(L.x - tw / 2 - 6 / z, L.y - 13 / z, tw + 12 / z, 18 / z, 6 / z); mx.fill();
+    mx.fillStyle = L.col; mx.fillText(L.label, L.x, L.y);
   }
+  LABEL_Q = [];
 }
 const pileCenter = p => [p.i + (p.side - 1) / 2, p.j + (p.side - 1) / 2];
 function pileObjects(objs, t, vw, vh) {
