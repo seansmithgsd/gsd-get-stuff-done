@@ -42,7 +42,7 @@ const BLD = {
   hunt:   { n: 'Hunting Post', tier: 1, time: 45, cost: { wood: 10, money: 2 }, desc: 'Unlocks hunting deer (+6 food)' },
   quarry: { n: 'Quarry', tier: 1, time: 75, cost: { wood: 20, money: 4 }, desc: 'Unlocks stone from rocks' },
   lumber: { n: 'Lumber Camp', tier: 2, time: 90, req: ['hut'], cost: { wood: 25, stone: 8, money: 5 }, desc: 'Doubles wood per trip' },
-  farm:   { n: 'Farm Plot', tier: 2, time: 90, req: ['hunt'], cost: { wood: 20, stone: 6, money: 5 }, desc: 'Steady food (+5 per harvest), 2 AI workers max' },
+  farm:   { n: 'Farm Plot', tier: 2, time: 90, req: ['hunt'], cost: { wood: 20, stone: 6, money: 5 }, desc: 'Steady food (+5 per harvest)' },
   kiln:   { n: 'Charcoal Kiln', tier: 3, time: 120, req: ['lumber'], cost: { wood: 30, stone: 15, money: 8 }, desc: 'Wood + Wood → Coal' },
   smelter: { n: 'Smelter', tier: 4, time: 180, req: ['kiln', 'mine'], cost: { wood: 40, stone: 40, money: 15 }, desc: 'Iron + Coal → Steel' },
   mint:   { n: 'Mint', tier: 4, time: 180, req: ['mine'], cost: { stone: 50, iron: 10, money: 20 }, desc: 'Strikes gold: 1 steel → 1 gold' },
@@ -65,11 +65,14 @@ const TASKS = {
 const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine', smelter: 'smelt', mint: 'strike' };
 const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
 const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings workers gather at
-const FARM_CAP = 2;   // workers per farm plot
-const onFarm = (b, except) => S.workers.filter(w => w !== except && w.task && w.task.kind === 'farm' && w.task.target && Math.round(w.task.target[0]) === b.i && Math.round(w.task.target[1]) === b.j).length;
-function openFarm(except) { let best = null; for (const b of S.buildings) if (b.type === 'farm' && b.done) { const n = onFarm(b, except); if (n < FARM_CAP && (!best || n < best.n)) best = { b, n }; } return best && best.b; }
-// saves from before the cap: extra farm workers go find other work
-function enforceFarmCap() { for (const b of S.buildings) if (b.type === 'farm') { const ws = S.workers.filter(w => w.task && w.task.kind === 'farm' && w.task.target && Math.round(w.task.target[0]) === b.i && Math.round(w.task.target[1]) === b.j); ws.slice(FARM_CAP).forEach(w => { w.task = null; const o = openFarm(w); if (o) w.task = mkTask(w, 'farm', [o.i, o.j]); else autoAssign(w); }); } }
+const SPOT_CAP = 2;   // AI workers per resource building
+const workersAt = (b, except) => S.workers.filter(w => w !== except && w.task && w.task.target && TASKS[w.task.kind] && TASKS[w.task.kind].node === b.type && Math.round(w.task.target[0]) === b.i && Math.round(w.task.target[1]) === b.j);
+function openSpot(type, except) { let best = null; for (const b of S.buildings) if (b.type === type && b.done) { const n = workersAt(b, except).length; if (n < SPOT_CAP && (!best || n < best.n)) best = { b, n }; } return best && best.b; }
+// saves from before the cap: extra workers at a building go find other work
+function enforceSpotCap() { for (const b of S.buildings) if (BNODE.includes(b.type)) workersAt(b).slice(SPOT_CAP).forEach(w => { const kind = w.task.kind; w.task = null; const o = openSpot(b.type, w); if (o) w.task = mkTask(w, kind, [o.i, o.j]); else autoAssign(w); }); }
+// resource buildings: 1 more copy per Age researched and per prestige after the first; each copy costs double the last
+const isResB = t => BNODE.includes(t);
+const maxCopies = () => 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length + Math.max(0, PRES() - 1);
 Object.assign(BLD, EXTRA_BLD); Object.assign(TASKS, EXTRA_TASKS);
 Object.assign(NODE_TASK, { quarry: 'dig', dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
 Object.assign(NODE_NAME, { dock: 'Fishing Dock', quarry2: 'Deep Quarry Pit', sawmill: 'Sawmill', blastfurnace: 'Blast Furnace', gearworks: 'Gearworks', goldrock: 'Gold rock' });
@@ -168,6 +171,7 @@ const wallet = () => S.res.copper + 3 * S.res.silver + 10 * S.res.gold;
 function costOf(type) {
   if (type === 'hut') { const n = countB('hut'); return buildCost(type, { wood: 15 + 8 * n, money: 3 + 2 * n }); }
   const D = BLD[type];
+  if (isResB(type) && D.cost) { const n = countB(type), m = Math.pow(2, n), c = {}; for (const k in D.cost) c[k] = Math.round(D.cost[k] * m); return buildCost(type, c); }
   if (D.repeat && D.cost) { const n = countB(type), m = Math.pow(1.4, n), c = {}; for (const k in D.cost) c[k] = Math.round(D.cost[k] * m); return buildCost(type, c); }
   return buildCost(type, D.cost);
 }
@@ -253,8 +257,7 @@ function findSlot() {
 function pickTarget(kind) {
   const T = TASKS[kind];
   if (T.node === 'tc') return [TCI, TCJ];
-  if (T.node === 'farm') { const b = openFarm(); return b ? [b.i, b.j] : null; }
-  if (BNODE.includes(T.node)) { const b = S.buildings.find(x => x.type === T.node && x.done); return b ? [unwrapNear(b.i, TCI), b.j] : null; }
+  if (BNODE.includes(T.node)) { const b = openSpot(T.node); return b ? [b.i, b.j] : null; }
   if (T.node === 'deer') {
     let best = null, bd = 1e9;
     for (const d of DEER) { const ui = unwrapNear(d.i, TCI); const dd = Math.hypot(ui - TCI, d.j - TCJ); if (dd < bd) { bd = dd; best = [ui, d.j]; } }
@@ -319,7 +322,7 @@ function finishTask(w, quiet) {
   if (w.repeat && fallbackBlocked(t.kind)) { w.task = null; const G = GROUPS.find(g => g.tasks.includes(t.kind)); if (G) assignGroup(G.k, w, true); if (!w.task) autoAssign(w); return; }
   const carry = t.prog - t.dur;
   const TC = taskCost(t.kind);
-  if (w.repeat && (t.kind === 'farm' || taskOpen(t.kind)) && (!TC || canPay(TC))) {
+  if (w.repeat && (BNODE.includes(NT) || taskOpen(t.kind)) && (!TC || canPay(TC))) {
     if (TC) pay(TC);
     w.task = mkTask(w, t.kind, (NT === 'deer' || !tgt) ? pickTarget(t.kind) : tgt, Math.max(0, carry));
   } else {
@@ -371,7 +374,7 @@ function assign(kind) {
 }
 function startBuild(type) {
   const D = BLD[type], c = costOf(type), w = idle()[0] || free()[0];
-  if (!D.repeat && countB(type)) return;
+  if (isResB(type) ? countB(type) >= maxCopies() : (!D.repeat && countB(type))) return toast(isResB(type) ? `Max ${maxCopies()} — research the next Age or prestige for another` : 'Already built');
   if (D.req && !D.req.every(reqMet)) return toast('Locked');
   if (!canPay(c)) return toast('Not enough resources');
   if (!w) return toast('All AI workers are already building');
@@ -533,13 +536,13 @@ function renderBuild(force) {
     for (const [k, D] of Object.entries(BLD)) {
       if (D.tier !== tier) continue;
       const c = costOf(k), built = countB(k), locked = D.req && !D.req.every(reqMet);
-      const doneOnce = !D.repeat && built;
+      const multi = isResB(k), doneOnce = multi ? built >= maxCopies() : (!D.repeat && built);
       const why = doneOnce ? '' : [locked && 'Needs: ' + D.req.filter(r => !reqMet(r)).map(reqHint).join(' + '), !canPay(c) && 'Need ' + shortBy(c).join(', '), !free().length && (S.workers.length ? 'Every AI worker is already building — wait or speed one up' : 'No AI workers yet — win puzzles to recruit one')].filter(Boolean).join(' · ');
       let btn;
-      if (doneOnce) btn = k === 'market' && hasB(k) ? `<button class="btn sm go" data-market>Open</button>` : `<button class="btn sm alt" disabled>${hasB(k) ? 'Built' : 'Building'}</button>`;
+      if (doneOnce) btn = k === 'market' && hasB(k) ? `<button class="btn sm go" data-market>Open</button>` : `<button class="btn sm alt" disabled>${multi ? 'Max' : hasB(k) ? 'Built' : 'Building'}</button>`;
       else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !free().length ? 'disabled' : ''}>Build</button>`;
-      html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
-        <div class="cost">${doneOnce ? '' : costHTML(c) + ` · ${fmt(D.time)}`}</div>${whyHTML(why)}</div>${btn}</div></div>`;
+      html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${multi ? ` <span class="small">${built}/${maxCopies()} · ${SPOT_CAP} AI workers each</span>` : D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
+        <div class="cost">${doneOnce ? (multi ? 'Next one: research the next Age or prestige' : '') : costHTML(c) + ` · ${fmt(D.time)}`}</div>${whyHTML(why)}</div>${btn}</div></div>`;
     }
     for (const f of FUTURE.filter(f => f.tier === tier)) {
       html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div><div class="cost">Requires ${f.req}</div></div><span class="small">Coming soon</span></div></div>`;
@@ -698,7 +701,7 @@ function sendClosest(i, j) {
   const tk = NODE_TASK[kind], T = TASKS[tk];
   if (T.req && !reqMet(T.req)) return false;           // locked: show the sheet instead
   const target = deer ? [unwrapNear(deer.i, TCI), deer.j] : [unwrapNear(i, TCI), j];
-  if (kind === 'farm' && onFarm(b) >= FARM_CAP) { toast(`Farm is full (${FARM_CAP} workers)`); return true; }
+  if (b && BNODE.includes(kind) && workersAt(b).length >= SPOT_CAP) { toast(`${BLD[b.type].n} is full (${SPOT_CAP} AI workers)`); return true; }
   let best = null, bd = 1e9;
   S.workers.forEach((w, k) => {
     if (w.task && (w.task.kind === 'build' || w.task.kind === 'raid')) return;
@@ -2526,7 +2529,7 @@ S = load();
 genMap(S.seed);
 S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
 catchUp((Date.now() - S.t) / 1000, true);
-enforceFarmCap();
+enforceSpotCap();
 idle().forEach(autoAssign); // idle workers get to work on load
 layout();
 refresh(true);
