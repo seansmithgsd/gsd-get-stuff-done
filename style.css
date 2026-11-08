@@ -45,6 +45,8 @@ main{position:fixed;left:0;right:0;top:var(--toph,62px);bottom:var(--navh,54px)}
   box-shadow:0 2px 6px rgba(30,58,138,.12)}
 .card.locked{opacity:.55;border-style:dashed}
 .card .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.card .row>div:first-child{flex:1;min-width:0}
+.card .row>.btn{flex-shrink:0;white-space:nowrap}
 .card .t{font-weight:700;color:var(--ink)}
 .card .d{font-size:13px;color:var(--muted)}
 .cost{font-size:12px;margin-top:3px;color:var(--muted)}
