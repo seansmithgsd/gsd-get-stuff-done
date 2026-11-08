@@ -155,3 +155,14 @@ function harvStats() {
 
 // keep piles, deer and storage numbers current
 setInterval(() => { if (typeof S !== 'undefined' && S && typeof MAP !== 'undefined' && MAP) { layoutPiles(); spawnLuredDeer(); } }, 1000);
+
+// Build tab: each Storehouse / Granary you own, with its level and an Upgrade button (same as tapping it in the village)
+function storageRows(type) {
+  if (type !== 'storehouse' && type !== 'grainstore') return '';
+  return S.buildings.filter(b => b.type === type && b.done).map((b, n) => {
+    const lvl = b.lvl || 1, up = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
+    if (up || lvl >= STORE_MAX_LVL) return `<div class="row" style="margin-top:6px"><div class="d">#${n + 1} · level ${lvl} · holds ${STORE_CAP[lvl].toLocaleString()}${up ? ' · upgrading…' : ' · max'}</div></div>`;
+    const c = storageUpCost(b), ok = canPay(c) && free().length;
+    return `<div class="row" style="margin-top:6px"><div><div class="d">#${n + 1} · level ${lvl} · holds ${STORE_CAP[lvl].toLocaleString()} → ${STORE_CAP[lvl + 1].toLocaleString()}</div><div class="cost">${costHTML(c)} · ${fmt(BLD[b.type].time * (lvl + 1))}</div></div><button class="btn sm" data-supg="${b.id}" ${ok ? '' : 'disabled'}>Upgrade</button></div>`;
+  }).join('');
+}

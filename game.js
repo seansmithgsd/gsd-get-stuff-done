@@ -522,7 +522,7 @@ $('#hint').addEventListener('click', e => { const b = e.target.closest('[data-go
 
 function renderBuild(force) {
   const building = S.workers.filter(w => w.task && w.task.kind === 'build');
-  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done), free().length, building.map(w => w.id), Math.floor(S.bank)]);
+  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done + (b.lvl || 1)), free().length, building.map(w => w.id), Math.floor(S.bank)]);
   if (s === sig && !force) return; sig = s;
   let html = '';
   if (building.length) {
@@ -543,7 +543,7 @@ function renderBuild(force) {
       if (doneOnce) btn = k === 'market' && hasB(k) ? `<button class="btn sm go" data-market>Open</button>` : `<button class="btn sm alt" disabled>${multi ? 'Max' : hasB(k) ? 'Built' : 'Building'}</button>`;
       else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !free().length ? 'disabled' : ''}>Build</button>`;
       html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${multi ? ` <span class="small">${built}/${maxCopies()}${BNODE.includes(k) ? ` · ${SPOT_CAP} AI workers each` : ''}</span>` : D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
-        <div class="cost">${doneOnce ? (multi ? 'Next one: research the next Age or prestige' : '') : costHTML(c) + ` · ${fmt(D.time)}`}</div>${whyHTML(why)}</div>${btn}</div></div>`;
+        <div class="cost">${doneOnce ? (multi ? 'Next one: research the next Age or prestige' : '') : costHTML(c) + ` · ${fmt(D.time)}`}</div>${whyHTML(why)}</div>${btn}</div>${storageRows(k)}</div>`;
     }
     for (const f of FUTURE.filter(f => f.tier === tier)) {
       html += `<div class="card locked"><div class="row"><div><div class="t">${f.n}</div><div class="d">${f.desc}</div><div class="cost">Requires ${f.req}</div></div><span class="small">Coming soon</span></div></div>`;
