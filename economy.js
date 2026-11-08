@@ -6,7 +6,7 @@ const PILE_RES = ['food', ...STORE_RES];
 const TC_STORE = 200;                                     // the Town Center holds this much of each
 const STORE_CAP = [0, 500, 1000, 2000, 3500, 5000];       // per storage building, by level (level 5 = 10× level 1)
 const STORE_MAX_LVL = 5;
-const PILE_PER_TILE = 300, PILE_MAX_TILES = 12;
+const PILE_PER_TILE = 300;   // one more row/column of footprint per this much (squared)
 const ROT = { food: .05 / 60, other: .02 / 3600 };        // food piles lose 5% a minute, others 2% an hour
 const storeType = k => k === 'food' ? 'grainstore' : 'storehouse';
 function storeCap(k) {
@@ -37,39 +37,60 @@ function edgeRing() {
   }
   return (edgeRing.c = out);
 }
+// one pile per resource, against the plot edge; its footprint grows (1×1 → 2×2 → … 5×5) and the heap keeps getting taller
 let PILES = [], PILE_AT = new Map(), pileKeys = '';
+const pileSide = amt => Math.min(5, Math.max(1, Math.ceil(Math.sqrt(amt / PILE_PER_TILE))));
+function pileBlock(i, j, side) {
+  // a side×side block touching the plot edge at (i, j), growing inward
+  let i0 = i, j0 = j;
+  if (j === H - 1) j0 = H - side; if (i === W - 1) i0 = W - side;
+  i0 = clamp(i0, 0, W - side); j0 = clamp(j0, 0, H - side);
+  const tiles = []; for (let b = 0; b < side; b++) for (let a = 0; a < side; a++) tiles.push([i0 + a, j0 + b]);
+  return { i0, j0, tiles };
+}
 function layoutPiles() {
   if (!S || !MAP) return;
-  const taken = new Set(S.buildings.map(b => b.j * W + b.i)), out = [], ring = edgeRing();
+  const taken = new Set(S.buildings.map(b => b.j * W + b.i)), out = [], ring = edgeRing().slice(0, 2 * (W + H) - 4);
   PILE_RES.forEach((k, ri) => {
     const p = pileOf(k); if (p <= 0) return;
-    const n = Math.min(PILE_MAX_TILES, Math.ceil(p / PILE_PER_TILE));
-    let pos = ri * 14, placed = 0, tries = 0;
-    while (placed < n && tries++ < ring.length) {
-      const [i, j] = ring[pos++ % ring.length], key = j * W + i;
-      if (taken.has(key) || near(i, j, TCI, TCJ) < 3) continue;
-      taken.add(key); out.push({ k, i, j, amt: Math.round(p / n) }); placed++;
+    const side = pileSide(p);
+    for (let n = 0; n < ring.length; n++) {
+      const [i, j] = ring[(ri * 13 + n) % ring.length], B = pileBlock(i, j, side);
+      if (B.tiles.some(([a, b]) => taken.has(b * W + a) || near(a, b, TCI, TCJ) < 3)) continue;
+      B.tiles.forEach(([a, b]) => taken.add(b * W + a));
+      out.push({ k, i: B.i0, j: B.j0, side, amt: p, tiles: B.tiles }); break;
     }
   });
-  PILES = out; PILE_AT = new Map(out.map(p => [p.j * W + p.i, p]));
-  const keys = out.map(p => p.j * W + p.i).join(',');
+  PILES = out; PILE_AT = new Map(); for (const p of out) for (const [a, b] of p.tiles) PILE_AT.set(b * W + a, p);
+  const keys = out.map(p => [p.k, p.i, p.j, p.side].join(':')).join(',');
   if (keys !== pileKeys) { pileKeys = keys; layerDirty = true; }
 }
 function pileAt(i, j) { return i >= 0 && i < W && j >= 0 && j < H ? PILE_AT.get(j * W + i) || null : null; }
 const PILE_COL = { food: ['#fca5a5', '#dc2626', '#7f1d1d'], wood: ['#d6a46a', '#8b5a2b', '#4a2a10'], stone: ['#e5e7eb', '#9aa3ab', '#4b5563'], iron: ['#cbd5e1', '#6b7a8a', '#334155'],
   coal: ['#6b7280', '#2b2b2b', '#030712'], steel: ['#f1f5f9', '#a5b4c4', '#475569'], planks: ['#fde68a', '#d4a056', '#7c4a1e'], gears: ['#e5e7eb', '#64748b', '#1e293b'] };
-function drawPile(x, y, k, amt) {
-  const c = PILE_COL[k] || PILE_COL.stone, s = .55 + Math.min(1, amt / PILE_PER_TILE) * .6, n = 3 + Math.min(5, Math.floor(amt / 60));
-  mx.fillStyle = 'rgba(0,0,0,.25)'; mx.beginPath(); mx.ellipse(x + 3, y + 2, 24 * s, 9 * s, 0, 0, 7); mx.fill();
-  for (let q = 0; q < n; q++) {
-    const a = q * 2.399, rr = (q / n) * 12 * s, px = x + Math.cos(a) * rr, py = y - 2 - q * 2.2 * s + Math.sin(a) * rr * .45;
-    mx.fillStyle = rg(mx, px - 3, py - 4, 9 * s, c[0], c[1], c[2]); mx.beginPath(); mx.ellipse(px, py, 10 * s, 6.5 * s, 0, 0, 7); mx.fill();
+// one mound: footprint from the block size, height keeps rising with the amount
+function drawPile(x, y, k, amt, side) {
+  side = side || 1;
+  const c = PILE_COL[k] || PILE_COL.stone, rx = side * TW * .42, ry = side * TH * .42;
+  const h = Math.min(side * 34 + 30, 10 + Math.sqrt(amt) * 1.1);
+  mx.fillStyle = 'rgba(0,0,0,.28)'; mx.beginPath(); mx.ellipse(x + 4, y + 3, rx * 1.05, ry * 1.05, 0, 0, 7); mx.fill();
+  const layers = 6 + Math.min(10, side * 2);
+  for (let q = 0; q < layers; q++) {
+    const f = q / layers, w = rx * (1 - f * .82), hh = ry * (1 - f * .82), py = y - h * f;
+    mx.fillStyle = rg(mx, x - w * .35, py - hh * .5, w * 1.1, c[0], c[1], c[2]);
+    mx.beginPath(); mx.ellipse(x, py, w, hh, 0, 0, 7); mx.fill();
+  }
+  // lumps on the surface so it reads as a heap of stuff
+  for (let q = 0; q < 6 + side * 4; q++) {
+    const a = q * 2.399, f = (q * .61) % 1, rr = rx * (1 - f) * .8, px = x + Math.cos(a) * rr, py = y - h * f * .9 + Math.sin(a) * ry * (1 - f) * .6;
+    mx.fillStyle = rg(mx, px - 2, py - 2, 6, c[0], c[1], c[2]); mx.beginPath(); mx.ellipse(px, py, 5 + side, 3.5 + side * .6, 0, 0, 7); mx.fill();
   }
 }
+const pileCenter = p => [p.i + (p.side - 1) / 2, p.j + (p.side - 1) / 2];
 function pileObjects(objs, t, vw, vh) {
   for (const p of PILES) {
-    const [x, y] = iso(p.i, p.j); if (x < -60 || x > vw + 60 || y < -40 || y > vh + 40) continue;
-    objs.push({ d: p.i + p.j, f: () => drawPile(x, y, p.k, p.amt) });
+    const [ci, cj] = pileCenter(p), [x, y] = iso(ci, cj); if (x < -200 || x > vw + 200 || y < -200 || y > vh + 200) continue;
+    objs.push({ d: p.i + p.j + 2 * (p.side - 1), f: () => drawPile(x, y, p.k, p.amt, p.side) });
   }
 }
 

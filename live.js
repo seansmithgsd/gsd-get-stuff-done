@@ -153,7 +153,7 @@ function worldObjects(objs, t, vw, vh) {
       const B = { type: b[0], i: b[1], j: b[2], done: true, id: -1 };
       objs.push({ d: bi + bj, f: () => { try { drawBuilding(B, sx, sy, t); } catch (e) {} } });
     }
-    for (const p of v.pl) { const [sx, sy] = iso(vi + p[1], vj + p[2]); if (sx > -60 && sx < vw + 60 && sy > -40 && sy < vh + 40) objs.push({ d: vi + vj + p[1] + p[2], f: () => drawPile(sx, sy, p[0], p[3]) }); }
+    for (const p of v.pl) { const sd = p[4] || 1, [sx, sy] = iso(vi + p[1] + (sd - 1) / 2, vj + p[2] + (sd - 1) / 2); if (sx > -200 && sx < vw + 200 && sy > -200 && sy < vh + 200) objs.push({ d: vi + vj + p[1] + p[2] + 2 * (sd - 1), f: () => drawPile(sx, sy, p[0], p[3], sd) }); }
     const [tx, ty] = iso(vi + VTCI, vj + VTCJ);
     objs.push({ d: vi + vj + VTCI + VTCJ + 2, f: () => {
       mx.font = `bold ${Math.round(13 / ZM)}px system-ui`; mx.textAlign = 'center'; mx.lineWidth = 3 / ZM; mx.strokeStyle = 'rgba(0,0,0,.7)';
@@ -190,7 +190,7 @@ function intentPos(it, home, k, now) {
 function hvTarget(x, y) {
   const v = neighbourAt(x, y); if (!v) return null;
   const li = x - v.ox, lj = y - v.oy;
-  const p = v.pl.find(q => q[1] === li && q[2] === lj);
+  const p = v.pl.find(q => li >= q[1] && li < q[1] + (q[4] || 1) && lj >= q[2] && lj < q[2] + (q[4] || 1));
   if (p) return { v, src: 'pile', res: p[0], amt: v.pl.filter(q => q[0] === p[0]).reduce((a, q) => a + q[3], 0) };
   const b = v.b.find(q => q[1] === li && q[2] === lj && (q[0] === 'storehouse' || q[0] === 'grainstore'));
   if (b) { const list = b[0] === 'grainstore' ? ['food'] : STORE_RES; const res = list.slice().sort((a, c) => (v.st[c] | 0) - (v.st[a] | 0))[0]; return { v, src: 'store', res, amt: v.st[res] | 0, list }; }
@@ -341,7 +341,7 @@ function livePublish(force) {
   const left = {}, n = {};
   for (let k = 0; k < W * H; k++) { const t = MAP.node[k]; if (NODES.includes(t)) { const l = Math.max(0, MAP.amt[k] - ((S.used && S.used[k]) || 0)); if (l > 0) { left[k] = l; n[k] = t; } } }
   const b = S.buildings.filter(x => x.done).map(x => [x.type, x.i, x.j]);
-  const pl = PILES.map(p => [p.k, p.i, p.j, p.amt]), st = {}; for (const k of PILE_RES) st[k] = storedOf(k);
+  const pl = PILES.map(p => [p.k, p.i, p.j, p.amt, p.side]), st = {}; for (const k of PILE_RES) st[k] = storedOf(k);
   const gd = { n: guards(), lvl: guardLvl() };
   const sig = JSON.stringify([b, left, S.level, pl, st, gd]);
   if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', seed: S.seed, b, left, n, lvl: S.level, pl, st, gd }); }
