@@ -65,6 +65,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS events (orb INTEGER NOT NULL, week INTEGER NOT NULL, total INTEGER DEFAULT 0, PRIMARY KEY (orb, week))`,
   `CREATE TABLE IF NOT EXISTS event_claims (player INTEGER NOT NULL, week INTEGER NOT NULL, PRIMARY KEY (player, week))`,
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)`,
+  // devices playing without signing in (guests never appear on the map) — counted so we can see who tried it
+  `CREATE TABLE IF NOT EXISTS guests (device TEXT PRIMARY KEY, first INTEGER NOT NULL, last INTEGER NOT NULL, level INTEGER DEFAULT 1, plays INTEGER DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS wild (id INTEGER PRIMARY KEY AUTOINCREMENT, x INTEGER NOT NULL, y INTEGER NOT NULL, type TEXT NOT NULL, amt INTEGER NOT NULL, max INTEGER NOT NULL, regrow INTEGER DEFAULT 0)`,
   `CREATE INDEX IF NOT EXISTS wild_xy ON wild(x, y)`,
   `CREATE TABLE IF NOT EXISTS chunks (cx INTEGER NOT NULL, cy INTEGER NOT NULL, PRIMARY KEY (cx, cy))`,
@@ -277,6 +279,12 @@ export async function onRequest(ctx) {
     }
 
     const p = await me(req, env);
+    if (path === 'hello' && req.method === 'POST') {
+      const b = await body(), dev = String(b.device || '').replace(/[^a-z0-9]/gi, '').slice(0, 32), lvl = Math.max(1, Math.min(9999, Math.floor(Number(b.level) || 1)));
+      if (dev.length < 8 || p) return json({ ok: true });
+      await env.DB.prepare('INSERT INTO guests (device, first, last, level) VALUES (?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET last = excluded.last, level = MAX(level, excluded.level), plays = plays + 1').bind(dev, now, now, lvl).run();
+      return json({ ok: true });
+    }
     if (path === 'me' && req.method === 'GET') {
       if (!p) return bad('not signed in', 401);
       await env.DB.prepare('UPDATE players SET seen = ? WHERE id = ?').bind(now, p.id).run();
@@ -445,8 +453,9 @@ export async function onRequest(ctx) {
         .map(x => { const f = flagsOfRow(x); delete x.flags; return { ...x, shield: now - x.created < SHIELD_MS, treaty: !!(f.treaty && now - (x.harvested_at || 0) < TREATY_MS), online: now - x.seen < 120000, palisade: !!f.palisade, banner: !!f.banner, tier: f.tier || 0 }; });
       const rank = (await env.DB.prepare('SELECT COUNT(*) n FROM players WHERE score > ?').bind(p.score || 0).first()).n + 1;
       const total = (await env.DB.prepare('SELECT COUNT(*) n FROM players').first()).n;
+      const guests = await env.DB.prepare('SELECT COUNT(*) n, COALESCE(SUM(last > ?), 0) week FROM guests').bind(now - 7 * 86400000).first();
       const teams = (await env.DB.prepare('SELECT t.id, t.name, t.ally, COALESCE(t.wonder,0) wonder, COUNT(p.id) members, COALESCE(SUM(p.score),0) score FROM teams t LEFT JOIN players p ON p.team = t.id WHERE t.orb = ? GROUP BY t.id ORDER BY score DESC').bind(p.orb).all()).results;
-      return json({ ok: true, me: pub(p), rank, total, players, teams, limits: { teams: MAX_TEAMS, teamMax: TEAM_MAX }, wonderGoal: WONDER_GOAL });
+      return json({ ok: true, me: pub(p), rank, total, guests: guests.n, guestsWeek: guests.week, players, teams, limits: { teams: MAX_TEAMS, teamMax: TEAM_MAX }, wonderGoal: WONDER_GOAL });
     }
     // send a crew: raid a village, gather at a wild node, or intercept a raid on the road
     if (path === 'march' && req.method === 'POST') {

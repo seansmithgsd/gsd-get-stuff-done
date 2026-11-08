@@ -2252,7 +2252,7 @@ function renderOrb(force) {
   if (!ORB) { if (sig !== 'o-load') { sig = 'o-load'; el.innerHTML = '<h2>The World</h2><div class="small">Loading…</div>'; } loadOrb(); return; }
   if (!$('#worldc')) {
     el.innerHTML = `<div id="wmap"><canvas id="worldc"></canvas>
-      <div class="wbtns"><button class="btn sm" data-wz="1">+</button><button class="btn sm" data-wz="-1">−</button><button class="btn sm" data-whome title="Home">⌂</button></div>
+      <div class="wbtns"><button class="btn sm" data-lb title="Leaderboard">🏆</button><button class="btn sm" data-wz="1">+</button><button class="btn sm" data-wz="-1">−</button><button class="btn sm" data-whome title="Home">⌂</button></div>
       <div class="wleg">⚔ raid · ⛏ gather · 🛡 intercept · <b style="color:#fbbf24">gold</b> = yours · <b style="color:#ef4444">red</b> = coming for you</div></div><div id="wpanel"></div>`;
     bindWorldInput(); sig = '';
   }
@@ -2260,16 +2260,15 @@ function renderOrb(force) {
   const s = 'o' + JSON.stringify([ORB.players.map(p => [p.id, p.score, p.team, p.online]), ORB.teams, ORB.rank, crews.map(w => [w.id, w.task.mid]), INCOMING.map(i => i.id), TBANK, EVT && [EVT.total, EVT.claimed], LISTS && LISTS.map(l => l.id), ORB.teams.map(t => [t.ally, t.wonder]), Math.floor(Date.now() / 5000)]);
   if (s === sig && !force) return; sig = s;
   const tName = id => { const t = ORB.teams.find(x => x.id === id); return t ? t.name : ''; };
-  let html = `<h2>World <span class="small">you are #${ORB.rank} of ${ORB.total} · home ${ME.x}, ${ME.y}</span></h2>`;
+  let html = `<h2>World <span class="small">home ${ME.x}, ${ME.y}</span></h2>
+    <div class="small">${ORB.total} signed-in village${ORB.total === 1 ? '' : 's'} on the map${ORB.guests ? ` · ${ORB.guests} guest device${ORB.guests === 1 ? '' : 's'} played without signing in (${ORB.guestsWeek} this week) — guests stay off the map until they sign in` : ''}</div>`;
   if (crews.length) {
     const byM = {}; crews.forEach(w => { (byM[w.task.mid || 'old' + w.id] = byM[w.task.mid || 'old' + w.id] || []).push(w); });
     html += `<h3>Your crews on the road</h3>` + Object.values(byM).map(ws => { const w = ws[0]; return `<div class="card"><div class="t">${esc(w.task.label || w.task.name)} <span class="small">· ${ws.length} worker${ws.length > 1 ? 's' : ''}</span></div>${progRow(w)}</div>`; }).join('');
   }
   html += orbExtras();
-  html += `<h3>Leaderboard</h3><table class="lb"><tr><th>#</th><th>Village</th><th>Team</th><th>Lvl</th><th>Bldgs</th><th>Score</th></tr>
-    ${ORB.players.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${p.banner && i < 10 ? '👑 ' : ''}${esc(p.name)}${p.shield || p.treaty ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}
-    </table><div class="small">Tap a row to find that village on the map.</div>
-    <h3>Teams <span class="small">${ORB.teams.length}/${ORB.limits.teams}</span></h3>`;
+  html += `<h3>Leaderboard</h3>${lbHTML()}<div class="small">Tap a row to find that village on the map.</div>`;
+  html += `<h3>Teams <span class="small">${ORB.teams.length}/${ORB.limits.teams}</span></h3>`;
   if (ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(tName(ME.team))}</div><div class="d">Your team</div></div><button class="btn sm alt" data-team="leave">Leave</button></div></div>`;
   const myT = myTeam();
   for (const t of ORB.teams) if (t.id !== ME.team) html += `<div class="card"><div class="row"><div><div class="t">${esc(t.name)}${myT && myT.ally === t.id ? ' <span class="small">· ally</span>' : ''}</div><div class="d">${t.members}/${ORB.limits.teamMax} members · ${t.score} pts</div></div>
@@ -2300,6 +2299,22 @@ function bindWorldInput() {
   };
   c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
   c.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.offsetX, e.offsetY); clearTimeout(c._wt); c._wt = setTimeout(loadWorld, 250); }, { passive: false });
+}
+let LB_SORT = 'level';
+function lbRows() {
+  const k = LB_SORT, list = [...ORB.players].sort((a, b) => (b[k] - a[k]) || (b.score - a.score));
+  return list;
+}
+function lbHTML(limit) {
+  const tName = id => { const t = ORB.teams.find(x => x.id === id); return t ? t.name : ''; };
+  const list = lbRows().slice(0, limit || 100), th = (k, n) => `<th><button class="lbs${LB_SORT === k ? ' on' : ''}" data-lbsort="${k}">${n}${LB_SORT === k ? ' ▼' : ''}</button></th>`;
+  return `<table class="lb"><tr><th>#</th><th>Village</th><th>Team</th>${th('level', 'Lvl')}${th('bcount', 'Bldgs')}${th('score', 'Score')}</tr>
+    ${list.map((p, i) => `<tr data-pl="${p.id}" class="${p.id === ME.id ? 'me' : ''}"><td>${i + 1}</td><td>${p.online ? '● ' : ''}${p.banner && i < 10 ? '👑 ' : ''}${esc(p.name)}${p.shield || p.treaty ? ' 🛡' : ''}</td><td>${esc(tName(p.team))}</td><td>${p.level}</td><td>${p.bcount}</td><td>${p.score}</td></tr>`).join('')}</table>`;
+}
+function lbSheet() {
+  if (!ORB) return;
+  SHEET_FOR = { k: 'lb' };
+  openSheet(`<div class="t">🏆 Leaderboard <span class="small">· ${ORB.total} villages</span></div><div style="max-height:50vh;overflow:auto;margin-top:6px">${lbHTML()}</div>`);
 }
 function wTap(sx, sy) {
   let best = null, bd = 1e9;
@@ -2364,6 +2379,8 @@ $('#v-orb').addEventListener('click', async e => {
   if (t.dataset.logout !== undefined) { await pushSave(); await api('logout', { method: 'POST' }); ME = null; ORB = null; WLD = null; CAM = null; S.owner = null; save(); refresh(true); toast('Signed out — playing as guest on this device'); return; }
   if (t.dataset.wz) { CAM.z = Math.max(5, Math.min(40, CAM.z * (t.dataset.wz === '1' ? 1.3 : 1 / 1.3))); loadWorld(); return; }
   if (t.dataset.whome !== undefined) { centerOn(ME.x, ME.y); return; }
+  if (t.closest('[data-lb]')) { lbSheet(); return; }
+  if (t.dataset.lbsort) { LB_SORT = t.dataset.lbsort; sig = ''; renderOrb(true); return; }
   if (t.dataset.team) {
     const body = { action: t.dataset.team };
     if (t.dataset.team === 'create') body.name = $('#tm-name').value;
@@ -2375,6 +2392,11 @@ $('#v-orb').addEventListener('click', async e => {
   if (inc) { const m = WLD && WLD.marches.find(x => x.id === +inc.dataset.incoming); if (m) { const p = marchPos(m, sNow()).p; centerOn(p[0], p[1]); marchSheet(m); } window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
   const row = t.closest('tr[data-pl]');
   if (row) { const pl = ORB.players.find(p => p.id === +row.dataset.pl); if (pl) { centerOn(pl.x, pl.y); window.scrollTo({ top: 0, behavior: 'smooth' }); } }
+});
+$('#sheet').addEventListener('click', e => {
+  if (!SHEET_FOR || SHEET_FOR.k !== 'lb') return;
+  const so = e.target.closest('[data-lbsort]'); if (so) { LB_SORT = so.dataset.lbsort; sig = ''; renderOrb(true); lbSheet(); return; }
+  const row = e.target.closest('tr[data-pl]'); if (row) { const pl = ORB.players.find(p => p.id === +row.dataset.pl); if (pl) { closeSheet(); centerOn(pl.x, pl.y); } }
 });
 $('#sheet').addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b || !ME) return;
@@ -2505,3 +2527,5 @@ setInterval(() => { if (ME && (crewsOut().length || INCOMING.length || Date.now(
 setInterval(() => { if (ME && view === 'orb') loadOrb(); }, 20000);
 setInterval(() => { if (ME && view === 'orb' && !document.hidden) loadWorld(true); }, 4000);
 syncLogin();
+// count guest plays (no account) so the world screen can show how many people tried it without signing in
+setTimeout(() => { if (ME) return; let d; try { d = localStorage.getItem('gsd_dev'); if (!d) { d = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('gsd_dev', d); } } catch (e) { return; } api('hello', { method: 'POST', body: JSON.stringify({ device: d, level: S.level }) }); }, 8000);

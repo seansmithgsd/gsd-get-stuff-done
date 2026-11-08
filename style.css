@@ -201,3 +201,8 @@ table.mk td{cursor:default}
 #wmap .wbtns{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:6px}
 #wmap .wbtns .btn{min-width:36px;font-size:18px;padding:4px 8px}
 #wmap .wleg{position:absolute;left:8px;bottom:8px;right:8px;font-size:11px;color:#fff;text-shadow:0 1px 2px #000;pointer-events:none}
+/* market amount picker + sortable leaderboard */
+.mxrow{display:flex;gap:6px;justify-content:center;margin:8px 0 4px;flex-wrap:wrap}
+.mxrow .btn{min-width:52px}
+.lb th .lbs{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
+.lb th .lbs.on{color:#fbbf24}

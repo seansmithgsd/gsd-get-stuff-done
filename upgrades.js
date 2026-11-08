@@ -381,22 +381,48 @@ function doPrestige() {
 
 // ---------------------------------------------------------------- Market
 const PRICE = { food: .2, wood: .25, stone: .3, iron: 1, coal: 1, steel: 3, planks: 1, gears: 8, gold: 10, silver: 3 };
+// how many lots per click: ×1, ×10, ×100, ×1000, or Max (everything you have / everything you can afford)
+let MKT_X = 1;
+const MKT_STEPS = [1, 10, 100, 1000, 'max'];
+const mktSell = k => Math.max(.01, PRICE[k] * (k === 'gold' && U('assay') ? 1.2 : 1));
+const mktLot = k => { const s1 = mktSell(k); return s1 < 1 ? Math.ceil(1 / s1) * 10 : 10; };
+function mktQty(k, side) {
+  const lot = mktLot(k);
+  if (MKT_X !== 'max') return lot * MKT_X;
+  if (side === 'sell') return Math.floor((S.res[k] || 0) / lot) * lot;
+  return Math.floor(wallet() / Math.ceil(lot * PRICE[k] * 2)) * lot;
+}
+const mktGain = (k, q) => Math.floor(q * mktSell(k));
+const mktCost = (k, q) => Math.ceil(q / mktLot(k)) * Math.ceil(mktLot(k) * PRICE[k] * 2);
+const cc = n => big(n) + (n >= 1e4 ? ' copper' : 'c');
+const big = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + 'k' : String(n);
 function openMarket() {
   if (!hasB('market')) return toast('Build a Market first');
-  const sell = k => Math.max(.01, PRICE[k] * (k === 'gold' && U('assay') ? 1.2 : 1));
   const rows = Object.keys(PRICE).filter(k => k !== 'silver').map(k => {
-    const s1 = sell(k), q = s1 < 1 ? Math.ceil(1 / s1) * 10 : 10;
-    return `<tr><td>${k}</td><td>${S.res[k] || 0}</td><td><button class="btn sm" data-sell="${k}" data-q="${q}" ${(S.res[k] || 0) >= q ? '' : 'disabled'} title="${(S.res[k] || 0) >= q ? '' : 'Need ' + (q - (S.res[k] || 0)) + ' more ' + k}">Sell ${q} → ${Math.floor(q * s1)}c</button>${(S.res[k] || 0) >= q ? '' : `<div class="why sm">need ${q - Math.floor(S.res[k] || 0)} more</div>`}</td>
-      <td><button class="btn sm alt" data-buyr="${k}" data-q="${q}" ${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : 'disabled'} title="${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : needCoin(Math.ceil(q * PRICE[k] * 2))}">Buy ${q} for ${Math.ceil(q * PRICE[k] * 2)}c</button>${wallet() >= Math.ceil(q * PRICE[k] * 2) ? '' : `<div class="why sm">${needCoin(Math.ceil(q * PRICE[k] * 2))}</div>`}</td></tr>`;
+    const have = Math.floor(S.res[k] || 0), qs = mktQty(k, 'sell'), qb = mktQty(k, 'buy'), g = mktGain(k, qs), c = mktCost(k, qb);
+    const canS = qs > 0 && have >= qs, canB = qb > 0 && wallet() >= c;
+    return `<tr><td>${k}</td><td>${big(have)}</td>
+      <td><button class="btn sm" data-sell="${k}" data-q="${qs}" ${canS ? '' : 'disabled'}>Sell ${big(qs)} → ${cc(g)}</button>${canS ? '' : `<div class="why sm">${qs > 0 ? `need ${big(qs - have)} more` : `need ${mktLot(k)}`}</div>`}</td>
+      <td><button class="btn sm alt" data-buyr="${k}" data-q="${qb}" ${canB ? '' : 'disabled'}>Buy ${big(qb)} for ${cc(c)}</button>${canB ? '' : `<div class="why sm">${qb > 0 ? needCoin(c) : needCoin(mktCost(k, mktLot(k)))}</div>`}</td></tr>`;
   }).join('');
-  modal(`<h2>Market</h2><div class="small">Copper ${S.res.copper} · wallet ${wallet()}</div><table class="lb mk"><tr><th>Res</th><th>Have</th><th>Sell</th><th>Buy</th></tr>${rows}</table>
+  const seg = MKT_STEPS.map(x => `<button class="btn sm ${MKT_X === x ? '' : 'alt'}" data-mx="${x}">${x === 'max' ? 'Max' : '×' + x}</button>`).join('');
+  modal(`<h2>Market</h2><div class="small">Copper ${big(S.res.copper)} · wallet ${big(wallet())}</div>
+    <div class="mxrow">${seg}</div>
+    <table class="lb mk"><tr><th>Res</th><th>Have</th><th>Sell</th><th>Buy</th></tr>${rows}</table>
+    <div class="btns"><button class="btn sm alt" data-sellall>Sell all extra (keep 1,000 of each)</button></div>
     ${U('silverex') ? `<div class="btns"><button class="btn sm" data-ex="c2s" ${S.res.copper >= 30 ? '' : 'disabled'}>30 copper → 10 silver</button><button class="btn sm" data-ex="s2g" ${S.res.silver >= 10 ? '' : 'disabled'}>10 silver → 3 gold</button></div>` : '<div class="small">Research Silver Exchange (#56) to convert coins.</div>'}
     <div class="btns"><button class="btn alt" data-close>Done</button></div>`);
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('#modal button'); if (!b) return;
-  if (b.dataset.sell) { const k = b.dataset.sell, q = +b.dataset.q; if ((S.res[k] || 0) < q) return; S.res[k] -= q; S.res.copper += Math.floor(q * PRICE[k] * (k === 'gold' && U('assay') ? 1.2 : 1)); sfx('coin'); save(); openMarket(); }
-  else if (b.dataset.buyr) { const k = b.dataset.buyr, q = +b.dataset.q, c = Math.ceil(q * PRICE[k] * 2); if (wallet() < c) return; pay({ money: c }); S.res[k] = (S.res[k] || 0) + q; sfx('coin'); save(); openMarket(); }
+  if (b.dataset.mx) { MKT_X = b.dataset.mx === 'max' ? 'max' : +b.dataset.mx; openMarket(); return; }
+  if (b.dataset.sell) { const k = b.dataset.sell, q = +b.dataset.q; if (!q || (S.res[k] || 0) < q) return; S.res[k] -= q; S.res.copper += mktGain(k, q); sfx('coin'); save(); openMarket(); }
+  else if (b.dataset.buyr) { const k = b.dataset.buyr, q = +b.dataset.q, c = mktCost(k, q); if (!q || wallet() < c) return; pay({ money: c }); S.res[k] = (S.res[k] || 0) + q; sfx('coin'); save(); openMarket(); }
+  else if (b.dataset.sellall !== undefined) {
+    let got = 0;
+    for (const k of Object.keys(PRICE)) { if (k === 'silver' || k === 'copper') continue; const lot = mktLot(k), q = Math.floor(Math.max(0, (S.res[k] || 0) - 1000) / lot) * lot; if (q > 0) { S.res[k] -= q; const g = mktGain(k, q); S.res.copper += g; got += g; } }
+    if (!got) return toast('Nothing above 1,000 to sell'); sfx('coin'); toast(`Sold extras for ${big(got)} copper`); save(); openMarket();
+  }
   else if (b.dataset.ex === 'c2s' && S.res.copper >= 30) { S.res.copper -= 30; S.res.silver += 10; sfx('coin'); save(); openMarket(); }
   else if (b.dataset.ex === 's2g' && S.res.silver >= 10) { S.res.silver -= 10; S.res.gold += 3; sfx('coin'); save(); openMarket(); }
 });
