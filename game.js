@@ -42,7 +42,7 @@ const BLD = {
   hunt:   { n: 'Hunting Post', tier: 1, time: 45, cost: { wood: 10, money: 2 }, desc: 'Unlocks hunting deer (+6 food)' },
   quarry: { n: 'Quarry', tier: 1, time: 75, cost: { wood: 20, money: 4 }, desc: 'Unlocks stone from rocks' },
   lumber: { n: 'Lumber Camp', tier: 2, time: 90, req: ['hut'], cost: { wood: 25, stone: 8, money: 5 }, desc: 'Doubles wood per trip' },
-  farm:   { n: 'Farm Plot', tier: 2, time: 90, req: ['hunt'], cost: { wood: 20, stone: 6, money: 5 }, desc: 'Steady food (+5 per harvest)' },
+  farm:   { n: 'Farm Plot', tier: 2, time: 90, req: ['hunt'], cost: { wood: 20, stone: 6, money: 5 }, desc: 'Steady food (+5 per harvest), 2 AI workers max' },
   kiln:   { n: 'Charcoal Kiln', tier: 3, time: 120, req: ['lumber'], cost: { wood: 30, stone: 15, money: 8 }, desc: 'Wood + Wood → Coal' },
   smelter: { n: 'Smelter', tier: 4, time: 180, req: ['kiln', 'mine'], cost: { wood: 40, stone: 40, money: 15 }, desc: 'Iron + Coal → Steel' },
   mint:   { n: 'Mint', tier: 4, time: 180, req: ['mine'], cost: { stone: 50, iron: 10, money: 20 }, desc: 'Strikes gold: 1 steel → 1 gold' },
@@ -51,7 +51,7 @@ const BLD = {
 };
 const FUTURE = [];
 const TASKS = {
-  berries: { n: 'Pick berries', node: 'bush', time: 20, gain: { food: 3 } },
+  berries: { n: 'Pick berries', node: 'bush', time: 20, gain: { food: 6 } },
   hunt:    { n: 'Hunt deer', node: 'deer', time: 30, gain: { food: 6 }, req: 'hunt' },
   farm:    { n: 'Harvest farm', node: 'farm', time: 25, gain: { food: 5 }, req: 'farm' },
   chop:    { n: 'Chop wood', node: 'tree', time: 20, gain: { wood: 3 }, boost: 'lumber' },
@@ -65,6 +65,11 @@ const TASKS = {
 const NODE_TASK = { bush: 'berries', tree: 'chop', rock: 'stone', deer: 'hunt', farm: 'farm', kiln: 'coal', mine: 'mine', smelter: 'smelt', mint: 'strike' };
 const NODE_NAME = { bush: 'Berry bush', tree: 'Tree', rock: 'Rock', deer: 'Deer', farm: 'Farm Plot', kiln: 'Charcoal Kiln', mine: 'Mine', smelter: 'Smelter', mint: 'Mint' };
 const BNODE = ['farm', 'kiln', 'mine', 'smelter', 'mint'];   // buildings workers gather at
+const FARM_CAP = 2;   // workers per farm plot
+const onFarm = (b, except) => S.workers.filter(w => w !== except && w.task && w.task.kind === 'farm' && w.task.target && Math.round(w.task.target[0]) === b.i && Math.round(w.task.target[1]) === b.j).length;
+function openFarm(except) { let best = null; for (const b of S.buildings) if (b.type === 'farm' && b.done) { const n = onFarm(b, except); if (n < FARM_CAP && (!best || n < best.n)) best = { b, n }; } return best && best.b; }
+// saves from before the cap: extra farm workers go find other work
+function enforceFarmCap() { for (const b of S.buildings) if (b.type === 'farm') { const ws = S.workers.filter(w => w.task && w.task.kind === 'farm' && w.task.target && Math.round(w.task.target[0]) === b.i && Math.round(w.task.target[1]) === b.j); ws.slice(FARM_CAP).forEach(w => { w.task = null; const o = openFarm(w); if (o) w.task = mkTask(w, 'farm', [o.i, o.j]); else autoAssign(w); }); } }
 Object.assign(BLD, EXTRA_BLD); Object.assign(TASKS, EXTRA_TASKS);
 Object.assign(NODE_TASK, { quarry: 'dig', dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
 Object.assign(NODE_NAME, { dock: 'Fishing Dock', quarry2: 'Deep Quarry Pit', sawmill: 'Sawmill', blastfurnace: 'Blast Furnace', gearworks: 'Gearworks', goldrock: 'Gold rock' });
@@ -248,6 +253,7 @@ function findSlot() {
 function pickTarget(kind) {
   const T = TASKS[kind];
   if (T.node === 'tc') return [TCI, TCJ];
+  if (T.node === 'farm') { const b = openFarm(); return b ? [b.i, b.j] : null; }
   if (BNODE.includes(T.node)) { const b = S.buildings.find(x => x.type === T.node && x.done); return b ? [unwrapNear(b.i, TCI), b.j] : null; }
   if (T.node === 'deer') {
     let best = null, bd = 1e9;
@@ -313,7 +319,7 @@ function finishTask(w, quiet) {
   if (w.repeat && fallbackBlocked(t.kind)) { w.task = null; const G = GROUPS.find(g => g.tasks.includes(t.kind)); if (G) assignGroup(G.k, w, true); if (!w.task) autoAssign(w); return; }
   const carry = t.prog - t.dur;
   const TC = taskCost(t.kind);
-  if (w.repeat && taskOpen(t.kind) && (!TC || canPay(TC))) {
+  if (w.repeat && (t.kind === 'farm' || taskOpen(t.kind)) && (!TC || canPay(TC))) {
     if (TC) pay(TC);
     w.task = mkTask(w, t.kind, (NT === 'deer' || !tgt) ? pickTarget(t.kind) : tgt, Math.max(0, carry));
   } else {
@@ -692,6 +698,7 @@ function sendClosest(i, j) {
   const tk = NODE_TASK[kind], T = TASKS[tk];
   if (T.req && !reqMet(T.req)) return false;           // locked: show the sheet instead
   const target = deer ? [unwrapNear(deer.i, TCI), deer.j] : [unwrapNear(i, TCI), j];
+  if (kind === 'farm' && onFarm(b) >= FARM_CAP) { toast(`Farm is full (${FARM_CAP} workers)`); return true; }
   let best = null, bd = 1e9;
   S.workers.forEach((w, k) => {
     if (w.task && (w.task.kind === 'build' || w.task.kind === 'raid')) return;
@@ -2519,6 +2526,7 @@ S = load();
 genMap(S.seed);
 S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
 catchUp((Date.now() - S.t) / 1000, true);
+enforceFarmCap();
 idle().forEach(autoAssign); // idle workers get to work on load
 layout();
 refresh(true);
