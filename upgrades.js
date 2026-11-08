@@ -244,18 +244,32 @@ function deerCount() { return U('tracking') ? 11 : 7; }
 function puzzleCopper(c) { if (U('lucky') && Math.random() < .05) { toast('Lucky Coin: double copper!'); c *= 2; } if (S.civ === 'angm') c = Math.round(c * 1.2); return c; }
 
 // ---------------------------------------------------------------- research
+// research queue: 2 slots (running + waiting) + 1 per Age researched + 1 per prestige after the first. Queued items are paid up front.
+const rqSlots = () => 2 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length + Math.max(0, PRES() - 1);
+const rqUsed = () => (S.rs ? 1 : 0) + (S.rq || []).length;
+const pendingLvl = id => U(id) + (S.rs && S.rs.id === id ? 1 : 0) + (S.rq || []).filter(q => q.id === id).length;
 function startResearch(id) {
-  const u = UPGI[id], lvl = U(id);
-  if (S.rs) return toast('Already researching — speed it up or wait');
+  const u = UPGI[id], lvl = pendingLvl(id);
   if (!upgOpen(u) || lvl >= (u.max || 1)) return;
+  if (rqUsed() >= rqSlots()) return toast(`Research queue is full (${rqSlots()}) — research the next Age or prestige for more`);
   const c = upgCost(u, lvl);
   if (!canPay(c)) return toast('Not enough resources');
-  pay(c); S.rs = { id, prog: 0, dur: upgTime(u, lvl) };
-  sfx('build'); toast(`Researching ${u.n}`); save(); refresh(true);
+  pay(c);
+  if (!S.rs) { S.rs = { id, prog: 0, dur: upgTime(u, lvl) }; toast(`Researching ${u.n}`); }
+  else { (S.rq = S.rq || []).push({ id, c }); toast(`${u.n} queued (${rqUsed()}/${rqSlots()})`); }
+  sfx('build'); save(); refresh(true); renderRsBtn(true);
+}
+function cancelQueued(i) {
+  const q = (S.rq || [])[i]; if (!q) return;
+  S.rq.splice(i, 1);
+  for (const k in q.c) { if (k === 'money') S.res.copper += q.c[k]; else S.res[k] = (S.res[k] || 0) + q.c[k]; }
+  toast(`${UPGI[q.id].n} removed from the queue — refunded`); save(); refresh(true); renderRsBtn(true);
 }
 function finishResearch(quiet) {
   const id = S.rs.id, u = UPGI[id];
   S.upg = S.upg || {}; S.upg[id] = (S.upg[id] || 0) + 1; S.rs = null;
+  // next one in the queue starts right away
+  const nx = (S.rq || []).shift(); if (nx && UPGI[nx.id]) S.rs = { id: nx.id, prog: 0, dur: upgTime(UPGI[nx.id], U(nx.id)) };
   if (id === 'tracking' || id === 'prospect' || id === 'hardwood' || id === 'deepquarry') { genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; }); }
   if (id === 'expansion') expandLand();
   if (u.age) { if (!quiet) modal(`<h2>${u.n}!</h2><p>${u.d}.</p><div class="btns"><button class="btn go" data-close>Onward</button></div>`); }
@@ -329,7 +343,7 @@ function startDaily() {
 let techCat = 'All';
 function renderTech(force) {
   const el = document.getElementById('v-tech'); if (!el) return;
-  const s = 't' + JSON.stringify([S.upg, S.rs && S.rs.id, techCat, tierNow(), S.civ, PRES(), Math.floor(S.bank), Object.values(S.res).map(Math.floor)]);
+  const s = 't' + JSON.stringify([S.upg, S.rs && S.rs.id, (S.rq || []).map(q => q.id), techCat, tierNow(), S.civ, PRES(), Math.floor(S.bank), Object.values(S.res).map(Math.floor)]);
   if (s === sig && !force) { if (S.rs) { const b = el.querySelector('[data-rsbar]'); if (b) b.style.width = (100 * S.rs.prog / S.rs.dur).toFixed(1) + '%'; const tl = el.querySelector('[data-rstl]'); if (tl) tl.textContent = fmt(S.rs.dur - S.rs.prog); } return; }
   sig = s;
   const tn = tierNow();
@@ -342,6 +356,7 @@ function renderTech(force) {
       <div class="bar"><b data-rsbar style="width:${(100 * S.rs.prog / S.rs.dur).toFixed(1)}%"></b></div><div class="small"><span data-rstl>${fmt(S.rs.dur - S.rs.prog)}</span> left</div>
       <div class="spd"><button class="btn sm go" data-spr="60" ${S.bank > 0 ? '' : 'disabled'}>⏱ 1m</button><button class="btn sm go" data-spr="300" ${S.bank > 0 ? '' : 'disabled'}>⏱ 5m</button><button class="btn sm go" data-spr="1800" ${S.bank > 0 ? '' : 'disabled'}>⏱ 30m</button><button class="btn sm" data-spr="all" ${S.bank > 0 ? '' : 'disabled'}>Finish (${fmt(S.rs.dur - S.rs.prog)})</button><span class="small">bank ${fmt(S.bank)} / ${fmt(bankCap())}</span></div>${S.bank > 0 ? '' : whyHTML('Speedup bank is empty — win puzzles with moves left over to fill it')}</div>`;
   }
+  h += rqHTML();
   // prestige + daily
   if (U('age6')) {
     const can = canPay(PRESTIGE_COST);
@@ -353,12 +368,12 @@ function renderTech(force) {
     const list = UPG.filter(u => u.tier === tier && (techCat === 'All' || u.cat === techCat)); if (!list.length) continue;
     h += `<h3>Tier ${tier}${tier >= 6 ? ' · ' + AGE_NAME[tier] : ''}</h3>`;
     for (const u of list) {
-      const lvl = U(u.id), max = u.max || 1, done = lvl >= max, open = upgOpen(u), c = upgCost(u, lvl);
+      const lvl = pendingLvl(u.id), max = u.max || 1, done = lvl >= max, open = upgOpen(u), c = upgCost(u, lvl), full = rqUsed() >= rqSlots();
       const why = done ? '' : [tierNow() < u.tier && (u.tier >= 6 ? `reach tier ${u.tier}: research ${AGE_NAME[u.tier]}` : `reach tier ${u.tier}: build any tier ${u.tier} building`),
-        ...(u.req || []).filter(r => !reqMet(r)).map(reqHint), open && S.rs && `already researching ${UPGI[S.rs.id].n} — one at a time`, open && !canPay(c) && 'need ' + shortBy(c).join(', ')].filter(Boolean).join(' · ');
-      h += `<div class="card${open || done ? '' : ' locked'}${u.age ? ' age' : ''}"><div class="row"><div style="flex:1"><div class="t"><span class="no">#${u.no}</span> ${u.n} ${max > 1 ? `<span class="small">${lvl}/${max}</span>` : ''}</div><div class="d">${u.d}</div>
+        ...(u.req || []).filter(r => !reqMet(r)).map(reqHint), open && full && `research queue is full (${rqSlots()})`, open && !canPay(c) && 'need ' + shortBy(c).join(', ')].filter(Boolean).join(' · ');
+      h += `<div class="card${open || done ? '' : ' locked'}${u.age ? ' age' : ''}"><div class="row"><div style="flex:1"><div class="t"><span class="no">#${u.no}</span> ${u.n} ${max > 1 ? `<span class="small">${lvl}/${max}${lvl > U(u.id) ? ' incl. queued' : ''}</span>` : ''}</div><div class="d">${u.d}</div>
         <div class="cost">${done ? 'Done' : costHTML(c) + ' · ' + fmt(upgTime(u, lvl))}</div>${whyHTML(why)}</div>
-        ${done ? '<span class="small">✓</span>' : `<button class="btn sm" data-res="${u.id}" ${open && !S.rs && canPay(c) ? '' : 'disabled'}>Research</button>`}</div></div>`;
+        ${done ? '<span class="small">✓</span>' : `<button class="btn sm" data-res="${u.id}" ${open && !full && canPay(c) ? '' : 'disabled'}>${S.rs ? 'Queue' : 'Research'}</button>`}</div></div>`;
     }
   }
   h += `<div class="foot">Buildings from the list (#8, 9, 14, 16, 30, 32, 36, 38–40, 42, 43, 51–53, 71, 72, 81, 86, 98, 99) are on the Build tab once their age is researched.</div>`;
@@ -456,3 +471,36 @@ function drawExtraBuilding(b, x, y, t) {
     mx.fillStyle = '#15803d'; for (let k = 0; k < 3; k++) { const p = (t * .5 + k / 3) % 1; mx.fillRect(x - 10 + k * 8, y - h - 10 - p * 30, 10, 5); }
   } else roof(x, y, w, h, 16, c[3], c[4]);
 }
+
+// ---------------------------------------------------------------- research button (top bar) + queue
+function rqHTML() {
+  const q = S.rq || [];
+  return `<div class="card"><div class="t">Research queue <span class="small">${rqUsed()}/${rqSlots()} slots</span></div>
+    ${S.rs ? '' : '<div class="d">Nothing researching — pick something on the Tech tab.</div>'}
+    ${q.map((x, i) => `<div class="row" style="margin-top:4px"><div class="d">${i + 1}. ${UPGI[x.id].n} <span class="small">· ${fmt(upgTime(UPGI[x.id], U(x.id) + (S.rs && S.rs.id === x.id ? 1 : 0) + q.slice(0, i).filter(y => y.id === x.id).length))}</span></div><button class="btn sm alt" data-rqx="${i}">Cancel (refund)</button></div>`).join('')}
+    <div class="small" style="margin-top:4px">1 more slot per Age researched and per prestige after the first.</div></div>`;
+}
+function openRsSheet() {
+  const u = S.rs && UPGI[S.rs.id];
+  modal(`<h2>🔬 Research</h2>
+    ${u ? `<div class="card rsnow"><div class="t">${u.n}</div><div class="bar"><b data-rsbar style="width:${(100 * S.rs.prog / S.rs.dur).toFixed(1)}%"></b></div><div class="small"><span data-rstl>${fmt(S.rs.dur - S.rs.prog)}</span> left</div>
+      <div class="spd"><button class="btn sm go" data-spr="60" ${S.bank > 0 ? '' : 'disabled'}>⏱ 1m</button><button class="btn sm go" data-spr="300" ${S.bank > 0 ? '' : 'disabled'}>⏱ 5m</button><button class="btn sm" data-spr="all" ${S.bank > 0 ? '' : 'disabled'}>Finish</button><span class="small">bank ${fmt(S.bank)}</span></div></div>` : ''}
+    ${rqHTML()}
+    <div class="btns"><button class="btn go" data-rstech>Tech tab</button><button class="btn alt" data-close>Close</button></div>`);
+}
+let rsSig = '';
+function renderRsBtn(force) {
+  let b = document.getElementById('rsbtn');
+  if (!b) { b = document.createElement('button'); b.id = 'rsbtn'; b.title = 'Research'; document.getElementById('top').appendChild(b); b.addEventListener('click', openRsSheet); }
+  const pct = S.rs ? Math.floor(100 * S.rs.prog / S.rs.dur) : null, s = [pct, rqUsed(), rqSlots()].join('|');
+  if (s === rsSig && !force) return; rsSig = s;
+  b.innerHTML = `🔬 <span>${S.rs ? pct + '%' : 'idle'}</span> <span class="small">${rqUsed()}/${rqSlots()}</span>`;
+  b.classList.toggle('idle', !S.rs);
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('#modal button, #v-tech button'); if (!b) return;
+  if (b.dataset.rqx != null) { cancelQueued(+b.dataset.rqx); if (b.closest('#modal')) openRsSheet(); }
+  if (b.dataset.rstech !== undefined) { closeModal(); setView('tech'); }
+  if (b.dataset.spr && b.closest('#modal')) setTimeout(openRsSheet, 0);
+});
+setInterval(() => { if (S) renderRsBtn(); }, 500);

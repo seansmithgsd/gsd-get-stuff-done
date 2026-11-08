@@ -206,3 +206,7 @@ table.mk td{cursor:default}
 .mxrow .btn{min-width:52px}
 .lb th .lbs{background:none;border:0;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:0}
 .lb th .lbs.on{color:#fbbf24}
+/* research button in the top bar */
+#rsbtn{position:absolute;right:52px;top:max(6px,env(safe-area-inset-top));background:rgba(255,255,255,.14);border:0;border-radius:8px;color:#fff;font-size:13px;font-weight:700;height:28px;padding:0 10px;cursor:pointer}
+#rsbtn.idle{background:#d97706}
+#rsbtn .small{opacity:.8;font-weight:500}
