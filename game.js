@@ -1010,6 +1010,7 @@ function drawMap(now) {
     const [x, y] = iso(i, j); nodeSprite(n, x, y, MAP.g[j * W + mod(i, W)], stageOf(i, j));
   });
   mx.textAlign = 'center'; mx.font = 'bold 13px Georgia';
+  if (typeof drawEdgeArrows === 'function') drawEdgeArrows(cw / ZM, ch / ZM);
   floaters = floaters.filter(f => f.age < 1.6);
   for (const f of floaters) {
     const ui = unwrapNear(f.i, cI); const [x, y] = iso(ui, f.j);
@@ -1021,6 +1022,7 @@ function drawMap(now) {
 (() => {
   let down = null; const pts = new Map(); let pinch = null;
   const zoomAt = (z, cx, cy) => {
+    if (z < .29 && ME && typeof villageToWorld === 'function') { pts.clear(); pinch = null; down = null; villageToWorld(); return; }   // zoomed all the way out: hand off to the world map
     const r = mapC.getBoundingClientRect(), px = cx - r.left, py = cy - r.top, nz = clamp(z, .3, 1.6);
     const wx = px / ZM - cw / ZM / 2 + camX, wy = py / ZM - ch / ZM / 2 + camY;
     ZM = nz; camX = wx - px / ZM + cw / ZM / 2; camY = wy - py / ZM + ch / ZM / 2;
@@ -1043,6 +1045,8 @@ function drawMap(now) {
     if (pinch) { if (pts.size < 2) pinch = null; down = null; return; }
     if (!down) return;
     if (!down.moved && e.type === 'pointerup') {
+      const r = mapC.getBoundingClientRect();
+      if (typeof edgeArrowTap === 'function' && edgeArrowTap((e.clientX - r.left) / ZM, (e.clientY - r.top) / ZM)) { down = null; return; }
       const hit = tileAt(e.clientX, e.clientY);
       if (hit && hit.ext) { if (typeof extTileSheet === 'function') extTileSheet(hit[0], hit[1]); }
       else if (hit) { if (!sendClosest(hit[0], hit[1])) tileSheet(hit[0], hit[1]); } else closeSheet();
@@ -2317,7 +2321,9 @@ function renderOrb(force) {
 function bindWorldInput() {
   const c = $('#worldc'), pts = new Map(); let moved = 0, pinch = null, last = null;
   const clampZ = z => Math.max(5, Math.min(40, z));
-  const zoomAt = (f, sx, sy) => { const w = c.clientWidth, h = c.clientHeight, [wx, wy] = s2w(sx, sy, w, h); CAM.z = clampZ(CAM.z * f); const [nx, ny] = s2w(sx, sy, w, h); CAM.x += wx - nx; CAM.y += wy - ny; };
+  const zoomAt = (f, sx, sy) => { const w = c.clientWidth, h = c.clientHeight, [wx, wy] = s2w(sx, sy, w, h);
+    if (CAM.z * f > 41 && typeof worldToVillage === 'function') { pts.clear(); pinch = null; worldToVillage(wx, wy); return; }   // zoomed all the way in: drop into the village view there
+    CAM.z = clampZ(CAM.z * f); const [nx, ny] = s2w(sx, sy, w, h); CAM.x += wx - nx; CAM.y += wy - ny; };
   c.addEventListener('pointerdown', e => { c.setPointerCapture(e.pointerId); pts.set(e.pointerId, [e.offsetX, e.offsetY]); if (pts.size === 1) { moved = 0; last = [e.offsetX, e.offsetY]; } if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), z: CAM.z }; } });
   c.addEventListener('pointermove', e => {
     if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, [e.offsetX, e.offsetY]);

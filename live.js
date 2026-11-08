@@ -411,3 +411,98 @@ function applyLoss(m) {
   const k = m.res; S.res[k] = Math.max(0, (S.res[k] || 0) - m.amt); save(); refresh(true);
   toast(`${m.by} harvested ${m.amt} ${k} from your ${m.src === 'pile' ? 'pile' : 'storage'}`); sfx('lose');
 }
+
+// ---------------------------------------------------------------- one map: village view ⇄ world map, crews and neighbours in the village view
+// World-map units (World tab) ⇄ world tiles (Village tab). Villages snap to their Town Center tile.
+const T2U = (tx, ty) => [tx / PX * 14, ty / PY * 14];
+function U2T(ux, uy) {
+  const gx = Math.round(ux / 14), gy = Math.round(uy / 14);
+  if (Math.abs(ux - gx * 14) <= 4 && Math.abs(uy - gy * 14) <= 4) return [gx * PX, gy * PY];
+  return [ux / 14 * PX, uy / 14 * PY];
+}
+function villageCenterTile() { const fi = (camX / (TW / 2) + camY / (TH / 2)) / 2, fj = (camY / (TH / 2) - camX / (TW / 2)) / 2; return [LIVE.OX + fi, LIVE.OY + fj]; }
+function centerVillageOn(tx, ty) { const li = tx - LIVE.OX, lj = ty - LIVE.OY; camX = (li - lj) * TW / 2; camY = (li + lj) * TH / 2; }
+let handoffAt = 0;
+function villageToWorld() {
+  if (Date.now() - handoffAt < 800) return; handoffAt = Date.now();
+  const [ux, uy] = T2U(...villageCenterTile());
+  CAM = CAM || { x: ux, y: uy, z: 38 }; CAM.x = ux; CAM.y = uy; CAM.z = 38;
+  setView('orb'); loadWorld(true);
+}
+function worldToVillage(ux, uy) {
+  if (Date.now() - handoffAt < 800) return; handoffAt = Date.now();
+  setView('village'); ZM = .32; centerVillageOn(ux / 14 * PX, uy / 14 * PY);
+}
+
+// crews from the World tab (raids, gathers, intercepts) walking through the village view
+let VMARCH = [], vmAt = 0;
+async function pollVillageMarches(x0, y0, x1, y1) {
+  if (!ME || Date.now() - vmAt < 4000) return; vmAt = Date.now();
+  const a = T2U(x0, y0), b = T2U(x1, y1);
+  const r = await api(`world?x0=${Math.floor(a[0]) - 3}&y0=${Math.floor(a[1]) - 3}&x1=${Math.ceil(b[0]) + 3}&y1=${Math.ceil(b[1]) + 3}`);
+  if (r.ok) { VMARCH = r.marches; SKEW = r.now - Date.now(); }
+}
+function marchTilePos(m, t) {
+  const F = U2T(m.fx, m.fy), T = U2T(m.tx, m.ty), lerp = (A, B, f) => [A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f];
+  if (m.status === 'back') {
+    if (t < m.back_at) return { p: T, working: true };
+    return { p: lerp(T, F, Math.min(1, Math.max(0, (t - m.back_at) / Math.max(1, m.ret - m.back_at)))), working: false };
+  }
+  return { p: lerp(F, T, Math.min(1, Math.max(0, (t - m.start) / Math.max(1, m.arrive - m.start)))), working: false };
+}
+const MARCH_HUE = c => c === '#fbbf24' ? 45 : c === '#ef4444' ? 0 : c === '#86efac' ? 130 : 210;
+function marchObjects(objs, t, vw, vh) {
+  const now = sNow();
+  for (const m of VMARCH) {
+    if (m.status === 'done') continue;
+    const { p, working } = marchTilePos(m, now), [li, lj] = toLocal(p[0], p[1]);
+    for (let k = 0; k < Math.min(m.crew, 5); k++) {
+      const [sx, sy] = iso(li - .5 + (k % 3) * .35, lj - .5 + Math.floor(k / 3) * .35);
+      if (sx < -40 || sx > vw + 40 || sy < -40 || sy > vh + 40) continue;
+      const col = ME ? marchColor(m) : '#e2e8f0';
+      const fw = { id: m.id * 7 + k, hue: MARCH_HUE(col), name: m.kind === 'raid' ? 'raider' : m.kind === 'gather' ? 'gatherer' : 'interceptor', owner: m.owner_name, label: `${m.kind} · ${m.target_name || ''}`, ext: true };
+      objs.push({ d: li + lj - .3, f: () => { drawWorker(sx, sy, fw, t, working); if (k === 0) { mx.font = `bold ${Math.round(11 / ZM)}px system-ui`; mx.textAlign = 'center'; mx.fillStyle = col; mx.fillText(m.kind === 'raid' ? '⚔' : m.kind === 'gather' ? '⛏' : '🛡', sx, sy - 30); } } });
+    }
+  }
+}
+// arrows at the screen edge pointing to nearby villages you can't see yet
+let ARROWS = [];
+function knownVillages() {
+  const out = new Map();
+  for (const v of LIVE.snaps.values()) out.set(v.pid, { id: v.pid, name: v.name, tx: v.ox + VTCI, ty: v.oy + VTCJ, on: v.on });
+  if (typeof ORB !== 'undefined' && ORB && ORB.players) for (const p of ORB.players) if (p.x != null && !out.has(p.id)) { const [tx, ty] = U2T(p.x, p.y); out.set(p.id, { id: p.id, name: p.name, tx, ty, on: p.online }); }
+  if (ME) out.delete(ME.id);
+  return [...out.values()];
+}
+function drawEdgeArrows(vw, vh) {
+  ARROWS = [];
+  const [cx, cy] = villageCenterTile();
+  const list = knownVillages().map(v => ({ ...v, d: Math.hypot(v.tx - cx, v.ty - cy) })).sort((a, b) => a.d - b.d).slice(0, 6);
+  mx.save();
+  for (const v of list) {
+    const [li, lj] = toLocal(v.tx, v.ty), [sx, sy] = iso(li, lj);
+    if (sx > 30 && sx < vw - 30 && sy > 30 && sy < vh - 30) continue;   // on screen already
+    const a = Math.atan2(sy - vh / 2, sx - vw / 2), m = 26 / ZM;
+    const k = Math.min((vw / 2 - m) / Math.abs(Math.cos(a) || 1e-6), (vh / 2 - m) / Math.abs(Math.sin(a) || 1e-6));
+    const ax = vw / 2 + Math.cos(a) * k, ay = vh / 2 + Math.sin(a) * k, r = 13 / ZM;
+    mx.save(); mx.translate(ax, ay); mx.rotate(a);
+    mx.fillStyle = v.on ? '#22c55e' : '#fbbf24'; mx.strokeStyle = '#0f1b3d'; mx.lineWidth = 2 / ZM;
+    mx.beginPath(); mx.moveTo(r * 1.3, 0); mx.lineTo(-r * .6, -r * .8); mx.lineTo(-r * .6, r * .8); mx.closePath(); mx.fill(); mx.stroke(); mx.restore();
+    mx.font = `bold ${Math.round(11 / ZM)}px system-ui`; mx.textAlign = 'center'; mx.lineWidth = 3 / ZM; mx.strokeStyle = 'rgba(0,0,0,.75)'; mx.fillStyle = '#fff';
+    const lx = clamp(ax - Math.cos(a) * 28 / ZM, 40 / ZM, vw - 40 / ZM), ly = clamp(ay - Math.sin(a) * 22 / ZM, 14 / ZM, vh - 8 / ZM), txt = `${v.name} · ${Math.round(v.d)} tiles`;
+    mx.strokeText(txt, lx, ly); mx.fillText(txt, lx, ly);
+    ARROWS.push({ x: ax, y: ay, r: r * 2.2, v });
+  }
+  mx.restore();
+}
+function edgeArrowTap(px, py) {
+  const a = ARROWS.find(q => Math.hypot(q.x - px, q.y - py) < q.r); if (!a) return false;
+  centerVillageOn(a.v.tx, a.v.ty); ZM = Math.min(ZM, .6); toast(`${a.v.name}'s village`); return true;
+}
+// hook the extra layers into the village renderer
+const _worldObjects = worldObjects;
+worldObjects = function (objs, t, vw, vh) {
+  _worldObjects(objs, t, vw, vh); marchObjects(objs, t, vw, vh);
+  const [x0, y0, x1, y1] = viewTiles(vw, vh); pollVillageMarches(x0, y0, x1, y1);
+};
+setInterval(() => { if (ME && typeof ORB !== 'undefined' && !ORB && !orbLoading) loadOrb(); }, 15000);
