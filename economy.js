@@ -4,8 +4,10 @@
 const STORE_RES = ['wood', 'stone', 'iron', 'coal', 'steel', 'planks', 'gears'];
 const PILE_RES = ['food', ...STORE_RES];
 const TC_STORE = 200;                                     // the Town Center holds this much of each
-const STORE_CAP = [0, 500, 1000, 2000, 3500, 5000];       // per storage building, by level (level 5 = 10× level 1)
-const STORE_MAX_LVL = 5;
+// storage levels: 5 per Age (Stone/Bronze/Iron/Industrial/Digital = up to 25); each level holds 50% more, and costs 50% more to reach
+const capAt = lvl => Math.round(500 * Math.pow(1.5, lvl - 1));
+const STORE_CAP = new Proxy([], { get: (t, k) => (/^\d+$/.test(k) ? capAt(+k) : t[k]) });
+const storeMaxLvl = () => 5 * (1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length);
 const PILE_PER_TILE = 300;   // one more row/column of footprint per this much (squared)
 const ROT = { food: .05 / 60, other: .02 / 3600 };        // food piles lose 5% a minute, others 2% an hour
 const storeType = k => k === 'food' ? 'grainstore' : 'storehouse';
@@ -126,14 +128,14 @@ function storageSheet(b) {
   if (b.type !== 'storehouse' && b.type !== 'grainstore') return '';
   const lvl = b.lvl || 1, D = BLD[b.type], up = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
   const what = b.type === 'grainstore' ? 'food' : 'each of wood, stone, iron, coal, steel, planks, gears';
-  let h = `<div class="d">Holds ${STORE_CAP[lvl].toLocaleString()} ${what} (level ${lvl}/${STORE_MAX_LVL}).</div>`;
+  let h = `<div class="d">Holds ${STORE_CAP[lvl].toLocaleString()} ${what} (level ${lvl}/${storeMaxLvl()}).</div>`;
   if (up) return h + `<div class="small">Upgrading to level ${lvl + 1}…</div>`;
-  if (lvl >= STORE_MAX_LVL) return h + '<div class="small">Max level.</div>';
+  if (lvl >= storeMaxLvl()) return h + `<div class="small">${storeMaxLvl() >= 25 ? 'Max level.' : 'Max level for this Age — the next Age unlocks 5 more.'}</div>`;
   const c = storageUpCost(b), ok = canPay(c) && free().length;
   return h + `<div class="cost">${costHTML(c)} · ${fmt(D.time * (lvl + 1))} → holds ${STORE_CAP[lvl + 1].toLocaleString()}</div>
     <div style="margin-top:6px"><button class="btn go" data-supg="${b.id}" ${ok ? '' : 'disabled'}>Upgrade to level ${lvl + 1}</button>${ok ? '' : whyHTML(!free().length ? 'Every AI worker is already building' : 'Need ' + shortBy(c).join(', '))}</div>`;
 }
-function storageUpCost(b) { const D = BLD[b.type], m = Math.pow(2, b.lvl || 1), c = {}; for (const k in D.cost) c[k] = Math.round(D.cost[k] * m); return buildCost(b.type, c); }
+function storageUpCost(b) { const D = BLD[b.type], m = Math.pow(1.5, b.lvl || 1), c = {}; for (const k in D.cost) c[k] = Math.round(D.cost[k] * m); return buildCost(b.type, c); }
 document.addEventListener('click', e => {
   const btn = e.target.closest('[data-supg]'); if (!btn || btn.disabled) return;
   const b = S.buildings.find(x => x.id === +btn.dataset.supg); if (!b) return;
@@ -161,7 +163,7 @@ function storageRows(type) {
   if (type !== 'storehouse' && type !== 'grainstore') return '';
   return S.buildings.filter(b => b.type === type && b.done).map((b, n) => {
     const lvl = b.lvl || 1, up = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
-    if (up || lvl >= STORE_MAX_LVL) return `<div class="row" style="margin-top:6px"><div class="d">#${n + 1} · level ${lvl} · holds ${STORE_CAP[lvl].toLocaleString()}${up ? ' · upgrading…' : ' · max'}</div></div>`;
+    if (up || lvl >= storeMaxLvl()) return `<div class="row" style="margin-top:6px"><div class="d">#${n + 1} · level ${lvl} · holds ${STORE_CAP[lvl].toLocaleString()}${up ? ' · upgrading…' : ' · max for this Age'}</div></div>`;
     const c = storageUpCost(b), ok = canPay(c) && free().length;
     return `<div class="row" style="margin-top:6px"><div><div class="d">#${n + 1} · level ${lvl} · holds ${STORE_CAP[lvl].toLocaleString()} → ${STORE_CAP[lvl + 1].toLocaleString()}</div><div class="cost">${costHTML(c)} · ${fmt(BLD[b.type].time * (lvl + 1))}</div></div><button class="btn sm" data-supg="${b.id}" ${ok ? '' : 'disabled'}>Upgrade</button></div>`;
   }).join('');

@@ -117,8 +117,8 @@ const UPGI = Object.fromEntries(UPG.map(u => [u.id, u]));
 
 // buildings on the list (tier 6–9). time in seconds.
 const EXTRA_BLD = {
-  storehouse: { no: 101, n: 'Storehouse', tier: 2, time: 180, cost: { wood: 60, stone: 20, money: 10 }, desc: 'Keeps wood, stone, ore, coal, steel, planks and gears out of rotting piles (500 each; upgrades to 5,000)' },
-  grainstore: { no: 102, n: 'Granary', tier: 4, time: 300, req: ['granary'], cost: { wood: 150, stone: 60, money: 30 }, desc: 'Keeps food out of rotting piles (500; upgrades to 5,000)' },
+  storehouse: { no: 101, n: 'Storehouse', tier: 2, time: 180, cost: { wood: 60, stone: 20, money: 10 }, desc: 'Keeps wood, stone, ore, coal, steel, planks and gears out of rotting piles (500 each; 5 more upgrade levels per Age, +50% each)' },
+  grainstore: { no: 102, n: 'Granary', tier: 4, time: 300, req: ['granary'], cost: { wood: 150, stone: 60, money: 30 }, desc: 'Keeps food out of rotting piles (500; 5 more upgrade levels per Age, +50% each)' },
   sawmill:   { no: 16, n: 'Sawmill', tier: 6, time: 900, req: ['age6'], cost: { wood: 300, stone: 150, steel: 20, money: 150 }, desc: '2 wood → 1 plank' },
   market:    { no: 51, n: 'Market', tier: 6, time: 900, req: ['age6'], cost: { wood: 250, stone: 200, money: 200 }, desc: 'Trade resources for copper (tap it, or Build tab)' },
   taxoffice: { no: 53, n: 'Tax Office', tier: 6, time: 900, req: ['age6'], cost: { stone: 300, steel: 30, money: 250 }, desc: '+1 copper per worker per hour' },
