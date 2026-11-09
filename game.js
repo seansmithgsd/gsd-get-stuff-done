@@ -246,13 +246,19 @@ function unwrapNear(i) { return i; }   // the village no longer wraps around: it
 
 const SLOTS = [[2, 0], [0, 2], [-2, 0], [0, -2], [2, 2], [-2, 2], [2, -2], [-2, -2], [3, 1], [1, 3], [-3, 1], [1, -3], [3, -1], [-1, 3], [-3, -1], [-1, -3], [4, 2], [2, 4], [-4, 2], [2, -4]];
 (() => { const more = []; for (let r = 4; r <= 6; r++) for (let di = -r; di <= r; di++) for (let dj = -r; dj <= r; dj++) if (Math.max(Math.abs(di), Math.abs(dj)) === r && (di + dj) % 2 === 0 && !SLOTS.some(([a, b]) => a === di && b === dj)) more.push([di, dj]); more.sort((a, b) => Math.hypot(...a) - Math.hypot(...b)); SLOTS.push(...more); })();
+// build spots: the classic ring first, then every other tile outward from the Town Center.
+// The build radius grows with each Age and with Expansion; open ground is used before clearing trees or rocks.
+const buildRadius = () => 6 + 2 * ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length + (U('expansion') ? 3 : 0);
 function findSlot() {
-  const list = U('expansion') ? SLOTS : SLOTS.slice(0, 44);
-  for (const [di, dj] of list) {
-    const i = mod(TCI + di, W), j = TCJ + dj;
-    if (!bAt(i, j) && !pileAt(i, j)) return [i, j];
+  const free = (i, j) => i >= 1 && i < W - 1 && j >= 1 && j < H - 1 && !bAt(i, j) && !pileAt(i, j) && near(i, j, TCI, TCJ) >= 2;
+  for (const [di, dj] of [...SLOTS, ...SLOTS2]) { const i = TCI + di, j = TCJ + dj; if (free(i, j) && !MAP.node[j * W + i]) return [i, j]; }
+  const R = buildRadius(), cands = [];
+  for (let j = TCJ - R; j <= TCJ + R; j++) for (let i = TCI - R; i <= TCI + R; i++) {
+    if ((i + j) % 2 !== (TCI + TCJ) % 2 || !free(i, j)) continue;
+    cands.push([i, j, Math.hypot(i - TCI, j - TCJ) + (MAP.node[j * W + i] ? 4 : 0)]);
   }
-  return null;
+  cands.sort((a, b) => a[2] - b[2]);
+  return cands.length ? [cands[0][0], cands[0][1]] : null;
 }
 function pickTarget(kind) {
   const T = TASKS[kind];
@@ -379,7 +385,7 @@ function startBuild(type) {
   if (D.req && !D.req.every(reqMet)) return toast('Locked');
   if (!canPay(c)) return toast('Not enough resources');
   if (!w) return toast('All AI workers are already building');
-  const slot = findSlot(); if (!slot) return toast('No room near the Town Center');
+  const slot = findSlot(); if (!slot) return toast(`No room within ${buildRadius()} tiles of the Town Center — research the next Age or Expansion to build farther out`);
   pay(c);
   const b = { id: S.nextId++, type, i: slot[0], j: slot[1], done: false };
   S.buildings.push(b); MAP.node[b.j * W + b.i] = null; layerDirty = true;
