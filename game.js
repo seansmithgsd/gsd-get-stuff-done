@@ -306,7 +306,8 @@ function finishTask(w, quiet) {
   const t = w.task;
   if (t.kind === 'build') {
     const b = S.buildings.find(x => x.id === t.bid);
-    if (b && t.up) { b.lvl = (b.lvl || 1) + 1; if (!quiet) { toast(`${BLD[b.type].n} upgraded to level ${b.lvl}`); sfx('build'); } }
+    if (b && t.mv) { b.mv = false; if (!quiet) { toast(`${BLD[b.type].n} moved`); sfx('build'); } }
+    else if (b && t.up) { b.lvl = (b.lvl || 1) + 1; if (!quiet) { toast(`${BLD[b.type].n} upgraded to level ${b.lvl}`); sfx('build'); } }
     else if (b) { b.done = true; if (!quiet) { toast(`${BLD[b.type].n} complete`); sfx('build'); } }
     w.task = null; return;
   }
@@ -399,15 +400,54 @@ function startBuild(type) {
   PLACE = { type, at: null };
   setView('village'); renderPlaceBar();
 }
+// moving a placed building: 1/4 the cost and 1/4 the time of building one new at the same level
+function newCostAt(b) {
+  const lvl = b.lvl || 1;
+  if (lvl > 1 && typeof storageUpCost === 'function') return storageUpCost({ type: b.type, lvl: lvl - 1 });
+  if (b.type === 'hut') return buildCost('hut', { wood: 15, money: 3 });
+  return buildCost(b.type, BLD[b.type].cost || {});
+}
+function moveCost(b) { const c = newCostAt(b), o = {}; for (const k in c) o[k] = Math.max(1, Math.ceil(c[k] / 4)); return o; }
+function moveTime(b) { return Math.max(5, BLD[b.type].time * (b.lvl || 1) / 4); }
+function canMove(b) { return b && b.done && !b.mv && b.type !== 'tc' && b.type !== 'palisade' && !S.workers.some(w => w.task && w.task.kind === 'build' && w.task.bid === b.id); }
+function moveRow(b) {
+  if (!canMove(b)) return '';
+  const c = moveCost(b), ok = canPay(c) && free().length;
+  return `<div class="row" style="margin-top:8px"><div><div class="d">Move it to another tile</div><div class="cost">${costHTML(c)} · ${fmt(moveTime(b))}</div>${ok ? '' : whyHTML(!free().length ? 'Every AI worker is already building' : 'Need ' + shortBy(c).join(', '))}</div><button class="btn sm" data-move="${b.id}" ${ok ? '' : 'disabled'}>Move</button></div>`;
+}
+function startMove(id) {
+  const b = S.buildings.find(x => x.id === id); if (!canMove(b)) return;
+  if (!canPay(moveCost(b))) return toast('Not enough resources');
+  if (!(idle()[0] || free()[0])) return toast('All AI workers are already building');
+  closeSheet(); PLACE = { type: b.type, at: null, move: b.id, lvl: b.lvl || 1 }; setView('village'); renderPlaceBar();
+}
+document.addEventListener('click', e => { const m = e.target.closest('[data-move]'); if (m && !m.disabled) startMove(+m.dataset.move); });
+function moveBuild() {
+  const b = S.buildings.find(x => x.id === PLACE.move), [i, j] = PLACE.at;
+  if (!canMove(b)) { cancelPlace(); return; }
+  const c = moveCost(b), w = idle()[0] || free()[0];
+  if (!canPay(c)) { cancelPlace(); return toast('Not enough resources'); }
+  if (!w) { cancelPlace(); return toast('All AI workers are already building'); }
+  if (!placeOk(i, j)) { PLACE.at = null; renderPlaceBar(); return toast('Can\'t build there'); }
+  pay(c); PLACE = null; renderPlaceBar();
+  const oi = b.i, oj = b.j;
+  b.i = i; b.j = j; b.mv = true; MAP.node[j * W + i] = null; layerDirty = true;
+  // AI workers already working this building follow it to the new spot
+  for (const x of S.workers) if (x.task && x.task.target && x.task.target[0] === oi && x.task.target[1] === oj && TASKS[x.task.kind] && TASKS[x.task.kind].node === b.type) x.task.target = [i, j];
+  w.task = { kind: 'build', bid: b.id, mv: true, dur: moveTime(b), prog: 0, target: [unwrapNear(i, TCI), j] };
+  w.repeat = false;
+  toast(`${w.name} is moving the ${BLD[b.type].n}`);
+  save(); refresh();
+}
 function cancelPlace() { PLACE = null; renderPlaceBar(); }
 function renderPlaceBar() {
   let el = document.getElementById('placebar');
   if (!PLACE) { if (el) el.remove(); return; }
   if (!el) { el = document.createElement('div'); el.id = 'placebar'; document.body.appendChild(el);
     el.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.pl === 'go') placeBuild(); else cancelPlace(); }); }
-  const D = BLD[PLACE.type];
-  el.innerHTML = `<div class="pt">${PLACE.at ? 'Build the ' + esc(D.n) + ' here?' : 'Tap a lit tile to place the ' + esc(D.n)}</div>
-    <div class="pb"><button class="btn sm" data-pl="x">Cancel</button><button class="btn sm" data-pl="go" ${PLACE.at ? '' : 'disabled'}>Build here</button></div>`;
+  const D = BLD[PLACE.type], mv = PLACE.move != null;
+  el.innerHTML = `<div class="pt">${PLACE.at ? (mv ? 'Move' : 'Build') + ' the ' + esc(D.n) + ' here?' : 'Tap a lit tile to ' + (mv ? 'move' : 'place') + ' the ' + esc(D.n)}</div>
+    <div class="pb"><button class="btn sm" data-pl="x">Cancel</button><button class="btn sm" data-pl="go" ${PLACE.at ? '' : 'disabled'}>${mv ? 'Move here' : 'Build here'}</button></div>`;
 }
 function placeTap(i, j) {
   if (!placeOk(i, j)) return toast(near(i, j, TCI, TCJ) > buildRadius() ? `Too far — you can build within ${buildRadius()} tiles of the Town Center` : 'Can\'t build there');
@@ -415,6 +455,7 @@ function placeTap(i, j) {
 }
 function placeBuild() {
   if (!PLACE || !PLACE.at) return;
+  if (PLACE.move != null) return moveBuild();
   const type = PLACE.type, [i, j] = PLACE.at;
   const why = buildCheck(type); if (why) { cancelPlace(); return toast(why); }
   if (!placeOk(i, j)) { PLACE.at = null; renderPlaceBar(); return toast('Can\'t build there'); }
@@ -444,7 +485,7 @@ function drawPlaceGrid(vw, vh, t) {
 }
 function placeGhost(objs, t) {
   if (!PLACE || !PLACE.at) return;
-  const [i, j] = PLACE.at, [x, y] = iso(i, j), b = { type: PLACE.type, i, j, done: true, lvl: 1 };
+  const [i, j] = PLACE.at, [x, y] = iso(i, j), b = { type: PLACE.type, i, j, done: true, lvl: PLACE.lvl || 1 };
   objs.push({ d: i + j, f: () => { mx.globalAlpha = .7; drawBuilding(b, x, y, t); mx.globalAlpha = 1; } });
 }
 function useSpeed(id) {
@@ -759,6 +800,7 @@ $('#sheet').addEventListener('click', e => {
 // tap a resource: the closest non-building worker drops what it's doing and goes there
 function sendClosest(i, j) {
   const b = bAt(i, j);
+  if (b) return false;   // buildings open their sheet (send a worker, upgrade, move)
   let kind = b ? (b.done && BNODE.includes(b.type) ? b.type : null) : nodeAt(i, j);
   const deer = DEER.find(d => Math.floor(mod(d.i, W)) === mod(i, W) && Math.floor(d.j) === j);
   if (deer && !b) kind = 'deer';
@@ -790,14 +832,14 @@ function tileSheet(i, j) {
   if (b && !kind && b.type === 'market' && b.done) return openMarket();
   if (b && !kind) {
     const D = BLD[b.type], bw = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
-    return openSheet(`<div class="t">${D.n}${b.lvl > 1 ? ' · level ' + b.lvl : ''}</div><div class="d">${b.done ? (b.type === 'tc' ? 'Your base. Houses 2 AI workers and stores 200 of each resource.' : D.desc) : 'Under construction' + (bw ? ' by ' + esc(bw.name) : '')}</div>${bw ? progRow(bw) + speedRow([bw]) : ''}${b.done ? storageSheet(b) : ''}`);
+    return openSheet(`<div class="t">${D.n}${b.lvl > 1 ? ' · level ' + b.lvl : ''}</div><div class="d">${b.done ? (b.type === 'tc' ? 'Your base. Houses 2 AI workers and stores 200 of each resource.' : D.desc) : 'Under construction' + (bw ? ' by ' + esc(bw.name) : '')}</div>${bw ? progRow(bw) + speedRow([bw]) : ''}${b.done ? storageSheet(b) : ''}${moveRow(b)}`);
   }
   if (!kind) return closeSheet();
   const tk = NODE_TASK[kind], T = TASKS[tk], y = taskYield(tk), locked = T.req && !reqMet(T.req);
   openSheet(`<div class="t">${NODE_NAME[kind]}</div>
     <div class="d">${T.n}: ${T.cost ? Object.entries(T.cost).map(([k, v]) => `${v} ${k}`).join(', ') + ' → ' : ''}${Object.entries(y).map(([k, v]) => `+${v} ${k}`).join(', ')}${tk === 'mine' ? ', +1 silver every 3rd trip' : ''} every ${fmt(T.time)}</div>
     <div style="margin-top:8px">${locked ? `<span class="small">Requires ${reqName(T.req)}</span> <button class="btn sm" data-go="build">Tech tree</button>`
-      : idle().length ? `<button class="btn go" data-task="${tk}">Send AI worker</button>` : `<span class="small">No idle workers.</span> <button class="btn sm" data-go="puzzle">Win puzzles to recruit</button>`}</div>`);
+      : idle().length ? `<button class="btn go" data-task="${tk}">Send AI worker</button>` : `<span class="small">No idle workers.</span> <button class="btn sm" data-go="puzzle">Win puzzles to recruit</button>`}</div>${b ? moveRow(b) : ''}`);
 }
 
 // ---------------------------------------------------------------- village rendering
@@ -909,6 +951,14 @@ function buildProgress(b) {
 }
 function drawBuilding(b, x, y, t) {
   if (b.done && b.type === 'palisade') return;   // the palisade is the fence around the village (drawn by drawPalisade)
+  if (b.mv) {
+    const p = buildProgress(b); mx.globalAlpha = .35 + .6 * p;
+    if (!(typeof drawBuildingArt === 'function' && drawBuildingArt(b, x, y))) { mx.globalAlpha = 1; mx.fillStyle = BCOL[b.type] || '#8a7350'; diamond(x, y, mx.fillStyle); }
+    mx.globalAlpha = 1;
+    mx.fillStyle = 'rgba(0,0,0,.5)'; mx.fillRect(x - 20, y + 6, 40, 5);
+    mx.fillStyle = '#e8b923'; mx.fillRect(x - 20, y + 6, 40 * p, 5);
+    return;
+  }
   if (b.done && typeof drawBuildingArt === 'function' && drawBuildingArt(b, x, y)) return;
   if (!b.done) {
     const p = buildProgress(b);
