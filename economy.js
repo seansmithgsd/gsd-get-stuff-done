@@ -178,6 +178,11 @@ function artKey(b) {
   const st = b.type === 'tc' ? 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length : Math.min(5, Math.ceil((b.lvl || 1) / 5));
   return b.type + '_' + st;
 }
+const ART_KEYS = new Set(["bank", "barracks", "blastfurnace", "dock", "factory", "farm", "gearworks", "grainstore_1", "grainstore_2", "grainstore_3", "grainstore_4", "grainstore_5", "gsdtower", "hunt", "hut", "kiln", "longhouse", "lumber", "market", "mine", "mint", "moneyprinter", "nursery", "orchard", "outpost", "powerplant", "quarry", "quarry2", "sawmill", "smelter", "storehouse_1", "storehouse_2", "storehouse_3", "storehouse_4", "storehouse_5", "taxoffice", "tc_1", "tc_2", "tc_3", "tc_4", "tc_5", "teamhall", "townhall", "watchtower", "workshop"]);
+function artThumb(type) {   // Build-menu icon: the same art the village shows (current stage for staged buildings)
+  const b = S.buildings.find(x => x.type === type) || { type, lvl: 1 }, key = artKey(b);
+  return ART_KEYS.has(key) ? `<img class="bth" src="art/b/${key}.png?v=1" alt="">` : '';
+}
 function artImg(key) {
   let a = BART[key];
   if (!a) { a = BART[key] = { img: new Image(), ok: false, bad: false }; a.img.onload = () => { a.ok = true; layerDirty = true; }; a.img.onerror = () => { a.bad = true; }; a.img.src = 'art/b/' + key + '.png?v=1'; }

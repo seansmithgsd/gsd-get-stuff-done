@@ -380,20 +380,72 @@ function assign(kind) {
   w.task = mkTask(w, kind, target); w.repeat = true;
   save(); refresh();
 }
+// building placement: the player picks the tile. Build tab -> village with valid tiles lit -> tap a tile -> "Build here".
+let PLACE = null;
+function buildCheck(type) {
+  const D = BLD[type], c = costOf(type);
+  if (isResB(type) ? countB(type) >= maxCopies() : (!D.repeat && countB(type))) return isResB(type) ? `Max ${maxCopies()} — research the next Age or prestige for another` : 'Already built';
+  if (D.req && !D.req.every(reqMet)) return 'Locked';
+  if (!canPay(c)) return 'Not enough resources';
+  if (!(idle()[0] || free()[0])) return 'All AI workers are already building';
+  return '';
+}
+function placeOk(i, j) {
+  return i >= 1 && i < W - 1 && j >= 1 && j < H - 1 && !bAt(i, j) && !pileAt(i, j) && near(i, j, TCI, TCJ) >= 2 && near(i, j, TCI, TCJ) <= buildRadius();
+}
 function startBuild(type) {
+  const why = buildCheck(type); if (why) return toast(why);
+  if (!findSlot()) return toast(`No room within ${buildRadius()} tiles of the Town Center — research the next Age or Expansion to build farther out`);
+  PLACE = { type, at: null };
+  setView('village'); renderPlaceBar();
+}
+function cancelPlace() { PLACE = null; renderPlaceBar(); }
+function renderPlaceBar() {
+  let el = document.getElementById('placebar');
+  if (!PLACE) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'placebar'; document.body.appendChild(el);
+    el.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.pl === 'go') placeBuild(); else cancelPlace(); }); }
+  const D = BLD[PLACE.type];
+  el.innerHTML = `<div class="pt">${PLACE.at ? 'Build the ' + esc(D.n) + ' here?' : 'Tap a lit tile to place the ' + esc(D.n)}</div>
+    <div class="pb"><button class="btn sm" data-pl="x">Cancel</button><button class="btn sm" data-pl="go" ${PLACE.at ? '' : 'disabled'}>Build here</button></div>`;
+}
+function placeTap(i, j) {
+  if (!placeOk(i, j)) return toast(near(i, j, TCI, TCJ) > buildRadius() ? `Too far — you can build within ${buildRadius()} tiles of the Town Center` : 'Can\'t build there');
+  PLACE.at = [i, j]; renderPlaceBar();
+}
+function placeBuild() {
+  if (!PLACE || !PLACE.at) return;
+  const type = PLACE.type, [i, j] = PLACE.at;
+  const why = buildCheck(type); if (why) { cancelPlace(); return toast(why); }
+  if (!placeOk(i, j)) { PLACE.at = null; renderPlaceBar(); return toast('Can\'t build there'); }
   const D = BLD[type], c = costOf(type), w = idle()[0] || free()[0];
-  if (isResB(type) ? countB(type) >= maxCopies() : (!D.repeat && countB(type))) return toast(isResB(type) ? `Max ${maxCopies()} — research the next Age or prestige for another` : 'Already built');
-  if (D.req && !D.req.every(reqMet)) return toast('Locked');
-  if (!canPay(c)) return toast('Not enough resources');
-  if (!w) return toast('All AI workers are already building');
-  const slot = findSlot(); if (!slot) return toast(`No room within ${buildRadius()} tiles of the Town Center — research the next Age or Expansion to build farther out`);
-  pay(c);
-  const b = { id: S.nextId++, type, i: slot[0], j: slot[1], done: false };
+  pay(c); PLACE = null; renderPlaceBar();
+  const b = { id: S.nextId++, type, i, j, done: false };
   S.buildings.push(b); MAP.node[b.j * W + b.i] = null; layerDirty = true;
   w.task = { kind: 'build', bid: b.id, dur: D.time, prog: 0, target: [unwrapNear(b.i, TCI), b.j] };
   w.repeat = false;
   toast(`${w.name} is building a ${D.n}`);
   save(); refresh();
+}
+function rawTile(cx, cy) {
+  const r = mapC.getBoundingClientRect();
+  const wx = (cx - r.left) / ZM - cw / ZM / 2 + camX, wy = (cy - r.top) / ZM - ch / ZM / 2 + camY;
+  return [Math.round((wx / (TW / 2) + wy / (TH / 2)) / 2), Math.round((wy / (TH / 2) - wx / (TW / 2)) / 2)];
+}
+function drawPlaceGrid(vw, vh, t) {
+  const R = buildRadius(), a = .22 + .1 * Math.sin(t * 4);
+  for (let j = TCJ - R; j <= TCJ + R; j++) for (let i = TCI - R; i <= TCI + R; i++) {
+    if (!placeOk(i, j)) continue;
+    const [x, y] = iso(i, j); if (x < -TW || y < -TH || x > vw + TW || y > vh + TH) continue;
+    diamond(x, y, `rgba(255,255,255,${a})`);
+    mx.strokeStyle = 'rgba(255,240,150,.8)'; mx.lineWidth = 1.2; mx.stroke();
+  }
+  for (const h of [PLACE.hover, PLACE.at]) if (h && placeOk(h[0], h[1])) { const [x, y] = iso(h[0], h[1]); diamond(x, y, h === PLACE.at ? 'rgba(255,215,0,.55)' : 'rgba(255,255,255,.35)'); }
+}
+function placeGhost(objs, t) {
+  if (!PLACE || !PLACE.at) return;
+  const [i, j] = PLACE.at, [x, y] = iso(i, j), b = { type: PLACE.type, i, j, done: true, lvl: 1 };
+  objs.push({ d: i + j, f: () => { mx.globalAlpha = .7; drawBuilding(b, x, y, t); mx.globalAlpha = 1; } });
 }
 function useSpeed(id) {
   const w = S.workers.find(x => x.id === id); if (!w || !w.task || S.bank <= 0) return;
@@ -459,6 +511,7 @@ $('#modal').addEventListener('click', e => {
 });
 function setView(v) {
   view = v;
+  if (v !== 'village' && PLACE) cancelPlace();
   document.querySelectorAll('.view').forEach(e => e.classList.toggle('active', e.id === 'v-' + v));
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   closeSheet();
@@ -535,7 +588,7 @@ function renderBuild(force) {
   if (building.length) {
     html += `<h2>Under construction <span class="small">speedup bank ${fmt(S.bank)}</span></h2>`;
     for (const w of building) { const b = S.buildings.find(x => x.id === w.task.bid);
-      html += `<div class="card"><div class="row"><div style="flex:1"><div class="t">${b ? BLD[b.type].n : 'Building'}</div><div class="d">${esc(w.name)}</div>${progRow(w)}</div></div>${speedRow([w])}</div>`; }
+      html += `<div class="card"><div class="row">${b ? artThumb(b.type) : ''}<div style="flex:1"><div class="t">${b ? BLD[b.type].n : 'Building'}</div><div class="d">${esc(w.name)}</div>${progRow(w)}</div></div>${speedRow([w])}</div>`; }
     if (building.length > 1) html += `<div class="card"><div class="t">All construction</div>${speedRow(building)}</div>`;
   }
   html += '<h2>Tech Tree</h2>';
@@ -549,7 +602,7 @@ function renderBuild(force) {
       let btn;
       if (doneOnce) btn = k === 'market' && hasB(k) ? `<button class="btn sm go" data-market>Open</button>` : `<button class="btn sm alt" disabled>${multi ? 'Max' : hasB(k) ? 'Built' : 'Building'}</button>`;
       else btn = `<button class="btn sm" data-build="${k}" ${locked || !canPay(c) || !free().length ? 'disabled' : ''}>Build</button>`;
-      html += `<div class="card${locked ? ' locked' : ''}"><div class="row"><div><div class="t">${D.n}${multi ? ` <span class="small">${built}/${maxCopies()}${BNODE.includes(k) ? ` · ${SPOT_CAP} AI workers each` : ''}</span>` : D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
+      html += `<div class="card${locked ? ' locked' : ''}"><div class="row">${artThumb(k)}<div><div class="t">${D.n}${multi ? ` <span class="small">${built}/${maxCopies()}${BNODE.includes(k) ? ` · ${SPOT_CAP} AI workers each` : ''}</span>` : D.repeat && built ? ` <span class="small">×${built}</span>` : ''}</div><div class="d">${D.desc}</div>
         <div class="cost">${doneOnce ? (multi ? 'Next one: research the next Age or prestige' : '') : costHTML(c) + ` · ${fmt(D.time)}`}</div>${whyHTML(why)}</div>${btn}</div>${storageRows(k)}</div>`;
     }
     for (const f of FUTURE.filter(f => f.tier === tier)) {
@@ -990,7 +1043,9 @@ function drawMap(now) {
   const L = worldLayer(), sx = vw / 2 - camX - L.ox, sy = vh / 2 - camY - L.oy;
   if (!(sx > vw || sy > vh || sx + L.w < 0 || sy + L.h < 0)) mx.drawImage(L.c, sx, sy, L.w, L.h);
   if (typeof worldObjects === 'function') worldObjects(objs, t, vw, vh);
+  if (PLACE) drawPlaceGrid(vw, vh, t);
   pileObjects(objs, t, vw, vh);
+  placeGhost(objs, t);
   if (hasB('palisade')) palisadeObjects(objs, vw, vh);
   const cI = TCI;
   const markFront = (fi, fj) => { for (let a = 0; a <= 2; a++) for (let b = 0; b <= 2; b++) if (a + b) { const j = fj + b; if (j >= 0 && j < H) front.add((fi + a) + ',' + j); } };
@@ -1057,6 +1112,7 @@ function drawMap(now) {
     if (!down) return;
     if (!down.moved && e.type === 'pointerup') {
       const r = mapC.getBoundingClientRect();
+      if (PLACE) { placeTap(...rawTile(e.clientX, e.clientY)); down = null; return; }
       if (typeof edgeArrowTap === 'function' && edgeArrowTap((e.clientX - r.left) / ZM, (e.clientY - r.top) / ZM)) { down = null; return; }
       const hit = tileAt(e.clientX, e.clientY);
       if (hit && hit.ext) { if (typeof extTileSheet === 'function') extTileSheet(hit[0], hit[1]); }
@@ -1066,7 +1122,7 @@ function drawMap(now) {
   };
   mapC.addEventListener('pointerup', up); mapC.addEventListener('pointercancel', up);
   mapC.addEventListener('wheel', e => { e.preventDefault(); zoomAt(ZM * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY); }, { passive: false });
-  mapC.addEventListener('pointermove', e => { if (e.pointerType !== 'mouse' || down) { if (down) hideTip(); return; } showTip(e); });
+  mapC.addEventListener('pointermove', e => { if (PLACE && e.pointerType === 'mouse') { PLACE.hover = rawTile(e.clientX, e.clientY); return; } if (e.pointerType !== 'mouse' || down) { if (down) hideTip(); return; } showTip(e); });
   mapC.addEventListener('pointerleave', hideTip);
 })();
 
