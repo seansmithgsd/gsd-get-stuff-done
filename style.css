@@ -101,7 +101,7 @@ main{position:fixed;left:0;right:0;top:var(--toph,62px);bottom:var(--navh,54px)}
 #sheet .x{float:right}
 #modal{position:fixed;inset:0;z-index:9;background:rgba(15,27,61,.65);display:flex;align-items:center;justify-content:center;padding:20px}
 #modal[hidden]{display:none}
-#modal .box{background:#fff;border:3px solid var(--gold);border-radius:16px;padding:18px;max-width:360px;width:100%;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+#modal .box{background:#fff;border:3px solid var(--gold);border-radius:16px;padding:18px;max-width:360px;width:100%;text-align:center;box-shadow:0 12px 40px rgba(0,0,0,.4);max-height:calc(100dvh - 40px);overflow-y:auto;overscroll-behavior:contain}
 #modal h2{margin:0 0 8px;color:var(--royal)}
 #modal .stars{font-size:36px;color:var(--gold);letter-spacing:4px;text-shadow:0 2px 0 #b45309}
 #modal .stars .off{color:#cbd5e1;text-shadow:none}

@@ -23,6 +23,7 @@ const TOOLS = {
   saw:   { n: 'Buzz Saw', d: 'Cut a whole row', cost: 60 },
   drill: { n: 'Drill Rig', d: 'Bore a whole column', cost: 60 },
   storm: { n: 'Dust Storm', d: 'Reshuffle the whole board', cost: 40 },
+  swap:  { n: 'Swap', d: 'Swap any two tiles anywhere on the board (no move used)', cost: 40 },
 };  // copper value for +5 moves on a failed puzzle
 const MAX_OFFLINE = 3 * 86400;
 
@@ -1942,6 +1943,14 @@ function drawTool(ctx, k, x, y, r) {
     ctx.fillStyle = lg(ctx, -r * .2, 0, r * .2, 0, [[0, '#e5e7eb'], [1, '#475569']]);
     ctx.beginPath(); ctx.moveTo(-r * .22, -r * .25); ctx.lineTo(r * .22, -r * .25); ctx.lineTo(0, r * .78); ctx.closePath(); ctx.fill();
     ctx.strokeStyle = '#334155'; ctx.lineWidth = r * .06; for (let i = 0; i < 4; i++) { const yy = -r * .15 + i * r * .2; ctx.beginPath(); ctx.moveTo(-r * .18 + i * r * .04, yy); ctx.lineTo(r * .18 - i * r * .04, yy + r * .08); ctx.stroke(); }
+  } else if (k === 'swap') {
+    // two curved arrows chasing each other
+    ctx.lineWidth = r * .16; ctx.lineCap = 'round';
+    for (const [sgn, col] of [[1, '#3b82f6'], [-1, '#f59e0b']]) {
+      ctx.strokeStyle = col; ctx.beginPath(); ctx.arc(0, 0, r * .55, sgn > 0 ? Math.PI * 1.1 : Math.PI * .1, sgn > 0 ? Math.PI * 1.9 : Math.PI * .9); ctx.stroke();
+      const ang = sgn > 0 ? Math.PI * 1.9 : Math.PI * .9, ex = Math.cos(ang) * r * .55, ey = Math.sin(ang) * r * .55;
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(ex + Math.cos(ang + 1.9) * r * .3, ey + Math.sin(ang + 1.9) * r * .3); ctx.lineTo(ex + Math.cos(ang) * r * .22, ey + Math.sin(ang) * r * .22); ctx.lineTo(ex + Math.cos(ang + Math.PI) * r * .22, ey + Math.sin(ang + Math.PI) * r * .22); ctx.closePath(); ctx.fill();
+    }
   } else if (k === 'storm') {
     for (let i = 0; i < 5; i++) { const w = r * (.85 - i * .14), yy = -r * .6 + i * r * .28; ctx.strokeStyle = `rgba(${200 - i * 10},${180 - i * 10},${140 - i * 10},.95)`; ctx.lineWidth = r * .14; ctx.beginPath(); ctx.ellipse(i * r * .05, yy, w, r * .12, 0, 0, 7); ctx.stroke(); }
   }
@@ -1975,7 +1984,8 @@ $('#pz-tools').addEventListener('click', e => {
   if (!(S.tools && S.tools[k])) return openShop();
   if (k === 'storm') { useTool('storm'); return; }
   P.tool = P.tool === k ? null : k; renderTools();
-  if (P.tool) toast(k === 'pick' ? 'Tap a tile to smash' : k === 'saw' ? 'Tap a row to cut' : 'Tap a column to drill');
+  P.swapA = null;
+  if (P.tool) toast(k === 'pick' ? 'Tap a tile to smash' : k === 'saw' ? 'Tap a row to cut' : k === 'swap' ? 'Tap two tiles to swap' : 'Tap a column to drill');
 });
 async function useTool(k, c) {
   if (!P || P.busy || P.over) return;
@@ -1984,6 +1994,10 @@ async function useTool(k, c) {
     sfx('shuffle'); addFx({ type: 'flash', x: 0, y: 0, dur: 300 });
     reshuffle();
     await anim(350, t => P.b.forEach(r => r.forEach(q => { if (q && !isFixed(q)) { q.sc = .4 + .6 * ease(t); q.a = t; } })));
+  } else if (k === 'swap') {
+    const [a, b] = c; sfx('swap');
+    await animSwap(a, b);
+    if (findRuns(P.b).length) await resolve([b, a]);
   } else {
     const [x, y] = c, keys = [];
     if (k === 'pick') { keys.push(x + ',' + y); addFx({ type: 'b', x, y, dur: 350 }); shake = 5; }
@@ -2024,6 +2038,14 @@ function renderPuzzleHead() {
     if (!st) return;
     if (!st.done && inB(st.c)) {
       const s = P.sel, c = st.c, now = performance.now();
+      if (P.tool === 'swap') {
+        // Swap tool: first tap picks a tile, second tap swaps it with any other tile
+        st = null; const q = P.b[c[1]][c[0]];
+        if (!q || isVoid(q) || isFixed(q)) { sfx('bad'); toast('That tile is stuck'); return; }
+        if (!P.swapA) { P.swapA = c; P.sel = c; drawBoard(); return; }
+        if (P.swapA[0] === c[0] && P.swapA[1] === c[1]) { P.swapA = null; P.sel = null; drawBoard(); return; }
+        const a = P.swapA; P.swapA = null; P.sel = null; useTool('swap', [a, c]); return;
+      }
       if (P.tool) { const k = P.tool; st = null; useTool(k, c); return; }
       const q = P.b[c[1]][c[0]];
       if (lastTap && lastTap.c[0] === c[0] && lastTap.c[1] === c[1] && now - lastTap.t < 400 && q && q.s) { lastTap = null; st = null; fireSpecial(c); return; }
