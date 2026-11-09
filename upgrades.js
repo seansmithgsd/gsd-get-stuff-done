@@ -214,7 +214,7 @@ function taskCost(kind) {
 }
 function mkTask(w, kind, target, prog = 0) {
   if (w.lastKind === kind) w.streak = (w.streak || 0) + 1; else { w.streak = 0; w.lastKind = kind; }
-  return { kind, dur: taskTime(w, kind), prog, target };
+  return { kind, dur: taskTime(w, kind) * (typeof roadMul === 'function' ? roadMul(target) : 1), prog, target };
 }
 function yieldMods(kind, y, w) {
   if (kind === 'chop' && hasB('lumber') && U('lumber2')) for (const k in y) y[k] = Math.round(y[k] * 1.5);

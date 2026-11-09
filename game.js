@@ -392,11 +392,14 @@ function buildCheck(type) {
   return '';
 }
 function placeOk(i, j) {
-  return i >= 1 && i < W - 1 && j >= 1 && j < H - 1 && !bAt(i, j) && !pileAt(i, j) && near(i, j, TCI, TCJ) >= 2 && near(i, j, TCI, TCJ) <= buildRadius();
+  if (!(i >= 1 && i < W - 1 && j >= 1 && j < H - 1 && !pileAt(i, j) && !roadAt(i, j) && near(i, j, TCI, TCJ) >= 2 && near(i, j, TCI, TCJ) <= buildRadius())) return false;
+  const skip = PLACE && PLACE.move;   // the building being moved doesn't block its own neighbours
+  return !S.buildings.some(b => b.id !== skip && b.type !== 'tc' && b.type !== 'palisade' && near(i, j, b.i, b.j) <= 1);
 }
+function hasRoom() { const R = buildRadius(); for (let j = TCJ - R; j <= TCJ + R; j++) for (let i = TCI - R; i <= TCI + R; i++) if (placeOk(i, j)) return true; return false; }
 function startBuild(type) {
   const why = buildCheck(type); if (why) return toast(why);
-  if (!findSlot()) return toast(`No room within ${buildRadius()} tiles of the Town Center — research the next Age or Expansion to build farther out`);
+  if (!hasRoom()) return toast(`No room within ${buildRadius()} tiles of the Town Center — research the next Age or Expansion to build farther out`);
   PLACE = { type, at: null };
   setView('village'); renderPlaceBar();
 }
@@ -445,6 +448,11 @@ function renderPlaceBar() {
   if (!PLACE) { if (el) el.remove(); return; }
   if (!el) { el = document.createElement('div'); el.id = 'placebar'; document.body.appendChild(el);
     el.addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.pl === 'go') placeBuild(); else cancelPlace(); }); }
+  if (PLACE.road) {
+    el.innerHTML = `<div class="pt">Tap empty tiles to lay road (4 wood, 2 stone each). Tap a road to remove it. <span class="small">${roadList().length} tiles</span></div>
+      <div class="pb"><button class="btn sm" data-pl="x">Done</button></div>`;
+    return;
+  }
   const D = BLD[PLACE.type], mv = PLACE.move != null;
   el.innerHTML = `<div class="pt">${PLACE.at ? (mv ? 'Move' : 'Build') + ' the ' + esc(D.n) + ' here?' : 'Tap a lit tile to ' + (mv ? 'move' : 'place') + ' the ' + esc(D.n)}</div>
     <div class="pb"><button class="btn sm" data-pl="x">Cancel</button><button class="btn sm" data-pl="go" ${PLACE.at ? '' : 'disabled'}>${mv ? 'Move here' : 'Build here'}</button></div>`;
@@ -474,6 +482,16 @@ function rawTile(cx, cy) {
   return [Math.round((wx / (TW / 2) + wy / (TH / 2)) / 2), Math.round((wy / (TH / 2) - wx / (TW / 2)) / 2)];
 }
 function drawPlaceGrid(vw, vh, t) {
+  if (PLACE.road) {
+    const a = .12 + .06 * Math.sin(t * 4);
+    for (let j = 1; j < H - 1; j++) for (let i = 1; i < W - 1; i++) {
+      if (!roadOk(i, j) || roadAt(i, j)) continue;
+      const [x, y] = iso(i, j); if (x < -TW || y < -TH || x > vw + TW || y > vh + TH) continue;
+      diamond(x, y, `rgba(255,255,255,${a})`); mx.strokeStyle = 'rgba(255,240,150,.45)'; mx.lineWidth = 1; mx.stroke();
+    }
+    if (PLACE.hover) { const [x, y] = iso(PLACE.hover[0], PLACE.hover[1]); diamond(x, y, 'rgba(255,215,0,.45)'); }
+    return;
+  }
   const R = buildRadius(), a = .22 + .1 * Math.sin(t * 4);
   for (let j = TCJ - R; j <= TCJ + R; j++) for (let i = TCI - R; i <= TCI + R; i++) {
     if (!placeOk(i, j)) continue;
@@ -623,7 +641,7 @@ $('#hint').addEventListener('click', e => { const b = e.target.closest('[data-go
 
 function renderBuild(force) {
   const building = S.workers.filter(w => w.task && w.task.kind === 'build');
-  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done + (b.lvl || 1)), free().length, building.map(w => w.id), Math.floor(S.bank)]);
+  const s = 'b' + JSON.stringify([S.res, S.buildings.map(b => b.type + b.done + (b.lvl || 1)), free().length, building.map(w => w.id), Math.floor(S.bank), roadList().length, roadLvl(), roadMax()]);
   if (s === sig && !force) return; sig = s;
   let html = '';
   if (building.length) {
@@ -632,7 +650,7 @@ function renderBuild(force) {
       html += `<div class="card"><div class="row">${b ? artThumb(b.type) : ''}<div style="flex:1"><div class="t">${b ? BLD[b.type].n : 'Building'}</div><div class="d">${esc(w.name)}</div>${progRow(w)}</div></div>${speedRow([w])}</div>`; }
     if (building.length > 1) html += `<div class="card"><div class="t">All construction</div>${speedRow(building)}</div>`;
   }
-  html += '<h2>Tech Tree</h2>';
+  html += '<h2>Tech Tree</h2>' + roadRow();
   for (let tier = 1; tier <= Math.max(5, Math.min(9, tierNow() + 1)); tier++) {
     html += `<h3>Tier ${tier}</h3>`;
     for (const [k, D] of Object.entries(BLD)) {
@@ -1093,6 +1111,7 @@ function drawMap(now) {
   const L = worldLayer(), sx = vw / 2 - camX - L.ox, sy = vh / 2 - camY - L.oy;
   if (!(sx > vw || sy > vh || sx + L.w < 0 || sy + L.h < 0)) mx.drawImage(L.c, sx, sy, L.w, L.h);
   if (typeof worldObjects === 'function') worldObjects(objs, t, vw, vh);
+  drawRoads(vw, vh);
   if (PLACE) drawPlaceGrid(vw, vh, t);
   pileObjects(objs, t, vw, vh);
   placeGhost(objs, t);
@@ -1162,7 +1181,7 @@ function drawMap(now) {
     if (!down) return;
     if (!down.moved && e.type === 'pointerup') {
       const r = mapC.getBoundingClientRect();
-      if (PLACE) { placeTap(...rawTile(e.clientX, e.clientY)); down = null; return; }
+      if (PLACE) { if (PLACE.road) roadTap(...rawTile(e.clientX, e.clientY)); else placeTap(...rawTile(e.clientX, e.clientY)); down = null; return; }
       if (typeof edgeArrowTap === 'function' && edgeArrowTap((e.clientX - r.left) / ZM, (e.clientY - r.top) / ZM)) { down = null; return; }
       const hit = tileAt(e.clientX, e.clientY);
       if (hit && hit.ext) { if (typeof extTileSheet === 'function') extTileSheet(hit[0], hit[1]); }

@@ -216,3 +216,61 @@ function palisadeObjects(objs, vw, vh) {
     } });
   }
 }
+
+// ---------------------------------------------------------------- roads
+// Painted tile by tile on empty ground. One village road level: +10% walking speed per level while on road
+// tiles; one level per Age (level 1 when laid, max 1 + Ages). No road = no bonus.
+const ROAD_TILE = { wood: 4, stone: 2 };
+const roadList = () => (S.roads || (S.roads = []));
+const roadLvl = () => S.roadLvl || 1;
+const roadMax = () => 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length;
+let ROADSET = null, ROADSIG = '';
+function roadSet() { const sg = roadList().length + ':' + (roadList()[0] || ''); if (!ROADSET || sg !== ROADSIG) { ROADSET = new Set(roadList().map(r => r[0] + ',' + r[1])); ROADSIG = sg; } return ROADSET; }
+const roadAt = (i, j) => roadSet().has(i + ',' + j);
+function roadUpCost() { const m = Math.pow(2, roadLvl() - 1); return { stone: 60 * m, wood: 40 * m, money: 10 * m }; }
+// trip time: the walking share of a trip (20% out + 15% back) is faster for the part of the path that runs on road
+function roadMul(target) {
+  if (!target || !roadList().length) return 1;
+  const n = 24; let on = 0;
+  for (let k = 0; k <= n; k++) { const u = k / n, i = Math.floor(TCI + .5 + (target[0] - TCI) * u), j = Math.floor(TCJ + .5 + (target[1] - TCJ) * u); if (roadAt(i, j)) on++; }
+  const r = on / (n + 1);
+  return 1 - .35 * r * (1 - 1 / (1 + .1 * roadLvl()));
+}
+function roadOk(i, j) { return i >= 1 && i < W - 1 && j >= 1 && j < H - 1 && !bAt(i, j) && !pileAt(i, j) && near(i, j, TCI, TCJ) >= 1; }
+function roadTap(i, j) {
+  if (roadAt(i, j)) { S.roads = roadList().filter(r => r[0] !== i || r[1] !== j); ROADSET = null; save(); renderPlaceBar(); return; }
+  if (!roadOk(i, j)) return toast('Roads go on empty ground');
+  if (!canPay(ROAD_TILE)) return toast('Not enough: a road tile needs 4 wood, 2 stone');
+  pay(ROAD_TILE); roadList().push([i, j]); ROADSET = null;
+  if (MAP.node[j * W + i]) { MAP.node[j * W + i] = null; layerDirty = true; }
+  save(); refresh(); renderPlaceBar();
+}
+function startRoads() { closeSheet(); PLACE = { road: true }; setView('village'); renderPlaceBar(); }
+function upgradeRoads() {
+  if (roadLvl() >= roadMax()) return toast('Roads are at the max level for this Age');
+  const c = roadUpCost(); if (!canPay(c)) return toast('Not enough: needs ' + shortBy(c).join(', '));
+  pay(c); S.roadLvl = roadLvl() + 1; ROADSET = null; toast(`Roads upgraded to level ${S.roadLvl} (+${S.roadLvl * 10}% walking speed on roads)`); sfx('build');
+  save(); refresh(true);
+}
+const ROAD_COL = [['#b08a5a', '#8f6c42'], ['#a9a397', '#8a8478'], ['#8f8a84', '#6e6964'], ['#55555b', '#3f3f45'], ['#3d4048', '#2c2f36']];
+function drawRoads(vw, vh) {
+  if (!roadList().length) return;
+  const [c1, c2] = ROAD_COL[Math.min(4, roadLvl() - 1)];
+  for (const [i, j] of roadList()) {
+    const [x, y] = iso(i, j); if (x < -TW || y < -TH || x > vw + TW || y > vh + TH) continue;
+    diamond(x, y + 1, c2); diamond(x, y, c1);
+    if (roadLvl() >= 4) { mx.fillStyle = 'rgba(255,230,120,.7)'; mx.fillRect(x - 1, y - 1, 2, 2); }
+  }
+}
+function roadRow() {
+  const L = roadLvl(), M = roadMax(), c = roadUpCost();
+  const up = L >= M ? '' : `<button class="btn sm" data-roadup ${canPay(c) ? '' : 'disabled'}>Upgrade</button>`;
+  return `<div class="card"><div class="row">${artThumb('road')}<div><div class="t">Road <span class="small">${roadList().length} tiles · level ${L}/${M}</span></div>
+    <div class="d">AI workers walk ${L * 10}% faster on road tiles. Lay roads in the gaps between buildings.</div>
+    <div class="cost">${costHTML(ROAD_TILE)} per tile${L < M ? ` · upgrade: ${costHTML(c)}` : ''}</div>${L >= M ? `<div class="small">${M >= 5 ? 'Max level' : 'Next level: research the next Age'}</div>` : ''}</div>
+    <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0"><button class="btn sm" data-roads>Lay road</button>${up}</div></div></div>`;
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-roads]')) return startRoads();
+  const u = e.target.closest('[data-roadup]'); if (u && !u.disabled) upgradeRoads();
+});
