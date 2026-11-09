@@ -855,6 +855,8 @@ function buildProgress(b) {
   return 0;
 }
 function drawBuilding(b, x, y, t) {
+  if (b.done && b.type === 'palisade') return;   // the palisade is the fence around the village (drawn by drawPalisade)
+  if (b.done && typeof drawBuildingArt === 'function' && drawBuildingArt(b, x, y)) return;
   if (!b.done) {
     const p = buildProgress(b);
     mx.strokeStyle = '#6b4a2e'; mx.lineWidth = 2;
@@ -989,6 +991,7 @@ function drawMap(now) {
   if (!(sx > vw || sy > vh || sx + L.w < 0 || sy + L.h < 0)) mx.drawImage(L.c, sx, sy, L.w, L.h);
   if (typeof worldObjects === 'function') worldObjects(objs, t, vw, vh);
   pileObjects(objs, t, vw, vh);
+  if (hasB('palisade')) palisadeObjects(objs, vw, vh);
   const cI = TCI;
   const markFront = (fi, fj) => { for (let a = 0; a <= 2; a++) for (let b = 0; b <= 2; b++) if (a + b) { const j = fj + b; if (j >= 0 && j < H) front.add((fi + a) + ',' + j); } };
   for (const b of S.buildings) {

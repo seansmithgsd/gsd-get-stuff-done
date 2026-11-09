@@ -168,3 +168,46 @@ function storageRows(type) {
     return `<div class="row" style="margin-top:6px"><div><div class="d">#${n + 1} · level ${lvl} · holds ${STORE_CAP[lvl].toLocaleString()} → ${STORE_CAP[lvl + 1].toLocaleString()}</div><div class="cost">${costHTML(c)} · ${fmt(BLD[b.type].time * (lvl + 1))}</div></div><button class="btn sm" data-supg="${b.id}" ${ok ? '' : 'disabled'}>Upgrade</button></div>`;
   }).join('');
 }
+
+// ---------------------------------------------------------------- building art (rendered images; procedural drawing is the fallback)
+// Staged art: Town Center by Age, Storehouse/Granary by upgrade band (5 levels per Age).
+const BART = {}, BART_STAGED = { tc: 1, storehouse: 1, grainstore: 1 };
+const BART_SCALE = { tc: 2.1, townhall: 1.8, farm: 1.7, dock: 1.7, quarry2: 1.7, factory: 1.8, powerplant: 1.8, gsdtower: 2.2, moneyprinter: 2, barracks: 1.6, longhouse: 1.6, market: 1.6, mine: 1.6, teamhall: 1.7, bank: 1.6, outpost: 1.6 };
+function artKey(b) {
+  if (!BART_STAGED[b.type]) return b.type;
+  const st = b.type === 'tc' ? 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length : Math.min(5, Math.ceil((b.lvl || 1) / 5));
+  return b.type + '_' + st;
+}
+function artImg(key) {
+  let a = BART[key];
+  if (!a) { a = BART[key] = { img: new Image(), ok: false, bad: false }; a.img.onload = () => { a.ok = true; layerDirty = true; }; a.img.onerror = () => { a.bad = true; }; a.img.src = 'art/b/' + key + '.png?v=1'; }
+  return a;
+}
+function drawBuildingArt(b, x, y) {
+  const a = artImg(artKey(b)); if (!a.ok) return false;
+  const w = TW * (BART_SCALE[b.type] || 1.7), h = w * a.img.height / a.img.width;
+  mx.drawImage(a.img, x - w / 2, y + TH * .45 - h, w, h);
+  return true;
+}
+// palisade: a ring of sharpened stakes around the village plot
+function drawStake(x, y, h) {
+  mx.fillStyle = 'rgba(0,0,0,.22)'; mx.beginPath(); mx.ellipse(x + 2, y + 1, 4, 2, 0, 0, 7); mx.fill();
+  mx.fillStyle = rg(mx, x - 2, y - h, 6, '#c08a52', '#8b5a2b', '#4a2a10'); mx.beginPath();
+  mx.moveTo(x - 3, y); mx.lineTo(x - 3, y - h + 5); mx.lineTo(x, y - h); mx.lineTo(x + 3, y - h + 5); mx.lineTo(x + 3, y); mx.closePath(); mx.fill();
+  mx.strokeStyle = '#3b2210'; mx.lineWidth = .8; mx.stroke();
+}
+function palisadeObjects(objs, vw, vh) {
+  const pts = [], step = .5, H2 = 22;
+  for (let i = 0; i <= W; i += step) { pts.push([i, 0]); pts.push([i, H]); }
+  for (let j = step; j < H; j += step) { pts.push([0, j]); pts.push([W, j]); }
+  for (const [i, j] of pts) {
+    const [x, y] = iso(i - .5, j - .5); if (x < -20 || x > vw + 20 || y < -40 || y > vh + 20) continue;
+    objs.push({ d: i + j - .9, f: () => {
+      drawStake(x, y, H2);
+      // rails tying the stakes together
+      mx.strokeStyle = '#6b4a2e'; mx.lineWidth = 2;
+      const nx = (j === 0 || j === H) ? iso(i - .5 + step, j - .5) : iso(i - .5, j - .5 + step);
+      if ((j === 0 || j === H) ? i < W : j < H) { mx.beginPath(); mx.moveTo(x, y - 8); mx.lineTo(nx[0], nx[1] - 8); mx.moveTo(x, y - 15); mx.lineTo(nx[0], nx[1] - 15); mx.stroke(); }
+    } });
+  }
+}

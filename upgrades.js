@@ -127,7 +127,7 @@ const EXTRA_BLD = {
   dock:      { no: 9, n: 'Fishing Dock', tier: 6, time: 900, req: ['age6'], cost: { wood: 350, stone: 100, money: 100 }, desc: 'Endless fish: +4 food per trip' },
   orchard:   { no: 8, n: 'Orchard', tier: 6, time: 900, req: ['age6'], cost: { wood: 200, food: 300, money: 100 }, desc: 'Picked-out berry bushes regrow after 10 min' },
   nursery:   { no: 14, n: 'Tree Nursery', tier: 6, time: 900, req: ['age6'], cost: { wood: 200, stone: 100, money: 100 }, desc: 'Plants a new tree every 5 min' },
-  palisade:  { no: 71, n: 'Palisade', tier: 6, time: 900, req: ['age6'], cost: { wood: 600, planks: 40 }, desc: 'Harvest crews take twice as long to reach you' },
+  palisade:  { no: 71, n: 'Palisade', tier: 6, time: 900, req: ['age6'], cost: { wood: 600, planks: 40 }, desc: 'A stake fence around your village: harvest crews take twice as long to reach you' },
   watchtower:{ no: 72, n: 'Watchtower', tier: 6, time: 900, req: ['age6'], cost: { stone: 400, planks: 30 }, desc: 'Your interceptor crews move twice as fast' },
   blastfurnace: { no: 32, n: 'Blast Furnace', tier: 7, time: 1800, req: ['age7'], cost: { stone: 600, steel: 80, planks: 60, money: 400 }, desc: '2 iron + 1 coal → 2 steel' },
   gearworks: { no: 38, n: 'Gearworks', tier: 7, time: 1800, req: ['age7'], cost: { stone: 500, steel: 120, planks: 80, money: 400 }, desc: '1 steel + 2 planks → 1 gear' },
