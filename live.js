@@ -96,10 +96,25 @@ function groundColour(x, y) {
   const g = Math.round(wildGrass(x, y) * 6) / 6;
   return `hsl(${98 + g * 22},${38 + g * 10}%,${31 + g * 8}%)`;
 }
+// level of detail: chunk canvases are rendered at the resolution they are shown at (zoomed out = fewer pixels)
+const chunkLD = () => { const s = DPR * ZM; return s <= .4 ? .25 : s <= .8 ? .5 : 1; };
+let CHUNK_CAP = 40;
+const CHG = { ox: CHK * TW / 2 + TW / 2, oy: TH / 2 + 80, w: CHK * TW + TW, h: CHK * TH + TH + 82 };   // chunk canvas geometry (80px headroom for baked trees)
+const BAKE_Z = .5;   // at or below this zoom, wild resources are baked into the ground chunks instead of drawn one by one
+function chunkNodes(cx, cy) {   // the resource sprites in a chunk and a signature of their stages
+  const out = []; let sig = '';
+  for (let b = 0; b < CHK; b++) for (let a = 0; a < CHK; a++) {
+    const x = cx * CHK + a, y = cy * CHK + b, T = tileInfo(x, y); if (!T) continue;
+    const st = T.kind === 'wild' ? stageFrom(T.left, T.amt) : (T.left >= 8 ? 2 : T.left >= 4 ? 1 : 0);
+    out.push([a, b, T.n, hsh(x, y, 4), st]); sig += a + '.' + b + st;
+  }
+  return { out, sig };
+}
 function chunkCanvas(cx, cy) {
-  const key = chunkKey(cx, cy), ver = LIVE.ver.get(key) || 0, have = LIVE.chunks.get(key);
-  if (have && have.ver === ver) { LIVE.chunks.delete(key); LIVE.chunks.set(key, have); return have; }
-  const ox = CHK * TW / 2 + TW / 2, oy = TH / 2 + 1, w = CHK * TW + TW, h = CHK * TH + TH + 2, LD = 1;
+  const LD = chunkLD(), key = chunkKey(cx, cy), ver = LIVE.ver.get(key) || 0, have = LIVE.chunks.get(key);
+  const nodes = ZM <= BAKE_Z ? chunkNodes(cx, cy) : null, sig = nodes ? nodes.sig : '';
+  if (have && have.ver === ver && have.ld === LD && have.sig === sig) { LIVE.chunks.delete(key); LIVE.chunks.set(key, have); return have; }
+  const { ox, oy, w, h } = CHG;
   const c = (have && have.c) || document.createElement('canvas'); c.width = w * LD; c.height = h * LD;
   const g = c.getContext('2d'); g.setTransform(LD, 0, 0, LD, 0, 0); g.clearRect(0, 0, w, h);
   const old = mx; mx = g;
@@ -109,9 +124,10 @@ function chunkCanvas(cx, cy) {
       groundTile((a - b) * TW / 2 + ox, (a + b) * TH / 2 + oy, groundColour(x, y));
     }
   } finally { mx = old; }
-  const out = { c, ver, ox, oy, w, h };
+  if (nodes) { const old2 = mx; mx = g; try { for (const [a, b, n, hs, st] of nodes.out) nodeSprite(n, (a - b) * TW / 2 + ox, (a + b) * TH / 2 + oy, hs, st); } finally { mx = old2; } }
+  const out = { c, ver, ox, oy, w, h, ld: LD, sig };
   LIVE.chunks.delete(key); LIVE.chunks.set(key, out);
-  while (LIVE.chunks.size > 40) LIVE.chunks.delete(LIVE.chunks.keys().next().value);
+  while (LIVE.chunks.size > CHUNK_CAP) LIVE.chunks.delete(LIVE.chunks.keys().next().value);
   return out;
 }
 // world tiles currently on screen
@@ -126,17 +142,22 @@ function drawWorldGround(vw, vh) {
   const [x0, y0, x1, y1] = viewTiles(vw, vh), list = [];
   for (let cy = Math.floor(y0 / CHK); cy <= Math.floor(y1 / CHK); cy++) for (let cx = Math.floor(x0 / CHK); cx <= Math.floor(x1 / CHK); cx++) list.push([cx, cy]);
   list.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]));
+  // only chunks whose diamond actually touches the screen (the tile box of a rotated view is mostly off screen)
+  const { ox, oy, w, h } = CHG, vis = [];
   for (const [cx, cy] of list) {
-    const C = chunkCanvas(cx, cy), [li, lj] = toLocal(cx * CHK, cy * CHK), [sx, sy] = iso(li, lj);
-    mx.drawImage(C.c, sx - C.ox, sy - C.oy, C.w, C.h);
+    const [li, lj] = toLocal(cx * CHK, cy * CHK), [sx, sy] = iso(li, lj);
+    if (sx - ox > vw || sx - ox + w < 0 || sy - oy > vh || sy - oy + h < 0) continue;
+    vis.push([cx, cy, sx, sy]);
   }
+  CHUNK_CAP = Math.max(40, vis.length + 16);
+  for (const [cx, cy, sx, sy] of vis) { const C = chunkCanvas(cx, cy); mx.drawImage(C.c, sx - C.ox, sy - C.oy, C.w, C.h); }
   liveWant(x0, y0, x1, y1);
 }
 function stageFrom(left, amt) { const f = left / (amt || 12); return f > .66 ? 2 : f > .33 ? 1 : 0; }
 function worldObjects(objs, t, vw, vh) {
   const [x0, y0, x1, y1] = viewTiles(vw, vh), now = sNowL();
-  // resources on shared land and in neighbours' villages
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+  // resources on shared land and in neighbours' villages (baked into the ground chunks when zoomed out)
+  if (ZM > BAKE_Z) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const T = tileInfo(x, y); if (!T) continue;
     const [li, lj] = toLocal(x, y), [sx, sy] = iso(li, lj);
     if (sx < -60 || sx > vw + 60 || sy < -20 || sy > vh + 90) continue;
