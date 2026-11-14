@@ -132,12 +132,14 @@ const EXTRA_BLD = {
   blastfurnace: { no: 32, n: 'Blast Furnace', tier: 7, time: 1800, req: ['age7'], cost: { stone: 600, steel: 80, planks: 60, money: 400 }, desc: '2 iron + 1 coal → 2 steel' },
   gearworks: { no: 38, n: 'Gearworks', tier: 7, time: 1800, req: ['age7'], cost: { stone: 500, steel: 120, planks: 80, money: 400 }, desc: '1 steel + 2 planks → 1 gear' },
   bank:      { no: 52, n: 'Bank', tier: 7, time: 1800, req: ['age7', 'market'], cost: { stone: 600, steel: 100, gold: 20, money: 500 }, desc: 'Copper earns 1% per hour (max 100/h)' },
-  barracks:  { no: 43, n: 'Barracks', tier: 7, time: 1800, house: 10, repeat: true, req: ['age7'], cost: { stone: 600, planks: 120, steel: 60 }, desc: 'Houses 10 AI workers' },
+  apartment: { no: 43, n: 'Apartment', tier: 7, time: 1800, repeat: true, req: ['age7'], cost: { stone: 600, planks: 120, steel: 60 }, desc: 'Houses 10 AI workers per story; add a story per upgrade (5 levels)' },
+  barracks:  { no: 108, n: 'Barracks', tier: 7, time: 1800, repeat: true, req: ['age7'], cost: { stone: 600, planks: 120, steel: 60 }, desc: 'Houses 10 soldiers per level (5 levels); trains soldiers to fight golems' },
   quarry2:   { no: 30, n: 'Deep Quarry Pit', tier: 7, time: 1800, req: ['age7'], cost: { wood: 400, steel: 80, money: 300 }, desc: 'Endless stone: +3 per trip' },
   teamhall:  { no: 81, n: 'Team Hall', tier: 7, time: 1800, req: ['age7'], cost: { stone: 500, planks: 100, gold: 20 }, desc: '+5% gathering while you\'re on a team' },
   factory:   { no: 39, n: 'Factory', tier: 8, time: 3600, req: ['age8'], cost: { steel: 400, gears: 60, planks: 200, money: 1000 }, desc: 'Makes 1 steel a minute from iron + coal, no worker needed' },
   powerplant:{ no: 40, n: 'Power Plant', tier: 8, time: 3600, req: ['age8'], cost: { steel: 500, gears: 100, coal: 300, money: 1200 }, desc: 'Industry jobs 10% faster' },
   outpost:   { no: 86, n: 'Outpost', tier: 8, time: 3600, req: ['age8'], cost: { planks: 300, steel: 300, gold: 40 }, desc: '+10% gathering' },
+  wiremill:  { no: 109, n: 'Wire Mill', tier: 9, time: 7200, req: ['age9'], cost: { steel: 600, gears: 150, planks: 200, money: 2000 }, desc: '2 copper + 1 silver + 1 steel + 1 gold → 1 wire' },
   gsdtower:  { no: 98, n: 'Wonder: GSD Tower', tier: 9, time: 14400, req: ['age9'], cost: { steel: 1500, gears: 400, gold: 300, money: 5000 }, desc: '+1 AI worker every 5 puzzle wins' },
   moneyprinter: { no: 99, n: 'Wonder: Money Printer', tier: 9, time: 14400, req: ['age9'], cost: { steel: 1200, gears: 500, gold: 400, money: 6000 }, desc: 'Prints 1 gold every 10 minutes' },
 };
@@ -150,9 +152,10 @@ const EXTRA_TASKS = {
   saw:   { n: 'Saw planks', node: 'sawmill', time: 30, cost: { wood: 2 }, gain: { planks: 1 }, req: 'sawmill' },
   blast: { n: 'Run the furnace', node: 'blastfurnace', time: 45, cost: { iron: 2, coal: 1 }, gain: { steel: 2 }, req: 'blastfurnace' },
   gear:  { n: 'Cut gears', node: 'gearworks', time: 60, cost: { steel: 1, planks: 2 }, gain: { gears: 1 }, req: 'gearworks' },
+  wire:  { n: 'Draw wire', node: 'wiremill', time: 60, cost: { copper: 2, silver: 1, steel: 1, gold: 1 }, gain: { wires: 1 }, req: 'wiremill' },
   pan:   { n: 'Pan for gold', node: 'goldrock', time: 60, gain: { gold: 1 }, req: 'prospect' },
 };
-const INDUSTRY = ['coal', 'smelt', 'strike', 'blast', 'gear', 'saw'];
+const INDUSTRY = ['coal', 'smelt', 'strike', 'blast', 'gear', 'saw', 'wire'];
 const CIVS = {
   gsd: { n: 'GSD Consultants', d: 'The Developers: every building costs 10% less', no: 95 },
   angm: { n: 'Act Now, Get Money', d: 'The Money civ: +20% copper from every source', no: 96 },
@@ -460,7 +463,7 @@ const BCOL = {
   orchard: ['#86efac', '#4ade80', '#16a34a', '#dc2626', '#991b1b'], nursery: ['#bbf7d0', '#86efac', '#22c55e', '#166534', '#14532d'],
   palisade: ['#8b5a2b', '#6b4220', '#4a2a10', '#6b4220', '#4a2a10'], watchtower: ['#9aa3ab', '#7d858c', '#646b71', '#7b2e22', '#5e2219'],
   blastfurnace: ['#57534e', '#44403c', '#292524', '#f97316', '#c2410c'], gearworks: ['#94a3b8', '#64748b', '#475569', '#eab308', '#a16207'],
-  bank: ['#f8fafc', '#e2e8f0', '#94a3b8', '#e8b923', '#c9971a'], barracks: ['#a8a29e', '#78716c', '#57534e', '#7f1d1d', '#450a0a'],
+  bank: ['#f8fafc', '#e2e8f0', '#94a3b8', '#e8b923', '#c9971a'], barracks: ['#a8a29e', '#78716c', '#57534e', '#7f1d1d', '#450a0a'], apartment: ['#e7b98f', '#c2865a', '#9a6440', '#475569', '#334155'], wiremill: ['#fdba74', '#c2410c', '#7c2d12', '#e8b923', '#a16207'],
   quarry2: ['#8f969c', '#737a80', '#5d6368', '#5d6368', '#4a4f53'], teamhall: ['#ddd6fe', '#a78bfa', '#7c3aed', '#4c1d95', '#2e1065'],
   factory: ['#9ca3af', '#6b7280', '#4b5563', '#374151', '#1f2937'], powerplant: ['#fef08a', '#facc15', '#ca8a04', '#334155', '#1e293b'],
   outpost: ['#c4b5fd', '#8b5cf6', '#6d28d9', '#1e3a8a', '#172554'], gsdtower: ['#e0f2fe', '#7dd3fc', '#0284c7', '#fbbf24', '#b45309'],

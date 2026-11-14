@@ -364,8 +364,9 @@ function livePublish(force) {
   const b = S.buildings.filter(x => x.done).map(x => [x.type, x.i, x.j]);
   const pl = PILES.map(p => [p.k, p.i, p.j, p.amt, p.side]), st = {}; for (const k of PILE_RES) st[k] = storedOf(k);
   const gd = { n: guards(), lvl: guardLvl() };
-  const sig = JSON.stringify([b, left, S.level, pl, st, gd]);
-  if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', seed: S.seed, b, left, n, lvl: S.level, pl, st, gd }); }
+  const ml = typeof milSnap === 'function' ? milSnap() : {};
+  const sig = JSON.stringify([b, left, S.level, pl, st, gd, ml.tk, (ml.sd || []).map(x => [x[0], x[4], x[5], x[6], x[7], Math.round(x[1] / 10)])]);
+  if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', seed: S.seed, b, left, n, lvl: S.level, pl, st, gd, ...ml }); }
   const now = sNowL(), out = [], seen = new Set();
   S.workers.forEach(w => {
     seen.add(w.id);

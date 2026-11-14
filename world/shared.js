@@ -22,3 +22,15 @@ export function wildAt(x, y) {
 }
 export const wildGrass = (x, y) => vnoise(x / 5, y / 5, 3);
 export const REGROW_MS = 30 * 60 * 1000;
+
+// ---------------------------------------------------------------- golems (world server simulates; clients draw)
+// One golem per village in the zone at most. Made of a pile resource; eats piles of its own kind on village outskirts.
+export const GOLEM_TYPES = ['wood', 'planks', 'stone', 'coal', 'iron', 'steel', 'gears', 'wires'];
+export const GOLEM_AXE = ['wood', 'planks'];                 // everything else needs picks
+export const GOLEM_IND = ['gears'], GOLEM_DIG = ['wires'];   // immune until Industrial / Digital Age
+export const GOLEM_START = 10000, GOLEM_EAT = 10 / 60, GOLEM_GROW = .5, GOLEM_SPEED = .25;   // per second; tiles per second
+export const GOLEM_HIT = 5, HIT_MS = 2000, SOLDIER_HP = 50, SOLDIER_HIT = 5, SOLDIER_SPEED = 1;
+export const golemLoot = mx => Math.round(7500 + mx * .5);
+export const golemXp = mx => Math.round(mx / 100);
+export const soldierMaxHp = lvl => Math.round(SOLDIER_HP * (1 + .1 * (lvl | 0)));
+export const golemPos = (g, now) => { const dx = g.tx - g.x, dy = g.ty - g.y, L = Math.hypot(dx, dy), d = Math.min(L, Math.max(0, now - g.t0) / 1000 * g.sp); return L ? [g.x + dx / L * d, g.y + dy / L * d] : [g.x, g.y]; };

@@ -26,15 +26,15 @@ const BCOST = {
   workshop: { wood: 300, iron: 80, money: 200 }, longhouse: { wood: 400, stone: 200, planks: 20 }, dock: { wood: 350, stone: 100, money: 100 },
   orchard: { wood: 200, food: 300, money: 100 }, nursery: { wood: 200, stone: 100, money: 100 }, palisade: { wood: 600, planks: 40 }, watchtower: { stone: 400, planks: 30 },
   blastfurnace: { stone: 600, steel: 80, planks: 60, money: 400 }, gearworks: { stone: 500, steel: 120, planks: 80, money: 400 }, bank: { stone: 600, steel: 100, gold: 20, money: 500 },
-  barracks: { stone: 600, planks: 120, steel: 60 }, quarry2: { wood: 400, steel: 80, money: 300 }, teamhall: { stone: 500, planks: 100, gold: 20 },
+  barracks: { stone: 600, planks: 120, steel: 60 }, apartment: { stone: 600, planks: 120, steel: 60 }, wiremill: { steel: 600, gears: 150, planks: 200, money: 2000 }, quarry2: { wood: 400, steel: 80, money: 300 }, teamhall: { stone: 500, planks: 100, gold: 20 },
   factory: { steel: 400, gears: 60, planks: 200, money: 1000 }, powerplant: { steel: 500, gears: 100, coal: 300, money: 1200 }, outpost: { planks: 300, steel: 300, gold: 40 },
   gsdtower: { steel: 1500, gears: 400, gold: 300, money: 5000 }, moneyprinter: { steel: 1200, gears: 500, gold: 400, money: 6000 },
 };
 const BTIER = { hut: 1, hunt: 1, quarry: 1, lumber: 2, farm: 2, kiln: 3, mine: 3, smelter: 4, mint: 4, townhall: 5,
   sawmill: 6, market: 6, taxoffice: 6, workshop: 6, longhouse: 6, dock: 6, orchard: 6, nursery: 6, palisade: 6, watchtower: 6,
-  blastfurnace: 7, gearworks: 7, bank: 7, barracks: 7, quarry2: 7, teamhall: 7, factory: 8, powerplant: 8, outpost: 8, gsdtower: 9, moneyprinter: 9 };
+  blastfurnace: 7, gearworks: 7, bank: 7, barracks: 7, apartment: 7, wiremill: 9, quarry2: 7, teamhall: 7, factory: 8, powerplant: 8, outpost: 8, gsdtower: 9, moneyprinter: 9 };
 const WONDER_GOAL = 5000, EVENT_GOAL = 50000, TREATY_MS = 8 * 3600 * 1000, WEEK_MS = 7 * 86400 * 1000;
-const RES_OK = ['food', 'wood', 'stone', 'iron', 'coal', 'steel', 'planks', 'gears', 'copper', 'silver', 'gold'];
+const RES_OK = ['food', 'wood', 'stone', 'iron', 'coal', 'steel', 'planks', 'gears', 'wires', 'copper', 'silver', 'gold'];
 function cleanRes(o) { const r = {}; for (const k of RES_OK) { const v = Math.floor(Number(o && o[k]) || 0); if (v > 0) r[k] = Math.min(v, 1e7); } return r; }
 // flags pulled from a save at write time, so harvest/orb never parse other players' saves
 function flagsOf(save) {

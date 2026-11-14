@@ -34,7 +34,7 @@ const RES = [
   { k: 'copper', n: 'Copper', c: '#c86f33' },
   { k: 'silver', n: 'Silver', c: '#d8dde2' },
   { k: 'gold', n: 'Gold', c: '#e8b923' },
-  { k: 'iron', n: 'Iron' }, { k: 'coal', n: 'Coal' }, { k: 'steel', n: 'Steel' }, { k: 'planks', n: 'Planks' }, { k: 'gears', n: 'Gears' },
+  { k: 'iron', n: 'Iron' }, { k: 'coal', n: 'Coal' }, { k: 'steel', n: 'Steel' }, { k: 'planks', n: 'Planks' }, { k: 'gears', n: 'Gears' }, { k: 'wires', n: 'Wires' },
 ];
 
 const BLD = {
@@ -75,9 +75,9 @@ function enforceSpotCap() { for (const b of S.buildings) if (BNODE.includes(b.ty
 const isResB = t => BNODE.includes(t) || t === 'storehouse' || t === 'grainstore';
 const maxCopies = () => 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length + Math.max(0, PRES() - 1);
 Object.assign(BLD, EXTRA_BLD); Object.assign(TASKS, EXTRA_TASKS);
-Object.assign(NODE_TASK, { quarry: 'dig', dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
-Object.assign(NODE_NAME, { dock: 'Fishing Dock', quarry2: 'Deep Quarry Pit', sawmill: 'Sawmill', blastfurnace: 'Blast Furnace', gearworks: 'Gearworks', goldrock: 'Gold rock' });
-BNODE.push('quarry', 'dock', 'quarry2', 'sawmill', 'blastfurnace', 'gearworks');
+Object.assign(NODE_TASK, { wiremill: 'wire', quarry: 'dig', dock: 'fish', quarry2: 'stone2', sawmill: 'saw', blastfurnace: 'blast', gearworks: 'gear', goldrock: 'pan' });
+Object.assign(NODE_NAME, { wiremill: 'Wire Mill', dock: 'Fishing Dock', quarry2: 'Deep Quarry Pit', sawmill: 'Sawmill', blastfurnace: 'Blast Furnace', gearworks: 'Gearworks', goldrock: 'Gold rock' });
+BNODE.push('quarry', 'dock', 'quarry2', 'sawmill', 'blastfurnace', 'gearworks', 'wiremill');
 const NODES = ['tree', 'bush', 'rock', 'goldrock'];
 
 // ---------------------------------------------------------------- sound (synthesized, no files)
@@ -143,9 +143,9 @@ const simNow = () => Date.now() - SIM_BACK;   // during offline catch-up, the mo
 function newState() {
   return {
     v: 1, t: Date.now(), seed: (Math.random() * 1e9) | 0,
-    res: { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, copper: 6, silver: 0, gold: 0 },
+    res: { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, wires: 0, copper: 6, silver: 0, gold: 0 },
     bank: 0, level: 1, wins: 0, recruit: 0, waiting: 0, eatAcc: 0, nextId: 1, upg: {},
-    workers: [], buildings: [{ id: 0, type: 'tc', i: TCI, j: TCJ, done: true }],
+    workers: [], buildings: [{ id: 0, type: 'tc', i: TCI, j: TCJ, done: true }], mil: 1, soldiers: [], trainQ: [],
   };
 }
 function load() {
@@ -154,6 +154,8 @@ function load() {
 }
 // fill any field added since the save was written, without touching existing values
 function migrate(s) {
+  // v50: Barracks used to house AI workers — every old one becomes an Apartment of the same level (runs once per save)
+  if (!s.mil) { for (const b of s.buildings || []) if (b.type === 'barracks') b.type = 'apartment'; s.mil = 1; }
   const d = newState();
   for (const k in d) if (s[k] == null) s[k] = d[k];
   for (const k in d.res) if (s.res[k] == null) s.res[k] = 0;
@@ -163,7 +165,7 @@ function save() { S.t = Date.now(); dirty = true; try { localStorage.setItem(SAV
 
 const hasB = t => S.buildings.some(b => b.type === t && b.done);
 const countB = t => S.buildings.filter(b => b.type === t).length;
-const housing = () => S.buildings.reduce((a, b) => a + (b.done ? (b.type === 'hut' ? hutHouse() : (BLD[b.type].house || 0)) : 0), 0);
+const housing = () => S.buildings.reduce((a, b) => a + (b.done ? (b.type === 'hut' ? hutHouse() : b.type === 'apartment' ? 10 * (b.lvl || 1) : (BLD[b.type].house || 0)) : 0), 0);
 const starving = () => S.workers.length > 0 && S.res.food <= 0;
 const idle = () => S.workers.filter(w => !w.task);
 const free = () => S.workers.filter(w => !w.task || w.task.kind !== 'build'); // can be pulled onto a build
@@ -343,8 +345,9 @@ function finishTask(w, quiet) {
 function fallbackBlocked(k) { return (k === 'dig' && (taskOpen('stone') || taskOpen('stone2'))) || (k === 'deadwood' && taskOpen('chop')); }
 function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || reqMet(T.req)) && !!pickTarget(kind); }
 function tick(dt, quiet) {
-  if (S.workers.length) {
-    S.eatAcc += dt * S.workers.length;
+  const eaters = S.workers.length + (S.soldiers ? S.soldiers.length : 0);
+  if (eaters) {
+    S.eatAcc += dt * eaters;
     while (S.eatAcc >= eatEvery()) { S.eatAcc -= eatEvery(); if (S.res.food > 0) S.res.food--; }
   }
   passive(dt, quiet);
@@ -605,7 +608,7 @@ function hud() {
   const R = S.res;
   const it = (c, label, v, warn) => `<span class="r${warn ? ' warn' : ''}"><i style="background:${c}"></i>${label} <b>${v}</b></span>`;
   $('#res').innerHTML =
-    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) + it('#a5b4c4', 'Steel', R.steel || 0) + (U('age6') ? it('#d4a056', 'Planks', R.planks || 0) + it('#64748b', 'Gears', R.gears || 0) : '') +
+    it('#c0392b', 'Food', R.food, starving() || (R.food <= 2 && S.workers.length)) + it('#8b5a2b', 'Wood', R.wood) + it('#9aa3ab', 'Stone', R.stone) + it('#6b7a8a', 'Iron', R.iron || 0) + it('#2b2b2b', 'Coal', R.coal || 0) + it('#a5b4c4', 'Steel', R.steel || 0) + (U('age6') ? it('#d4a056', 'Planks', R.planks || 0) + it('#64748b', 'Gears', R.gears || 0) : '') + (U('age9') || R.wires ? it('#ea580c', 'Wires', R.wires || 0) : '') +
     it('#c86f33', 'Copper', R.copper) + it('#d8dde2', 'Silver', R.silver) + it('#e8b923', 'Gold', R.gold) +
     `<span class="r">Speedup <b>${fmt(S.bank)}</b></span><span class="r">Workers <b>${S.workers.length}/${housing()}</b>${S.waiting ? ` <b>(+${S.waiting} waiting)</b>` : ''}</span>`;
   renderRates();
@@ -681,6 +684,7 @@ const GROUPS = [
   { k: 'stone', n: 'Stone', tasks: ['stone', 'stone2', 'dig'], icon: 2 },
   { k: 'planks', n: 'Planks', tasks: ['saw'], icon: 'planks' },
   { k: 'gears', n: 'Gears', tasks: ['gear'], icon: 'gears' },
+  { k: 'wires', n: 'Wires', tasks: ['wire'], icon: 'wires' },
   { k: 'ore', n: 'Ore', tasks: ['mine'], icon: 'iron' },
   { k: 'coal', n: 'Coal', tasks: ['coal'], icon: 'coal' },
   { k: 'steel', n: 'Steel', tasks: ['smelt', 'blast'], icon: 'steel' },
@@ -708,6 +712,9 @@ function drawResIcon(ctx, k, x, y, r) {
     ctx.fillStyle = rg(ctx, 0, 0, r * .8, '#e5e7eb', '#94a3b8', '#334155'); ctx.beginPath();
     for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2, rr = i % 2 ? r * .55 : r * .75; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } ctx.closePath(); ctx.fill();
     ctx.fillStyle = '#334155'; ctx.beginPath(); ctx.arc(0, 0, r * .2, 0, 7); ctx.fill();
+  } else if (k === 'wires') {
+    const cols = ['#f97316', '#d8dde2', '#e8b923'];
+    cols.forEach((c, i) => { ctx.strokeStyle = c; ctx.lineWidth = r * .16; ctx.beginPath(); ctx.ellipse(0, r * (.25 - i * .22), r * (.62 - i * .08), r * .2, 0, 0, 7); ctx.stroke(); });
   } else if (k === 'build') {
     ctx.rotate(-.6); ctx.fillStyle = lg(ctx, -r * .1, 0, r * .1, 0, [[0, '#d6a46a'], [1, '#7a4a22']]); ctx.fillRect(-r * .09, -r * .4, r * .18, r * 1.2);
     ctx.fillStyle = lg(ctx, 0, -r * .75, 0, -r * .35, [[0, '#e5e7eb'], [1, '#475569']]); ctx.beginPath(); ctx.roundRect(-r * .5, -r * .75, r * 1, r * .4, r * .08); ctx.fill();

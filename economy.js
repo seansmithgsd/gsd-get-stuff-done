@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------- storage, rotting piles, guards, harvester stats
 // What doesn't fit in storage sits in piles near the edge of your plot: piles rot (food fast), take up land,
 // draw deer, and are what other players' harvesters go for (2× from piles, ½× from storage).
-const STORE_RES = ['wood', 'stone', 'iron', 'coal', 'steel', 'planks', 'gears'];
+const STORE_RES = ['wood', 'stone', 'iron', 'coal', 'steel', 'planks', 'gears', 'wires'];
 const PILE_RES = ['food', ...STORE_RES];
 const TC_STORE = 200;                                     // the Town Center holds this much of each
 // storage levels: 5 per Age (Stone/Bronze/Iron/Industrial/Digital = up to 25); each level holds 50% more, and costs 50% more to reach
@@ -68,7 +68,7 @@ function layoutPiles() {
   if (keys !== pileKeys) { pileKeys = keys; layerDirty = true; }
 }
 function pileAt(i, j) { return i >= 0 && i < W && j >= 0 && j < H ? PILE_AT.get(j * W + i) || null : null; }
-const PILE_COL = { food: ['#fca5a5', '#dc2626', '#7f1d1d'], wood: ['#d6a46a', '#8b5a2b', '#4a2a10'], stone: ['#e5e7eb', '#9aa3ab', '#4b5563'], iron: ['#cbd5e1', '#6b7a8a', '#334155'],
+const PILE_COL = { wires: ['#fdba74', '#ea580c', '#7c2d12'], food: ['#fca5a5', '#dc2626', '#7f1d1d'], wood: ['#d6a46a', '#8b5a2b', '#4a2a10'], stone: ['#e5e7eb', '#9aa3ab', '#4b5563'], iron: ['#cbd5e1', '#6b7a8a', '#334155'],
   coal: ['#6b7280', '#2b2b2b', '#030712'], steel: ['#f1f5f9', '#a5b4c4', '#475569'], planks: ['#fde68a', '#d4a056', '#7c4a1e'], gears: ['#e5e7eb', '#64748b', '#1e293b'] };
 // one mound: footprint from the block size, height keeps rising with the amount
 function drawPile(x, y, k, amt, side) {
@@ -125,6 +125,7 @@ function spawnLuredDeer() {
 
 // ---------------------------------------------------------------- storage buildings: capacity + 5 levels
 function storageSheet(b) {
+  if (typeof LEVELED !== 'undefined' && LEVELED[b.type]) return levelSheet(b);
   if (b.type !== 'storehouse' && b.type !== 'grainstore') return '';
   const lvl = b.lvl || 1, D = BLD[b.type], up = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
   const what = b.type === 'grainstore' ? 'food' : 'each of wood, stone, iron, coal, steel, planks, gears';
@@ -160,6 +161,7 @@ setInterval(() => { if (typeof S !== 'undefined' && S && typeof MAP !== 'undefin
 
 // Build tab: each Storehouse / Granary you own, with its level and an Upgrade button (same as tapping it in the village)
 function storageRows(type) {
+  if (typeof LEVELED !== 'undefined' && LEVELED[type]) return levelRows(type);
   if (type !== 'storehouse' && type !== 'grainstore') return '';
   return S.buildings.filter(b => b.type === type && b.done).map((b, n) => {
     const lvl = b.lvl || 1, up = S.workers.find(w => w.task && w.task.kind === 'build' && w.task.bid === b.id);
@@ -171,14 +173,14 @@ function storageRows(type) {
 
 // ---------------------------------------------------------------- building art (rendered images; procedural drawing is the fallback)
 // Staged art: Town Center by Age, Storehouse/Granary by upgrade band (5 levels per Age).
-const BART = {}, BART_STAGED = { tc: 1, storehouse: 1, grainstore: 1 };
-const BART_SCALE = { tc: 2.1, townhall: 1.8, farm: 1.7, dock: 1.7, quarry2: 1.7, factory: 1.8, powerplant: 1.8, gsdtower: 2.2, moneyprinter: 2, barracks: 1.6, longhouse: 1.6, market: 1.6, mine: 1.6, teamhall: 1.7, bank: 1.6, outpost: 1.6 };
+const BART = {}, BART_STAGED = { tc: 1, storehouse: 1, grainstore: 1, apartment: 1, barracks: 1 };
+const BART_SCALE = { tc: 2.1, townhall: 1.8, farm: 1.7, dock: 1.7, quarry2: 1.7, factory: 1.8, powerplant: 1.8, gsdtower: 2.2, moneyprinter: 2, barracks: 1.6, apartment: 1.6, wiremill: 1.6, longhouse: 1.6, market: 1.6, mine: 1.6, teamhall: 1.7, bank: 1.6, outpost: 1.6 };
 function artKey(b) {
   if (!BART_STAGED[b.type]) return b.type;
-  const st = b.type === 'tc' ? 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length : Math.min(5, Math.ceil((b.lvl || 1) / 5));
+  const st = b.type === 'tc' ? 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length : (b.type === 'apartment' || b.type === 'barracks') ? Math.min(5, b.lvl || 1) : Math.min(5, Math.ceil((b.lvl || 1) / 5));
   return b.type + '_' + st;
 }
-const ART_KEYS = new Set(["bank", "barracks", "blastfurnace", "dock", "factory", "farm", "gearworks", "grainstore_1", "grainstore_2", "grainstore_3", "grainstore_4", "grainstore_5", "gsdtower", "hunt", "hut", "kiln", "longhouse", "lumber", "market", "mine", "mint", "moneyprinter", "nursery", "orchard", "outpost", "powerplant", "quarry", "quarry2", "sawmill", "smelter", "storehouse_1", "storehouse_2", "storehouse_3", "storehouse_4", "storehouse_5", "taxoffice", "tc_1", "tc_2", "tc_3", "tc_4", "tc_5", "teamhall", "townhall", "watchtower", "workshop"]);
+const ART_KEYS = new Set(["apartment_1", "apartment_2", "apartment_3", "apartment_4", "apartment_5", "barracks_1", "barracks_2", "barracks_3", "barracks_4", "barracks_5", "wiremill", "bank", "blastfurnace", "dock", "factory", "farm", "gearworks", "grainstore_1", "grainstore_2", "grainstore_3", "grainstore_4", "grainstore_5", "gsdtower", "hunt", "hut", "kiln", "longhouse", "lumber", "market", "mine", "mint", "moneyprinter", "nursery", "orchard", "outpost", "powerplant", "quarry", "quarry2", "sawmill", "smelter", "storehouse_1", "storehouse_2", "storehouse_3", "storehouse_4", "storehouse_5", "taxoffice", "tc_1", "tc_2", "tc_3", "tc_4", "tc_5", "teamhall", "townhall", "watchtower", "workshop"]);
 function artThumb(type) {   // Build-menu icon: the same art the village shows (current stage for staged buildings)
   const b = S.buildings.find(x => x.type === type) || { type, lvl: 1 }, key = artKey(b);
   return ART_KEYS.has(key) ? `<img class="bth" src="art/b/${key}.png?v=1" alt="">` : '';
