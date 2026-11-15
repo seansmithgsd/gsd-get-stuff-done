@@ -2506,6 +2506,23 @@ function drawWild(g, n, x, y, z) {
   g.restore();
   if (z >= 14 && !dead) { const f = n.amt / n.max; g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(x - k * .6, y + k * .7, k * 1.2, 3); g.fillStyle = '#facc15'; g.fillRect(x - k * .6, y + k * .7, k * 1.2 * f, 3); }
 }
+// a guest (not signed in) on the world map: a grey camp with a dashed ring, green dot when playing now
+function drawGuest(g, v, x, y, z) {
+  const r = Math.max(5, z * (.55 + Math.min(.5, (v.bcount || 0) / 30)));
+  g.strokeStyle = 'rgba(203,213,225,.85)'; g.lineWidth = 1.5; g.setLineDash([3, 3]); g.beginPath(); g.arc(x, y, r * 1.4, 0, 7); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#94a3b8'; g.beginPath(); g.moveTo(x - r, y + r * .55); g.lineTo(x, y - r * .75); g.lineTo(x + r, y + r * .55); g.closePath(); g.fill();
+  g.fillStyle = '#475569'; g.fillRect(x - r * .22, y + r * .05, r * .44, r * .5);
+  if (v.online) { g.fillStyle = '#22c55e'; g.beginPath(); g.arc(x + r * .95, y - r * .7, Math.max(2.5, r * .22), 0, 7); g.fill(); }
+  if (z >= 9) { g.font = `600 ${Math.max(10, Math.min(12, z * .55))}px system-ui`; g.textAlign = 'center'; g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.6)'; const l = `${v.name} · L${v.level}`; g.strokeText(l, x, y + r * 1.4 + 12); g.fillStyle = '#e2e8f0'; g.fillText(l, x, y + r * 1.4 + 12); }
+  return r;
+}
+function guestSheet(v) {
+  const ago = ms => { const s = (Date.now() - ms) / 1000; return s < 120 ? 'now' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; };
+  openSheet(`<div class="t">${esc(v.name)} <span class="small">· guest · not signed in</span></div>
+    <div class="d">Level ${v.level} · ${v.bcount} building${v.bcount === 1 ? '' : 's'} · ${v.plays} visit${v.plays === 1 ? '' : 's'}</div>
+    <div class="d">First played ${ago(v.first)} · last seen ${ago(v.last)}${v.online ? ' · <b style="color:#16a34a">playing now</b>' : ''}</div>
+    <div class="small" style="margin-top:6px">Guests save on their own device only. Their village joins the shared world (and can trade, raid and be raided) once they sign in.</div>`);
+}
 function drawVillage(g, v, x, y, z, t) {
   const mine = v.id === ME.id, mate = isMate(v), ally = isAlly(v), r = Math.max(6, z * (.75 + Math.min(.6, v.bcount / 30)));
   if (v.shield || v.treaty) { g.strokeStyle = 'rgba(96,165,250,.8)'; g.lineWidth = 2; g.setLineDash([4, 3]); g.beginPath(); g.arc(x, y, r * 1.55, 0, 7); g.stroke(); g.setLineDash([]); }
@@ -2552,6 +2569,7 @@ function drawWorld(t) {
   const z = CAM.z, hits = [], on = (x, y, pad = 30) => x > -pad && y > -pad && x < w + pad && y < h + pad;
   for (const n of WLD.wild) { const [x, y] = w2s(n.x + .5, n.y + .5, w, h); if (!on(x, y)) continue; drawWild(g, n, x, y, z); hits.push({ k: 'wild', o: n, x, y, r: Math.max(10, z * .7) }); }
   for (const v of WLD.villages) { const [x, y] = w2s(v.x + .5, v.y + .5, w, h); if (!on(x, y, 60)) continue; const r = drawVillage(g, v, x, y, z, t); hits.push({ k: 'v', o: v, x, y, r: r + 6 }); }
+  for (const v of WLD.guests || []) { const [x, y] = w2s(v.x + .5, v.y + .5, w, h); if (!on(x, y, 60)) continue; const r = drawGuest(g, v, x, y, z); hits.push({ k: 'gu', o: v, x, y, r: r + 6 }); }
   for (const m of WLD.marches) { if (m.status === 'done') continue; const p = marchPos(m, sNow()).p, [x, y] = w2s(p[0] + .5, p[1] + .5, w, h); if (!on(x, y, 200)) continue; const r = drawMarch(g, m, x, y, z, t, w, h); hits.push({ k: 'm', o: m, x, y, r: r + 8 }); }
   if (typeof drawWorldGolem === 'function') for (const gm of WLD.golems || []) { const p = golemPos(gm, sNow()), [x, y] = w2s(p[0] * 14 / PX, p[1] * 14 / PY, w, h); if (!on(x, y, 40)) continue; const r = drawWorldGolem(g, gm, x, y, z, t); hits.push({ k: 'g', o: gm, x, y, r: r + 6 }); }
   // compass to home when it is off screen
@@ -2589,7 +2607,7 @@ function renderOrb(force) {
   if (s === sig && !force) return; sig = s;
   const tName = id => { const t = ORB.teams.find(x => x.id === id); return t ? t.name : ''; };
   let html = `<h2>World <span class="small">home ${ME.x}, ${ME.y}</span></h2>
-    <div class="small">${ORB.total} signed-in village${ORB.total === 1 ? '' : 's'} on the map${ORB.guests ? ` · ${ORB.guests} guest device${ORB.guests === 1 ? '' : 's'} played without signing in (${ORB.guestsWeek} this week) — guests stay off the map until they sign in` : ''}</div>`;
+    <div class="small">${ORB.total} signed-in village${ORB.total === 1 ? '' : 's'} on the map${ORB.guests ? ` · ${ORB.guests} guest device${ORB.guests === 1 ? '' : 's'} played without signing in (${ORB.guestsWeek} this week) — guests show as grey camps on the map until they sign in` : ''}</div>`;
   if (crews.length) {
     const byM = {}; crews.forEach(w => { (byM[w.task.mid || 'old' + w.id] = byM[w.task.mid || 'old' + w.id] || []).push(w); });
     html += `<h3>Your crews on the road</h3>` + Object.values(byM).map(ws => { const w = ws[0]; return `<div class="card"><div class="t">${esc(w.task.label || w.task.name)} <span class="small">· ${ws.length} worker${ws.length > 1 ? 's' : ''}</span></div>${progRow(w)}</div>`; }).join('');
@@ -2651,6 +2669,7 @@ function wTap(sx, sy) {
   for (const h of wHits) { const d = Math.hypot(h.x - sx, h.y - sy); if (d <= h.r && d - (h.k === 'm' ? 6 : 0) < bd) { bd = d - (h.k === 'm' ? 6 : 0); best = h; } }
   if (!best) { const c = $('#worldc'), [x, y] = s2w(sx, sy, c.clientWidth, c.clientHeight); return landSheet(Math.floor(x), Math.floor(y)); }
   if (best.k === 'v') return villageSheet(best.o);
+  if (best.k === 'gu') return guestSheet(best.o);
   if (best.k === 'wild') return wildSheet(best.o);
   if (best.k === 'm') return marchSheet(best.o);
   if (best.k === 'g') return golemSheet(findGolem(best.o.id));
@@ -2867,4 +2886,7 @@ setInterval(() => { if (ME && view === 'orb') loadOrb(); }, 20000);
 setInterval(() => { if (ME && view === 'orb' && !document.hidden) loadWorld(true); }, 4000);
 syncLogin().then(() => { let rid = null; try { rid = localStorage.getItem('gsd_rid'); } catch (e) {} if (rid && !ME) waitForClaim(rid); });
 // count guest plays (no account) so the world screen can show how many people tried it without signing in
-setTimeout(() => { if (ME) return; let d; try { d = localStorage.getItem('gsd_dev'); if (!d) { d = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('gsd_dev', d); } } catch (e) { return; } api('hello', { method: 'POST', body: JSON.stringify({ device: d, level: S.level }) }); }, 8000);
+// guests also get a marker village on the world map; a signed-in device removes its guest marker
+function guestHello(ping) { let d; try { d = localStorage.getItem('gsd_dev'); if (!d) { d = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('gsd_dev', d); } } catch (e) { return; } api('hello', { method: 'POST', body: JSON.stringify({ device: d, level: S.level, bcount: S.buildings.filter(b => b.done).length, ping }) }); }
+setTimeout(() => guestHello(false), 8000);
+setInterval(() => { if (!ME && !document.hidden) guestHello(true); }, 60000);   // keeps a playing guest shown as online

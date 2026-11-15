@@ -83,7 +83,8 @@ const SCHEMA = [
 ];
 const ALTERS = ['ALTER TABLE logins ADD COLUMN rid TEXT', 'ALTER TABLE logins ADD COLUMN gsave TEXT', 'ALTER TABLE logins ADD COLUMN player INTEGER', 'ALTER TABLE logins ADD COLUMN claimed INTEGER DEFAULT 0', 'ALTER TABLE players ADD COLUMN flags TEXT', 'ALTER TABLE players ADD COLUMN harvested_at INTEGER DEFAULT 0', 'ALTER TABLE players ADD COLUMN decoy_day TEXT',
   'ALTER TABLE teams ADD COLUMN ally INTEGER', 'ALTER TABLE teams ADD COLUMN wonder INTEGER DEFAULT 0',
-  'ALTER TABLE players ADD COLUMN wx INTEGER', 'ALTER TABLE players ADD COLUMN wy INTEGER'];
+  'ALTER TABLE players ADD COLUMN wx INTEGER', 'ALTER TABLE players ADD COLUMN wy INTEGER',
+  'ALTER TABLE guests ADD COLUMN wx INTEGER', 'ALTER TABLE guests ADD COLUMN wy INTEGER', 'ALTER TABLE guests ADD COLUMN bcount INTEGER DEFAULT 0'];
 let schemaReady = false;
 async function ensureSchema(db) {
   if (schemaReady) return;
@@ -97,6 +98,9 @@ async function ensureSchema(db) {
   }
   const homeless = (await db.prepare('SELECT id FROM players WHERE wx IS NULL ORDER BY score DESC').all()).results;
   for (const h of homeless) { const { x, y } = await plot(db); await db.prepare('UPDATE players SET wx = ?, wy = ? WHERE id = ?').bind(x, y, h.id).run(); await clearWild(db, x, y); }
+  // every guest device that ever played gets its marker plot too (newest first)
+  try { const gh = (await db.prepare('SELECT device FROM guests WHERE wx IS NULL ORDER BY last DESC LIMIT 200').all()).results;
+    for (const h of gh) { const { x, y } = await plot(db); await db.prepare('UPDATE guests SET wx = ?, wy = ? WHERE device = ?').bind(x, y, h.device).run(); await clearWild(db, x, y); } } catch (e) {}
   schemaReady = true;
 }
 
@@ -124,7 +128,7 @@ function pub(p) { return { id: p.id, name: p.name, email: p.email, orb: p.orb, x
 function h01(a, b, c = 0) { let h = (a * 374761393 + b * 668265263 + c * 2147483647) | 0; h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
 // next free village plot, spiralling out from the centre
 async function plot(db) {
-  const taken = (await db.prepare('SELECT wx, wy FROM players WHERE wx IS NOT NULL').all()).results;
+  const taken = [...(await db.prepare('SELECT wx, wy FROM players WHERE wx IS NOT NULL').all()).results, ...(await db.prepare('SELECT wx, wy FROM guests WHERE wx IS NOT NULL').all()).results];
   for (let r = 0; r < 200; r++) {
     const ring = [];
     for (let gx = -r; gx <= r; gx++) for (let gy = -r; gy <= r; gy++) if (Math.max(Math.abs(gx), Math.abs(gy)) === r) ring.push([gx, gy]);
@@ -303,8 +307,14 @@ export async function onRequest(ctx) {
     const p = await me(req, env);
     if (path === 'hello' && req.method === 'POST') {
       const b = await body(), dev = String(b.device || '').replace(/[^a-z0-9]/gi, '').slice(0, 32), lvl = Math.max(1, Math.min(9999, Math.floor(Number(b.level) || 1)));
-      if (dev.length < 8 || p) return json({ ok: true });
-      await env.DB.prepare('INSERT INTO guests (device, first, last, level) VALUES (?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET last = excluded.last, level = MAX(level, excluded.level), plays = plays + 1').bind(dev, now, now, lvl).run();
+      if (dev.length < 8) return json({ ok: true });
+      // a device that signed in is a real village now: its guest marker comes off the map
+      if (p) { await env.DB.prepare('DELETE FROM guests WHERE device = ?').bind(dev).run(); return json({ ok: true }); }
+      const bc = Math.max(0, Math.min(999, Math.floor(Number(b.bcount) || 0))), ping = !!b.ping;
+      await env.DB.prepare(`INSERT INTO guests (device, first, last, level, bcount) VALUES (?, ?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET last = excluded.last, level = MAX(level, excluded.level), bcount = excluded.bcount${ping ? '' : ', plays = plays + 1'}`).bind(dev, now, now, lvl, bc).run();
+      // guests get a plot on the world map (spiral like everyone else) so every login shows up
+      const gr = await env.DB.prepare('SELECT wx FROM guests WHERE device = ?').bind(dev).first();
+      if (gr && gr.wx == null) { const { x, y } = await plot(env.DB); await env.DB.prepare('UPDATE guests SET wx = ?, wy = ? WHERE device = ?').bind(x, y, dev).run(); await clearWild(env.DB, x, y); }
       return json({ ok: true });
     }
     if (path === 'me' && req.method === 'GET') {
@@ -477,7 +487,9 @@ export async function onRequest(ctx) {
       const marches = (await env.DB.prepare(`SELECT ${MARCH_COLS} FROM marches WHERE status IN ('out', 'back') AND MAX(fx, tx) >= ? AND MIN(fx, tx) <= ? AND MAX(fy, ty) >= ? AND MIN(fy, ty) <= ? LIMIT 400`).bind(x0, x1, y0, y1).all()).results;
       // golems live in world-tile coords: map unit = tile × 14 / 64 (x) and tile × 14 / 56 (y)
       const golems = (await env.DB.prepare('SELECT id, zone, k, m, mx, x, y, tx, ty, t0, sp, eat, nf FROM golems WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? LIMIT 200').bind((x0 - 4) * 64 / 14, (x1 + 4) * 64 / 14, (y0 - 4) * 56 / 14, (y1 + 4) * 56 / 14).all()).results;
-      return json({ ok: true, now, me: pub(p), villages, wild, marches, golems, box: [x0, y0, x1, y1] });
+      const guests = (await env.DB.prepare('SELECT device, wx x, wy y, level, bcount, first, last, plays FROM guests WHERE wx BETWEEN ? AND ? AND wy BETWEEN ? AND ? LIMIT 300').bind(x0 - 2, x1 + 2, y0 - 2, y1 + 2).all()).results
+        .map(gu => ({ id: 'g' + gu.device.slice(0, 6), name: 'Guest ' + gu.device.slice(0, 4).toUpperCase(), x: gu.x, y: gu.y, level: gu.level, bcount: gu.bcount || 0, first: gu.first, last: gu.last, plays: gu.plays, online: now - gu.last < 150000 }));
+      return json({ ok: true, now, me: pub(p), villages, wild, marches, golems, guests, box: [x0, y0, x1, y1] });
     }
     if (path === 'board' && req.method === 'GET') {
       const players = (await env.DB.prepare('SELECT id, name, wx x, wy y, team, score, level, bcount, created, seen, flags, harvested_at FROM players ORDER BY score DESC LIMIT 100').all()).results
