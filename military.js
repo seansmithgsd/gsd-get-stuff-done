@@ -512,12 +512,16 @@ setInterval(() => { if (S && view === 'soldiers' && $('#sheet').hidden) renderSo
 const _setViewSuper = setView;
 setView = function (v) {
   _setViewSuper(v);
-  document.body.classList.toggle('insuper', v === 'super');   // village toasts don't cover the game HUD
+  document.body.classList.toggle('insuper', v === 'super' || v === 'swallow');   // village toasts don't cover the minigame HUD
   if (!document.getElementById('superExit')) { const b = document.createElement('button'); b.id = 'superExit'; b.textContent = '◀ VILLAGE'; b.onclick = () => setView('village'); document.body.appendChild(b); }
   const el = $('#v-super');
-  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=67" title="Super GSD Consultants" allow="autoplay"></iframe>';
+  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=68" title="Super GSD Consultants" allow="autoplay"></iframe>';
   if (v === 'super') { const f = el.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (el.querySelector('iframe')) { try { el.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
+  const sw = $('#v-swallow');
+  if (v === 'swallow' && !sw.querySelector('iframe')) sw.innerHTML = '<iframe src="swallow/?embed=1&v=68" title="Swallow" allow="autoplay"></iframe>';
+  if (v === 'swallow') { const f = sw.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
+  else if (sw.querySelector('iframe')) { try { sw.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
 };
 addEventListener('message', e => {
   if (e.origin !== location.origin || !e.data || e.data.t !== 'superClear' || !S) return;
@@ -527,4 +531,21 @@ addEventListener('message', e => {
   sfx('recruit'); save(); refresh(true);
 });
 
+// ---------------------------------------------------------------- Swallow tab: the sinkhole minigame. Solo Run win = 100% or a new personal best
+// (kept in the save so it follows the account); Classic win = biggest hole at the bell. Each win = +1 AI worker.
+function swallowMsg(msg) { const f = document.querySelector('#v-swallow iframe'); try { f.contentWindow.postMessage(msg, location.origin); } catch (e) {} }
+function swallowWorker(why) {
+  if (S.workers.length < housing()) { addWorker(); toast(`${why} — +1 AI worker!`); swallowMsg({ t: 'reward', msg: '+1 AI WORKER' }); }
+  else { S.waiting++; toast(`${why} — new AI worker waiting for housing`); swallowMsg({ t: 'reward', msg: '+1 AI WORKER (NEEDS HOUSING)' }); }
+  sfx('recruit'); save(); refresh(true);
+}
+addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data || !S) return;
+  const d = e.data;
+  if (d.t === 'swallowHello') swallowMsg({ t: 'best', v: S.swBest || 0 });
+  else if (d.t === 'swallowSolo') {
+    const p = Math.max(0, Math.min(100, +d.pct || 0)), prev = S.swBest || 0;
+    if (p >= 100 || p > prev) { S.swBest = Math.max(prev, p); swallowWorker(p >= 100 ? 'Swallowed the whole village' : `Swallow personal best ${p.toFixed(1)}%`); }
+  } else if (d.t === 'swallowClassic' && d.rank === 1) swallowWorker('Biggest hole in Swallow');
+});
 function flashSuper(msg) { const f = document.querySelector('#v-super iframe'); try { f.contentWindow.postMessage({ t: 'reward', msg }, location.origin); } catch (e) {} }

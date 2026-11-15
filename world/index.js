@@ -12,13 +12,18 @@ const TICKET_MS = 12 * 3600 * 1000, MAX_MSG = 24000;
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    const sw = url.pathname === '/swallow';
     const m = url.pathname.match(/^\/zone\/(-?\d+)\/(-?\d+)$/);
-    if (!m) return new Response('gsd-world', { status: 200 });
+    if (!m && !sw) return new Response('gsd-world', { status: 200 });
     if (req.headers.get('Upgrade') !== 'websocket') return new Response('websocket only', { status: 426 });
     // sign-in: the game site hands out short tickets stored in the shared D1 database
     const tk = url.searchParams.get('t') || '';
     const row = tk ? await env.DB.prepare('SELECT t.player, t.created, p.name, p.wx, p.wy, p.team FROM ws_tickets t JOIN players p ON p.id = t.player WHERE t.token = ?').bind(tk).first() : null;
     if (!row || Date.now() - row.created > TICKET_MS) return new Response('bad ticket', { status: 401 });
+    if (sw) {   // Swallow minigame: one shared Classic room
+      const h = new Headers(req.headers); h.set('x-who', JSON.stringify({ pid: row.player, name: row.name }));
+      return env.SWALLOW.getByName('classic').fetch(new Request(req.url, { headers: h }));
+    }
     const [gx, gy] = [Math.round(row.wx / 14), Math.round(row.wy / 14)];
     const zone = env.ZONE.getByName(`${m[1]},${m[2]}`);
     const h = new Headers(req.headers);
@@ -320,3 +325,47 @@ export class Zone extends DurableObject {
 // soldier roster entry from a client: [id, hp, maxHp, dmgMul, mode (0 home / 1 hunt), golemId, readyAt, wounded]
 function cleanSd(x) { if (!Array.isArray(x)) return [0, 0, 0, 1, 0, 0, 0, 0]; return [x[0] | 0, Math.max(0, Math.min(500, +x[1] || 0)), Math.max(1, Math.min(500, +x[2] || 50)), Math.max(1, Math.min(3, +x[3] || 1)), x[4] === 1 ? 1 : 0, typeof x[5] === 'string' ? x[5].slice(0, 20) : 0, +x[6] || 0, x[7] ? 1 : 0]; }
 const gPub = g => [g.id, g.k, Math.round(g.m), Math.round(g.mx), +g.x.toFixed(2), +g.y.toFixed(2), +g.tx.toFixed(2), +g.ty.toFixed(2), g.t0, g.sp, g.eat || 0, g.nf || 0, Object.fromEntries(Object.entries(g.dmg).map(([k, v]) => [k, Math.round(v)]))];
+
+// ---------------------------------------------------------------- Swallow (hole minigame) Classic room
+// Rounds run on the wall clock (SW_ROUND each, the last SW_GAP is the results screen), so every device builds the same
+// map from the round number. The room only relays: hole positions, eaten objects, hole-eats-hole claims. The oldest
+// connected player's device runs the computer holes and shares them.
+const SW_ROUND = 130000, SW_MSG = 8000;
+export class Swallow extends DurableObject {
+  constructor(ctx, env) { super(ctx, env); this.round = -1; this.eaten = new Set(); this.size = new Map(); }
+  host() { const ws = this.ctx.getWebSockets().map(w => w.deserializeAttachment()).filter(Boolean).sort((a, b) => a.at - b.at); return ws.length ? ws[0].pid : 0; }
+  roll() { const r = Math.floor(Date.now() / SW_ROUND); if (r !== this.round) { this.round = r; this.eaten = new Set(); this.size = new Map(); } }
+  async fetch(req) {
+    const who = JSON.parse(req.headers.get('x-who')); who.at = Date.now();
+    for (const o of this.ctx.getWebSockets()) if (o.deserializeAttachment()?.pid === who.pid) { try { o.close(4000, 'replaced'); } catch (e) {} }
+    const pair = new WebSocketPair(); this.ctx.acceptWebSocket(pair[1]); pair[1].serializeAttachment(who);
+    this.roll();
+    const players = this.ctx.getWebSockets().map(w => w.deserializeAttachment()).filter(Boolean).map(a => ({ pid: a.pid, name: a.name }));
+    pair[1].send(JSON.stringify({ t: 'hello', now: Date.now(), round: this.round, me: who.pid, host: this.host(), players, eaten: [...this.eaten] }));
+    this.send({ t: 'join', pid: who.pid, name: who.name, host: this.host() }, pair[1]);
+    return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+  send(msg, except) { const s = JSON.stringify(msg); for (const ws of this.ctx.getWebSockets()) if (ws !== except) { try { ws.send(s); } catch (e) {} } }
+  async webSocketMessage(ws, raw) {
+    if (typeof raw !== 'string' || raw.length > SW_MSG) return;
+    let m; try { m = JSON.parse(raw); } catch (e) { return; }
+    const who = ws.deserializeAttachment(); if (!who) return;
+    this.roll();
+    if (m.t === 's') { const R = Math.max(1, Math.min(2000, +m.R || 0)); this.size.set(who.pid, R); this.send({ t: 's', pid: who.pid, x: +m.x || 0, y: +m.y || 0, R, m: Math.max(0, +m.m || 0), r: this.round }, ws); }
+    else if (m.t === 'e' && Array.isArray(m.ids)) { const ids = m.ids.filter(i => Number.isInteger(i) && !this.eaten.has(i)).slice(0, 200); ids.forEach(i => this.eaten.add(i)); if (ids.length) this.send({ t: 'e', ids, r: this.round }, ws); }
+    else if (m.t === 'b' && who.pid === this.host() && Array.isArray(m.list)) this.send({ t: 'b', list: m.list.slice(0, 16), r: this.round }, ws);
+    else if (m.t === 'g') {   // "I swallowed hole v": players are checked against the last sizes they reported
+      const v = m.v; if (typeof v === 'number') { const a = this.size.get(who.pid) || 0, b = this.size.get(v) || 0; if (!(a > b * 1.1)) return; this.size.set(v, 1); }
+      else if (typeof v !== 'string' || v.length > 8) return;
+      this.send({ t: 'g', by: who.pid, v, r: this.round });
+    }
+    else if (m.t === 'd' && typeof m.by === 'string' && m.by.length <= 8) { this.size.set(who.pid, 1); this.send({ t: 'd', pid: who.pid, by: m.by, r: this.round }, ws); }
+  }
+  async webSocketClose(ws) {
+    const who = ws.deserializeAttachment(); try { ws.close(); } catch (e) {}
+    if (!who) return; const left = this.ctx.getWebSockets().filter(o => o !== ws);
+    const host = left.map(w => w.deserializeAttachment()).filter(Boolean).sort((a, b) => a.at - b.at)[0];
+    const s = JSON.stringify({ t: 'leave', pid: who.pid, host: host ? host.pid : 0 }); for (const o of left) { try { o.send(s); } catch (e) {} }
+  }
+  async webSocketError(ws) { return this.webSocketClose(ws); }
+}

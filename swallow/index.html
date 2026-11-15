@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Swallow</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1020;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .card{pointer-events:auto;background:rgba(15,23,42,.88);border:2px solid #fbbf24;border-radius:16px;padding:18px 22px;color:#e2e8f0;text-align:center;max-width:min(92vw,420px);box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  .card h1{margin:0 0 4px;font-size:34px;letter-spacing:3px;color:#fbbf24}
+  .card p{margin:6px 0;font-size:14px;color:#cbd5e1}
+  .card button{display:block;width:100%;margin:10px 0 0;padding:12px;border-radius:10px;border:0;font:700 17px inherit;font-family:inherit;cursor:pointer;background:#2563eb;color:#fff}
+  .card button.alt{background:#f59e0b;color:#111}
+  .card .small{font-size:12px;color:#94a3b8}
+  table{margin:8px auto 0;border-collapse:collapse;font-size:14px}
+  td{padding:2px 8px;text-align:left}
+  td.n{text-align:right;color:#fbbf24}
+  tr.me td{color:#86efac;font-weight:700}
+  #back{position:fixed;left:8px;top:8px;color:#cbd5e1;font:600 12px system-ui;text-decoration:none;opacity:.7;z-index:3}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="ui"></div>
+<a id="back" href="/">← GSD</a>
+<script>
+'use strict';
+/* Swallow — steer a sinkhole through a GSD village and swallow everything that fits.
+   Solo Run: 2 minutes, swallow the whole village (a win = 100% or beating your personal best).
+   Classic: 2 minutes against other holes (live players through the world server, computer holes fill the room);
+   biggest hole at the bell wins. Map, workers and golems are built from the round number, so every device agrees. */
+const EMBED = new URLSearchParams(location.search).has('embed');
+if (EMBED) document.getElementById('back').style.display = 'none';
+const cv = document.getElementById('cv'), g = cv.getContext('2d'), UI = document.getElementById('ui');
+let VW = 0, VH = 0, DPR = 1;
+function fit() { DPR = Math.min(2, devicePixelRatio || 1); VW = innerWidth; VH = innerHeight; cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR); }
+addEventListener('resize', fit); fit();
+
+// ---------------------------------------------------------------- constants
+const MAP = 1600, ROAD = 160, ROADW = 18, R0 = 8, GROW = 0.36, FIT = 0.95, TIME = 120, LIVE_ROUND = 130000, LIVE_PLAY = 120000;
+const WORLD_URL = location.hostname === 'localhost' ? 'ws://localhost:8787' : 'wss://world.gsdconsultantsllc.com';
+const BOT_NAMES = ['Ada', 'Brick', 'Clover', 'Dusty', 'Ember', 'Flint', 'Gale', 'Hazel', 'Ivo', 'Juno', 'Kip', 'Lark'];
+const HOLE_COLORS = ['#fbbf24', '#ef4444', '#22c55e', '#a855f7', '#06b6d4', '#f97316', '#ec4899', '#84cc16', '#e2e8f0', '#38bdf8'];
+
+// ---------------------------------------------------------------- art: our village buildings
+const ART = {};
+function art(key) {
+  if (!ART[key]) { const im = new Image(); ART[key] = { im, ok: false }; im.onload = () => { ART[key].ok = true; }; im.src = '../art/b/' + key + '.png?v=' + (/^(apartment|barracks)_/.test(key) ? 51 : 1); }
+  return ART[key];
+}
+const BUILD = [ // [art key, footprint half-size]
+  ['hut', 17], ['farm', 21], ['lumber', 21], ['sawmill', 23], ['quarry', 22], ['apartment_1', 21], ['apartment_2', 23], ['storehouse_1', 23], ['barracks_1', 24],
+  ['grainstore_1', 20], ['kiln', 20], ['smelter', 24], ['market', 27], ['workshop', 24], ['watchtower', 17], ['longhouse', 26], ['nursery', 20], ['mine', 24], ['bank', 28], ['townhall', 34], ['tc_3', 36], ['gsdtower', 40],
+];
+BUILD.forEach(b => art(b[0]));
+
+// ---------------------------------------------------------------- seeded random
+function rng(seed) { let s = (seed >>> 0) || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+
+// ---------------------------------------------------------------- the village map
+// object: { id, k (kind), x, y, s (footprint half-size), m (mass), art?, c (colour seed), mv? (moving path) }
+let OBJ = [], TOTAL = 0, EATEN = new Set();
+function buildMap(seed) {
+  const R = rng(seed * 7919 + 13); OBJ = []; EATEN = new Set(); let id = 0;
+  const add = (k, x, y, s, extra) => { if (x < 6 || y < 6 || x > MAP - 6 || y > MAP - 6) return; const o = Object.assign({ id: id++, k, x, y, x0: x, y0: y, s, m: s * s, c: R() }, extra || {}); OBJ.push(o); return o; };
+  const n = MAP / ROAD, mid = (n - 1) / 2;
+  // along every road: lamps, crates, barrels and walking workers
+  for (let i = 0; i <= n; i++) for (let t = ROAD / 2; t < MAP; t += ROAD) {
+    const a = i * ROAD;
+    if (R() < .7) add('lamp', a + ROADW / 2 + 4, t + (R() - .5) * 60, 3);
+    if (R() < .5) add(R() < .5 ? 'crate' : 'barrel', t + (R() - .5) * 80, a - ROADW / 2 - 6, 4);
+    for (let w = 0; w < 2; w++) if (R() < .75) { const along = R() < .5, p = t - ROAD / 2 + R() * ROAD; add('worker', along ? p : a, along ? a : p, 3, { mv: { ax: along ? 1 : 0, len: 40 + R() * 70, sp: .25 + R() * .3, ph: R() * 6.28 } }); }
+  }
+  for (let by = 0; by < n; by++) for (let bx = 0; bx < n; bx++) {
+    const x0 = bx * ROAD + ROADW / 2 + 8, y0 = by * ROAD + ROADW / 2 + 8, sz = ROAD - ROADW - 16, cx = x0 + sz / 2, cy = y0 + sz / 2;
+    const d = Math.max(Math.abs(bx - mid), Math.abs(by - mid)), roll = R();
+    if (d < 1) { // town centre: the big buildings
+      const big = bx + by * 7 % 3 === 0 ? ['tc_3', 36] : bx < mid ? ['townhall', 34] : by < mid ? ['gsdtower', 40] : ['bank', 28];
+      add('bld', cx, cy, big[1], { art: big[0] });
+      for (let k = 0; k < 6; k++) add(k % 2 ? 'fence' : 'bush', x0 + 6 + R() * (sz - 12), k < 3 ? y0 + 4 : y0 + sz - 4, 5);
+    } else if (roll < .38 && d < 4) { // houses and workshops
+      const cnt = R() < .55 ? 4 : R() < .5 ? 2 : 1, pool = d < 2 ? BUILD.slice(6, 19) : BUILD.slice(0, 12);
+      const spots = cnt === 4 ? [[-.25, -.25], [.25, -.25], [-.25, .25], [.25, .25]] : cnt === 2 ? [[-.22, 0], [.22, 0]] : [[0, 0]];
+      for (const [ox, oy] of spots) { const b = pool[Math.floor(R() * pool.length)], s = cnt === 4 ? Math.min(b[1], 22) : b[1]; add('bld', cx + ox * sz, cy + oy * sz, s, { art: b[0] }); }
+      for (let k = 0; k < 5; k++) add(['crate', 'barrel', 'rock', 'bush', 'chicken'][k], x0 + R() * sz, y0 + R() * sz, k === 4 ? 2.5 : 4);
+    } else if (roll < .62) { // woods
+      const cnt = 9 + Math.floor(R() * 8);
+      for (let k = 0; k < cnt; k++) { const big = R() < .25; add('tree', x0 + 8 + R() * (sz - 16), y0 + 8 + R() * (sz - 16), big ? 13 : 8 + R() * 2); }
+      for (let k = 0; k < 6; k++) add(R() < .5 ? 'rock' : 'sapling', x0 + R() * sz, y0 + R() * sz, R() < .5 ? 5 : 3.5);
+    } else if (roll < .8) { // farm field
+      for (let k = 0; k < 8; k++) add('hay', x0 + 14 + (k % 4) * (sz - 28) / 3, y0 + 26 + Math.floor(k / 4) * (sz - 52), 6);
+      for (let k = 0; k < 5; k++) add('chicken', x0 + R() * sz, y0 + R() * sz, 2.5, { mv: { ax: R() < .5 ? 1 : 0, len: 20, sp: .6 + R() * .4, ph: R() * 6.28 } });
+      add('cart', cx, cy, 10); for (let k = 0; k < 3; k++) add('worker', x0 + R() * sz, y0 + R() * sz, 3, { mv: { ax: k % 2, len: 50, sp: .3, ph: R() * 6.28 } });
+    } else if (roll < .93) { // storage yard
+      for (let k = 0; k < 6; k++) add('pile', x0 + 18 + (k % 3) * (sz - 36) / 2, y0 + 28 + Math.floor(k / 3) * (sz - 56), 8, { res: ['wood', 'stone', 'iron', 'planks', 'coal', 'gold'][Math.floor(R() * 6)] });
+      add('cart', cx, cy, 10); for (let k = 0; k < 6; k++) add(R() < .5 ? 'crate' : 'barrel', x0 + R() * sz, y0 + R() * sz, 4);
+    } else { // a golem roaming its patch
+      add('golem', cx, cy, 24 + Math.floor(R() * 4) * 5, { res: ['wood', 'stone', 'iron', 'coal', 'gears'][Math.floor(R() * 5)], mv: { golem: 1, rx: sz * .3, sp: .18 + R() * .1, ph: R() * 6.28 } });
+      for (let k = 0; k < 8; k++) add('rock', x0 + R() * sz, y0 + R() * sz, 4 + R() * 2);
+    }
+  }
+  TOTAL = OBJ.reduce((a, o) => a + o.m, 0);
+}
+function moveObjs(t) {
+  for (const o of OBJ) {
+    const mv = o.mv; if (!mv || EATEN.has(o.id)) continue;
+    if (mv.golem) { const a = t * mv.sp + mv.ph; o.x = o.x0 + Math.cos(a) * mv.rx; o.y = o.y0 + Math.sin(a * 1.3) * mv.rx; o.dir = Math.cos(a) * -1; }
+    else { const off = Math.sin(t * mv.sp + mv.ph) * mv.len / 2; if (mv.ax) o.x = o.x0 + off; else o.y = o.y0 + off; o.walk = t * mv.sp * 8; }
+  }
+}
+
+// ---------------------------------------------------------------- holes
+// hole: { id, name, x, y, R, m (mass swallowed), vx, vy, bot, col, dead (respawn time), me }
+const holeR = m => Math.sqrt(R0 * R0 + GROW * m);
+const speed = R => 70 + Math.min(130, R * 1.1);
+function newHole(id, name, col, x, y, extra) { return Object.assign({ id, name, col, x, y, R: R0, m: 0, tx: x, ty: y, dead: 0 }, extra || {}); }
+function spawnSpot(seed) { const r = rng(seed); return [100 + r() * (MAP - 200), 100 + r() * (MAP - 200)]; }
+
+// ---------------------------------------------------------------- game state
+const G = { mode: 'menu', kind: 'solo', t: 0, left: TIME, best: +(localStorage.getItem('swallowBest') || 0), live: null, end: null };
+let ME = null, HOLES = [], FALL = [], POP = [];
+function start(kind) {
+  G.kind = kind; G.mode = 'play'; FALL = []; POP = []; G.end = null; G.t = 0; G.left = TIME; UI.innerHTML = '';
+  if (kind === 'solo') { buildMap((Date.now() / 86400000) | 0); ME = newHole('me', 'YOU', HOLE_COLORS[0], ROAD * 3, ROAD * 3, { me: true });   /* a quiet crossroads off the town centre */ HOLES = [ME]; return; }
+  if (kind === 'classic') {
+    buildMap((Math.random() * 1e9) | 0); const [x, y] = spawnSpot(Math.random() * 1e9);
+    ME = newHole('me', 'YOU', HOLE_COLORS[0], x, y, { me: true }); HOLES = [ME];
+    for (let i = 0; i < 7; i++) { const [bx, by] = spawnSpot(i * 77 + 5 + Date.now() % 1000); HOLES.push(newHole('b' + i, BOT_NAMES[i], HOLE_COLORS[i + 1], bx, by, { bot: true, think: 0 })); }
+  }
+}
+
+// ---------------------------------------------------------------- input: mouse steers toward the cursor, touch = drag stick, WASD/arrows
+const IN = { mx: 0, my: 0, mouse: false, touch: null, keys: {} };
+addEventListener('keydown', e => { IN.keys[e.code] = true; });
+addEventListener('keyup', e => { IN.keys[e.code] = false; });
+cv.addEventListener('pointerdown', e => { if (e.pointerType === 'mouse') { IN.mouse = true; IN.mx = e.clientX; IN.my = e.clientY; return; } IN.touch = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY }; audioOn(); });
+cv.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') { IN.mouse = true; IN.mx = e.clientX; IN.my = e.clientY; return; } if (IN.touch && e.pointerId === IN.touch.id) { IN.touch.x = e.clientX; IN.touch.y = e.clientY; } });
+const endTouch = e => { if (IN.touch && e.pointerId === IN.touch.id) IN.touch = null; };
+cv.addEventListener('pointerup', endTouch); cv.addEventListener('pointercancel', endTouch);
+cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') IN.mouse = false; });
+// screen direction → world direction (the map is drawn isometric: screen x = (x - y)·.707, screen y = (x + y)·.354)
+function screenToWorldDir(dx, dy) { const wx = dx / .7071 / 2 + dy / .3536 / 2, wy = -dx / .7071 / 2 + dy / .3536 / 2; const L = Math.hypot(wx, wy); return L ? [wx / L, wy / L] : [0, 0]; }
+function steer() {
+  let dx = 0, dy = 0, mag = 0;
+  const k = IN.keys, kx = (k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0), ky = (k.KeyS || k.ArrowDown ? 1 : 0) - (k.KeyW || k.ArrowUp ? 1 : 0);
+  if (kx || ky) { dx = kx; dy = ky; mag = 1; }
+  else if (IN.touch) { dx = IN.touch.x - IN.touch.sx; dy = IN.touch.y - IN.touch.sy; mag = Math.min(1, Math.hypot(dx, dy) / 50); if (mag < .12) mag = 0; }
+  else if (IN.mouse) { dx = IN.mx - VW / 2; dy = IN.my - VH / 2; mag = Math.min(1, Math.hypot(dx, dy) / 120); if (mag < .1) mag = 0; }
+  if (!mag) return [0, 0];
+  const [wx, wy] = screenToWorldDir(dx, dy); return [wx * mag, wy * mag];
+}
+
+// ---------------------------------------------------------------- sound
+let AC = null;
+function audioOn() { if (!AC) try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+addEventListener('pointerdown', audioOn); addEventListener('keydown', audioOn);
+let lastGulp = 0;
+function gulp(big) {
+  if (!AC || performance.now() - lastGulp < 45) return; lastGulp = performance.now();
+  const o = AC.createOscillator(), v = AC.createGain(), t = AC.currentTime, f = big ? 160 : 420 + Math.random() * 200;
+  o.type = 'triangle'; o.frequency.setValueAtTime(f, t); o.frequency.exponentialRampToValueAtTime(f * .35, t + (big ? .35 : .12));
+  v.gain.setValueAtTime(big ? .12 : .05, t); v.gain.exponentialRampToValueAtTime(.0005, t + (big ? .4 : .14)); o.connect(v); v.connect(AC.destination); o.start(t); o.stop(t + .45);
+}
+
+// ---------------------------------------------------------------- simulation
+function eatCheck(h, mine) {
+  const reach = h.R * FIT, out = [];
+  for (const o of OBJ) {
+    if (o.s >= reach || EATEN.has(o.id)) continue;
+    const dx = o.x - h.x, dy = o.y - h.y; if (Math.abs(dx) > h.R || Math.abs(dy) > h.R) continue;
+    if (dx * dx + dy * dy < (h.R - o.s * .4) ** 2) {
+      EATEN.add(o.id); h.m += o.m; h.R = holeR(h.m); out.push(o.id);
+      FALL.push({ o, h, t: 0, x: o.x, y: o.y });
+      if (mine) { gulp(o.s > 15); POP.push({ x: o.x, y: o.y, t: 0, v: '+' + Math.round(o.m) }); }
+    }
+  }
+  return out;
+}
+function moveHole(h, dir, dt) {
+  const sp = speed(h.R);
+  h.x = Math.max(h.R * .3, Math.min(MAP - h.R * .3, h.x + dir[0] * sp * dt));
+  h.y = Math.max(h.R * .3, Math.min(MAP - h.R * .3, h.y + dir[1] * sp * dt));
+}
+function botThink(b, now) {
+  // run from anything that can swallow us, chase smaller holes nearby, otherwise head for the richest food in reach
+  let fx = 0, fy = 0;
+  for (const o of HOLES) if (o !== b && !o.dead && o.R > b.R * 1.1) { const d = Math.hypot(o.x - b.x, o.y - b.y); if (d < o.R + 120) { fx += (b.x - o.x) / d; fy += (b.y - o.y) / d; } }
+  if (fx || fy) { b.tx = b.x + fx * 200; b.ty = b.y + fy * 200; return; }
+  for (const o of HOLES) if (o !== b && !o.dead && b.R > o.R * 1.15) { const d = Math.hypot(o.x - b.x, o.y - b.y); if (d < 220) { b.tx = o.x; b.ty = o.y; return; } }
+  let best = null, bs = 0;
+  for (let i = 0; i < 140; i++) {
+    const o = OBJ[(Math.random() * OBJ.length) | 0]; if (EATEN.has(o.id) || o.s >= b.R * FIT) continue;
+    const d = Math.hypot(o.x - b.x, o.y - b.y), sc = o.m / (d + 40); if (sc > bs) { bs = sc; best = o; }
+  }
+  if (best) { b.tx = best.x; b.ty = best.y; } else { b.tx = Math.random() * MAP; b.ty = Math.random() * MAP; }
+}
+function holeFights(now) {
+  // a hole swallows another when it is 10% bigger and covers most of it. Each device decides for its own hole
+  // (and the host for the computer holes); the room checks player claims against reported sizes.
+  const L = G.live, mineOrBots = h => h.me || (h.bot && (!L || L.host === L.me));
+  for (const a of HOLES) {
+    if (a.dead || !mineOrBots(a)) continue;
+    for (const b of HOLES) {
+      if (b === a || b.dead || !(a.R > b.R * 1.1)) continue;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > a.R - b.R * .6) continue;
+      if (b.me) continue;                            // our own death is decided below
+      if (!b.bot && a.bot) continue;                 // players report their own deaths to bots
+      swallowHole(a, b, now);
+      if (L) liveSend({ t: 'g', v: b.bot ? b.id : b.pid });
+    }
+  }
+  if (ME && !ME.dead) for (const a of HOLES) {
+    if (a === ME || a.dead || !(a.R > ME.R * 1.1) || Math.hypot(a.x - ME.x, a.y - ME.y) > a.R - ME.R * .6) continue;
+    if (L && !a.bot) continue;                       // a live player claims us; we wait for their message
+    swallowHole(a, ME, now); if (L) liveSend({ t: 'd', by: a.id }); break;
+  }
+}
+function swallowHole(a, b, now) {
+  a.m += b.m * .7 + 60; a.R = holeR(a.m); gulp(true);
+  POP.push({ x: b.x, y: b.y, t: 0, v: a.me ? 'GOT ' + b.name.toUpperCase() + '!' : b.me ? 'SWALLOWED BY ' + a.name.toUpperCase() : '' });
+  b.dead = now + 3000; b.m = 0; b.R = R0;
+}
+function respawn(h, now) { if (h.dead && now > h.dead) { const [x, y] = spawnSpot(now + h.id.length * 991); h.x = x; h.y = y; h.tx = x; h.ty = y; h.dead = 0; } }
+
+let acc = 0, lastT = performance.now(), simT = 0;
+function step(dt) {
+  if (G.mode !== 'play') return;
+  const now = Date.now();
+  G.t += dt; simT += dt;
+  if (G.live) { const ph = liveNow() % LIVE_ROUND; G.left = Math.max(0, (LIVE_PLAY - ph) / 1000); moveObjs(ph / 1000); } else { G.left = Math.max(0, TIME - G.t); moveObjs(G.t); }
+  if (!ME.dead) { moveHole(ME, steer(), dt); const ids = eatCheck(ME, true); if (G.live && ids.length) G.live.eatQ.push(...ids); }
+  const host = !G.live || G.live.host === G.live.me;
+  for (const b of HOLES) {
+    if (!b.bot) { if (!b.me && b.lx != null) { b.x += (b.lx - b.x) * Math.min(1, dt * 10); b.y += (b.ly - b.y) * Math.min(1, dt * 10); } continue; }
+    if (!host) { if (b.lx != null) { b.x += (b.lx - b.x) * Math.min(1, dt * 10); b.y += (b.ly - b.y) * Math.min(1, dt * 10); } continue; }
+    respawn(b, now); if (b.dead) continue;
+    if ((b.think -= dt) <= 0) { b.think = .35 + Math.random() * .3; botThink(b, now); }
+    const dx = b.tx - b.x, dy = b.ty - b.y, d = Math.hypot(dx, dy); if (d > 4) moveHole(b, [dx / d * .92, dy / d * .92], dt);
+    const ids = eatCheck(b, false); if (G.live && ids.length) G.live.eatQ.push(...ids);
+  }
+  respawn(ME, now);
+  holeFights(now);
+  for (const f of FALL) f.t += dt; FALL = FALL.filter(f => f.t < .5);
+  for (const p of POP) p.t += dt; POP = POP.filter(p => p.t < 1);
+  if (G.kind === 'solo' && EATEN.size === OBJ.length) finish();
+  if (G.left <= 0) finish();
+}
+function pct() { let m = 0; for (const o of OBJ) if (EATEN.has(o.id)) m += o.m; return TOTAL ? m / TOTAL * 100 : 0; }
+
+// ---------------------------------------------------------------- end of round + rewards (the GSD village pays +1 AI worker per win)
+function finish() {
+  if (G.mode !== 'play') return; G.mode = 'end';
+  if (G.kind === 'solo') {
+    const p = Math.floor(pct() * 10) / 10, prev = G.best, win = p >= 100 || p > prev;
+    if (p > G.best) { G.best = p; localStorage.setItem('swallowBest', String(p)); }
+    G.end = { p, prev, win };
+    tell({ t: 'swallowSolo', pct: p });
+  } else {
+    const board = ranking(), rank = board.findIndex(h => h.me) + 1, played = G.live ? (Date.now() - G.live.joinedAt) / 1000 : TIME;
+    G.end = { board, rank, win: rank === 1 && played >= 60, short: rank === 1 && played < 60 };
+    if (G.end.win) tell({ t: 'swallowClassic', rank, of: board.length });
+  }
+  showEnd();
+}
+function tell(msg) { try { if (parent !== window) parent.postMessage(msg, location.origin); } catch (e) {} }
+addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data) return;
+  if (e.data.t === 'best') { G.best = Math.max(G.best, +e.data.v || 0); if (G.mode === 'menu') showMenu(); }
+  if (e.data.t === 'reward') { G.reward = e.data.msg; const r = document.getElementById('rw'); if (r) r.textContent = e.data.msg; }
+  if (e.data.t === 'pause') IN.keys = {};
+});
+const ranking = () => HOLES.slice().sort((a, b) => b.m - a.m);
+
+// ---------------------------------------------------------------- menus
+function showMenu() {
+  G.mode = 'menu';
+  UI.innerHTML = `<div class="card"><h1>SWALLOW</h1><p>Steer the sinkhole. Anything that fits falls in, and every bite makes you bigger.</p>
+    <button id="bSolo">SOLO RUN</button><p class="small">2 minutes · swallow the whole village · best ${G.best.toFixed(1)}%<br>Win: 100% or beat your best = +1 AI worker</p>
+    <button id="bClassic" class="alt">CLASSIC</button><p class="small">2 minutes vs other holes · biggest hole wins +1 AI worker<br>${navigator.onLine ? 'Signed-in players meet live; computer holes fill the room' : 'Offline: computer holes only'}</p>
+    <p class="small">${matchMedia('(pointer: coarse)').matches ? 'Drag anywhere to steer' : 'Point the mouse where to go · or WASD / arrows'}</p></div>`;
+  document.getElementById('bSolo').onclick = () => start('solo');
+  document.getElementById('bClassic').onclick = () => liveJoin();
+}
+function showEnd() {
+  const E = G.end; let h = '';
+  if (G.kind === 'solo') h = `<h1>${E.p >= 100 ? 'ALL GONE!' : E.p.toFixed(1) + '%'}</h1><p>${E.p >= 100 ? 'You swallowed the whole village.' : E.win ? 'New personal best! (was ' + E.prev.toFixed(1) + '%)' : 'Personal best: ' + G.best.toFixed(1) + '%'}</p>${E.win ? '<p id="rw" style="color:#86efac;font-weight:700">' + (EMBED ? '+1 AI WORKER' : 'WIN!') + '</p>' : ''}`;
+  else h = `<h1>${E.rank === 1 ? 'BIGGEST HOLE!' : '#' + E.rank}</h1>${E.win ? '<p id="rw" style="color:#86efac;font-weight:700">' + (EMBED ? '+1 AI WORKER' : 'WIN!') + '</p>' : E.short ? '<p>Joined late: play at least 60 seconds of a round to win a worker.</p>' : ''}
+    <table>${E.board.slice(0, 8).map((x, i) => `<tr class="${x.me ? 'me' : ''}"><td>${i + 1}</td><td>${esc(x.name)}${x.bot ? ' <span class="small">(cpu)</span>' : ''}</td><td class="n">${Math.round(x.m)}</td></tr>`).join('')}</table>`;
+  UI.innerHTML = `<div class="card">${h}<button id="bAgain">${G.kind === 'solo' ? 'RUN AGAIN' : G.live ? 'NEXT ROUND' : 'PLAY AGAIN'}</button><button id="bMenu" class="alt">MENU</button></div>`;
+  document.getElementById('bAgain').onclick = () => { if (G.kind === 'solo') start('solo'); else if (G.live) liveWaitNext(); else liveJoin(); };
+  document.getElementById('bMenu').onclick = () => { liveClose(); showMenu(); };
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+// ---------------------------------------------------------------- live Classic room (gsd-world Worker, Swallow Durable Object)
+function liveNow() { return Date.now() + (G.live ? G.live.skew : 0); }
+async function liveJoin() {
+  liveClose();
+  let tk = null;
+  try { const r = await fetch('/api/wsticket', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' } }); const j = await r.json(); if (j.ok) tk = j.ticket; } catch (e) {}
+  if (!tk) { start('classic'); POP.push({ x: ME.x, y: ME.y - 30, t: -2, v: 'SIGN IN TO MEET LIVE PLAYERS' }); return; }
+  UI.innerHTML = '<div class="card"><h1>CLASSIC</h1><p>Joining the room…</p></div>';
+  let ws; try { ws = new WebSocket(WORLD_URL + '/swallow?t=' + encodeURIComponent(tk)); } catch (e) { start('classic'); return; }
+  const L = G.live = { ws, open: false, me: 0, host: 0, skew: 0, players: new Map(), eatQ: [], round: -1, joinedAt: Date.now(), sendT: 0 };
+  const fail = setTimeout(() => { if (!L.open) { liveClose(); start('classic'); } }, 6000);
+  ws.onopen = () => { L.open = true; };
+  ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch (er) { return; } liveMsg(m); if (m.t === 'hello') clearTimeout(fail); };
+  ws.onclose = () => { if (G.live === L) { G.live = null; if (G.mode === 'play' && G.kind === 'classic') POP.push({ x: ME.x, y: ME.y - 30, t: -2, v: 'LOST THE ROOM — CPU ONLY' }); } };
+}
+function liveClose() { const L = G.live; G.live = null; if (L) try { L.ws.close(); } catch (e) {} }
+function liveSend(m) { const L = G.live; if (L && L.open) try { L.ws.send(JSON.stringify(m)); } catch (e) {} }
+function liveMsg(m) {
+  const L = G.live; if (!L) return;
+  if (m.t === 'hello') {
+    L.skew = m.now - Date.now(); L.me = m.me; L.host = m.host; L.players = new Map(m.players.map(p => [p.pid, p.name]));
+    liveRound(m.round, m.eaten);
+    return;
+  }
+  if (m.r != null && m.r !== L.round) return;
+  if (m.t === 'join') { L.players.set(m.pid, m.name); L.host = m.host; liveFill(); }
+  else if (m.t === 'leave') { L.players.delete(m.pid); L.host = m.host; HOLES = HOLES.filter(h => h.pid !== m.pid); liveFill(); }
+  else if (m.t === 's') { let h = HOLES.find(x => x.pid === m.pid); if (!h) { h = newHole('p' + m.pid, L.players.get(m.pid) || 'Player', HOLE_COLORS[(m.pid % 8) + 1], m.x, m.y, { pid: m.pid }); HOLES.push(h); liveFill(); } h.lx = m.x; h.ly = m.y; h.R = m.R; h.m = m.m; h.dead = m.R <= 1 ? 1 : 0; }
+  else if (m.t === 'e') for (const id of m.ids) { if (EATEN.has(id)) continue; EATEN.add(id); const o = OBJ[id]; if (o) FALL.push({ o, h: nearestHole(o), t: 0, x: o.x, y: o.y }); }
+  else if (m.t === 'b' && L.host !== L.me) for (const [id, x, y, R, mm, dead] of m.list) { const b = HOLES.find(h => h.id === id); if (b) { b.lx = x; b.ly = y; b.R = R; b.m = mm; b.dead = dead ? 1 : 0; } }
+  else if (m.t === 'g') {
+    const a = HOLES.find(h => h.pid === m.by);
+    if (m.v === L.me && !ME.dead) { if (a) swallowHole(a, ME, Date.now()); else { ME.dead = Date.now() + 3000; ME.m = 0; ME.R = R0; } }
+    else if (typeof m.v === 'string' && L.host === L.me) { const b = HOLES.find(h => h.id === m.v); if (b && !b.dead) { b.dead = Date.now() + 3000; b.m = 0; b.R = R0; } }
+  } else if (m.t === 'd' && L.host === L.me) { const b = HOLES.find(h => h.id === m.by), v = HOLES.find(h => h.pid === m.pid); if (b && v) { b.m += v.m * .7 + 60; b.R = holeR(b.m); } }
+}
+function nearestHole(o) { let best = HOLES[0], bd = 1e9; for (const h of HOLES) { const d = Math.hypot(h.x - o.x, h.y - o.y); if (d < bd) { bd = d; best = h; } } return best; }
+function liveRound(round, eaten) {
+  const L = G.live; L.round = round;
+  const ph = liveNow() % LIVE_ROUND;
+  if (ph >= LIVE_PLAY - 15000) return liveWaitNext();            // too late in this round: wait for the next one
+  G.kind = 'classic'; G.mode = 'play'; G.t = 0; FALL = []; POP = []; G.end = null; UI.innerHTML = '';
+  buildMap(round); for (const id of eaten || []) EATEN.add(id);
+  const [x, y] = spawnSpot(L.me * 31 + round); ME = newHole('me', 'YOU', HOLE_COLORS[0], x, y, { me: true, pid: L.me }); HOLES = [ME];
+  L.joinedAt = Date.now(); liveFill();
+}
+function liveFill() {   // computer holes fill the room up to 8
+  const L = G.live; if (!L || G.mode !== 'play') return;
+  const players = HOLES.filter(h => !h.bot).length, want = Math.max(0, 8 - Math.max(players, L.players.size));
+  let bots = HOLES.filter(h => h.bot);
+  for (let i = 0; bots.length < want && i < 12; i++) if (!bots.some(b => b.id === 'b' + i)) { const [x, y] = spawnSpot(L.round * 13 + i * 101); const b = newHole('b' + i, BOT_NAMES[i], HOLE_COLORS[(i + 3) % 10], x, y, { bot: true, think: 0 }); HOLES.push(b); bots.push(b); }
+  if (bots.length > want) { const drop = new Set(bots.slice(want).map(b => b.id)); HOLES = HOLES.filter(h => !drop.has(h.id)); }
+}
+function liveWaitNext() {
+  G.mode = 'wait';
+  const tick = () => {
+    const L = G.live; if (!L || G.mode !== 'wait') return;
+    const ph = liveNow() % LIVE_ROUND, wait = Math.ceil((LIVE_ROUND - ph) / 1000);
+    UI.innerHTML = `<div class="card"><h1>CLASSIC</h1><p>Next round in ${wait}s</p><p class="small">${L.players.size} player${L.players.size === 1 ? '' : 's'} in the room</p><button id="bMenu" class="alt">MENU</button></div>`;
+    document.getElementById('bMenu').onclick = () => { liveClose(); showMenu(); };
+    if (ph < 2000) { liveRound(Math.floor(liveNow() / LIVE_ROUND), []); return; }
+    setTimeout(tick, 500);
+  };
+  tick();
+}
+function liveTick(dt) {
+  const L = G.live; if (!L || !L.open || G.mode !== 'play') return;
+  const round = Math.floor(liveNow() / LIVE_ROUND); if (round !== L.round && G.mode === 'play') { finish(); return; }
+  if ((L.sendT -= dt) > 0) return; L.sendT = .125;
+  liveSend({ t: 's', x: +ME.x.toFixed(1), y: +ME.y.toFixed(1), R: ME.dead ? 1 : +ME.R.toFixed(2), m: Math.round(ME.m) });
+  if (L.eatQ.length) { liveSend({ t: 'e', ids: L.eatQ.splice(0, 200) }); }
+  if (L.host === L.me) liveSend({ t: 'b', list: HOLES.filter(h => h.bot).map(b => [b.id, +b.x.toFixed(1), +b.y.toFixed(1), +b.R.toFixed(2), Math.round(b.m), b.dead ? 1 : 0]) });
+}
+
+// ---------------------------------------------------------------- drawing (isometric, like the village)
+let Z = 1, CX = 0, CY = 0;
+const isoX = (x, y) => (x - y) * .7071 * Z + CX, isoY = (x, y) => (x + y) * .3536 * Z + CY;
+function camera() {
+  const want = Math.min(VW, VH) / (230 + ME.R * 7.5);
+  Z += (want - Z) * .06;
+  CX = VW / 2 - (ME.x - ME.y) * .7071 * Z; CY = VH / 2 - (ME.x + ME.y) * .3536 * Z;
+}
+function ground() {
+  g.fillStyle = '#3f8f3a'; g.fillRect(0, 0, VW, VH);
+  const quad = (x0, y0, x1, y1, col) => { g.fillStyle = col; g.beginPath(); g.moveTo(isoX(x0, y0), isoY(x0, y0)); g.lineTo(isoX(x1, y0), isoY(x1, y0)); g.lineTo(isoX(x1, y1), isoY(x1, y1)); g.lineTo(isoX(x0, y1), isoY(x0, y1)); g.closePath(); g.fill(); };
+  // the world edge
+  g.fillStyle = '#1e3a5f'; g.fillRect(0, 0, VW, VH); quad(0, 0, MAP, MAP, '#4f9d45');
+  for (let i = 0; i <= MAP / ROAD; i++) { const a = i * ROAD; quad(a - ROADW / 2, 0, a + ROADW / 2, MAP, '#c8a46a'); quad(0, a - ROADW / 2, MAP, a + ROADW / 2, '#c8a46a'); }
+  // grass speckle for motion feel
+  g.fillStyle = 'rgba(255,255,255,.06)';
+  for (let x = 40; x < MAP; x += 80) for (let y = 40; y < MAP; y += 80) { const sx = isoX(x, y), sy = isoY(x, y); if (sx > -10 && sx < VW + 10 && sy > -10 && sy < VH + 10) g.fillRect(sx, sy, 3 * Z, 1.5 * Z); }
+}
+function drawHole(h) {
+  const x = isoX(h.x, h.y), y = isoY(h.x, h.y), rx = h.R * Z, ry = h.R * Z * .5;
+  if (rx < 1) return;
+  const gr = g.createRadialGradient(x, y + ry * .2, 0, x, y, rx);
+  gr.addColorStop(0, '#000'); gr.addColorStop(.75, '#05060a'); gr.addColorStop(1, '#1a1d26');
+  g.fillStyle = gr; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = h.col; g.lineWidth = Math.max(2, rx * .06); g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.stroke();
+}
+function holeLabel(h) {
+  if (h.dead) return;
+  const x = isoX(h.x, h.y), y = isoY(h.x, h.y) - h.R * Z * .5 - 8;
+  g.font = `700 ${Math.max(11, Math.min(18, 9 + h.R * Z * .08))}px "Trebuchet MS",system-ui`; g.textAlign = 'center';
+  g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.6)'; g.strokeText(h.name, x, y); g.fillStyle = h.me ? '#fff' : h.col; g.fillText(h.name, x, y);
+}
+// a box standing on the ground: centre (x,y), half sizes, height
+function box(x, y, hx, hy, ht, top, left, right) {
+  const p = (a, b, z) => [isoX(a, b), isoY(a, b) - z * Z];
+  const A = p(x - hx, y + hy, 0), B = p(x + hx, y + hy, 0), C = p(x + hx, y - hy, 0), A2 = p(x - hx, y + hy, ht), B2 = p(x + hx, y + hy, ht), C2 = p(x + hx, y - hy, ht), D2 = p(x - hx, y - hy, ht);
+  const poly = (pts, col) => { g.fillStyle = col; g.beginPath(); g.moveTo(...pts[0]); for (const q of pts.slice(1)) g.lineTo(...q); g.closePath(); g.fill(); };
+  poly([A, B, B2, A2], left); poly([B, C, C2, B2], right); poly([A2, B2, C2, D2], top);
+}
+function shade(hex, k) { const n = parseInt(hex.slice(1), 16), r = Math.min(255, (n >> 16) * k), gg = Math.min(255, ((n >> 8) & 255) * k), b = Math.min(255, (n & 255) * k); return `rgb(${r | 0},${gg | 0},${b | 0})`; }
+const RES_COL = { wood: '#8b5a2b', stone: '#9ca3af', iron: '#64748b', planks: '#d6a46a', coal: '#27272a', gold: '#facc15', gears: '#94a3b8' };
+function drawObj(o, x, y, k) {
+  // k: scale while falling (1 = normal)
+  const s = o.s * k, sx = isoX(x, y), sy = isoY(x, y), u = Z * s;
+  switch (o.k) {
+    case 'bld': {
+      const A = art(o.art);
+      if (A.ok) { const w = 2.9 * s * Z, hgt = w * A.im.height / A.im.width; g.drawImage(A.im, sx - w / 2, sy + s * Z * .72 - hgt, w, hgt); }
+      else box(x, y, s * .8, s * .8, s * 1.2, '#b45309', '#92400e', '#78350f');
+      break;
+    }
+    case 'tree': {
+      g.fillStyle = '#5b3a1e'; g.fillRect(sx - u * .12, sy - u * 1.1, u * .24, u * 1.1);
+      const c = o.c < .5 ? '#2f7d32' : '#3a8f3c'; g.fillStyle = shade(c, .8); g.beginPath(); g.arc(sx, sy - u * 1.5, u * .85, 0, 7); g.fill();
+      g.fillStyle = c; g.beginPath(); g.arc(sx - u * .2, sy - u * 1.7, u * .6, 0, 7); g.fill(); break;
+    }
+    case 'sapling': g.fillStyle = '#5b3a1e'; g.fillRect(sx - u * .08, sy - u, u * .16, u); g.fillStyle = '#65a30d'; g.beginPath(); g.arc(sx, sy - u * 1.1, u * .5, 0, 7); g.fill(); break;
+    case 'bush': g.fillStyle = '#2d6a2f'; g.beginPath(); g.ellipse(sx, sy - u * .4, u * .9, u * .55, 0, 0, 7); g.fill(); break;
+    case 'rock': g.fillStyle = '#6b7280'; g.beginPath(); g.ellipse(sx, sy - u * .3, u * .9, u * .5, 0, 0, 7); g.fill(); g.fillStyle = '#9ca3af'; g.beginPath(); g.ellipse(sx - u * .2, sy - u * .45, u * .45, u * .25, 0, 0, 7); g.fill(); break;
+    case 'crate': box(x, y, s * .7, s * .7, s * 1.1, '#d6a46a', '#a16207', '#854d0e'); break;
+    case 'barrel': g.fillStyle = '#7c4a1e'; g.fillRect(sx - u * .6, sy - u * 1.4, u * 1.2, u * 1.3); g.fillStyle = '#a16207'; g.beginPath(); g.ellipse(sx, sy - u * 1.4, u * .6, u * .3, 0, 0, 7); g.fill(); g.fillStyle = '#3f2a14'; g.fillRect(sx - u * .6, sy - u * .9, u * 1.2, u * .12); break;
+    case 'lamp': g.fillStyle = '#334155'; g.fillRect(sx - u * .1, sy - u * 3, u * .2, u * 3); g.fillStyle = '#fde68a'; g.beginPath(); g.arc(sx, sy - u * 3.1, u * .45, 0, 7); g.fill(); break;
+    case 'fence': box(x, y, s * .9, s * .15, s * .8, '#a16207', '#854d0e', '#713f12'); break;
+    case 'hay': box(x, y, s * .7, s * .5, s * .8, '#fcd34d', '#d97706', '#b45309'); break;
+    case 'pile': { const c = RES_COL[o.res] || '#8b5a2b'; g.fillStyle = shade(c, .75); g.beginPath(); g.ellipse(sx, sy - u * .35, u * 1.05, u * .55, 0, 0, 7); g.fill(); g.fillStyle = c; g.beginPath(); g.ellipse(sx, sy - u * .7, u * .75, u * .45, 0, 0, 7); g.fill(); g.fillStyle = shade(c, 1.25); g.beginPath(); g.ellipse(sx - u * .15, sy - u * .95, u * .35, u * .2, 0, 0, 7); g.fill(); break; }
+    case 'cart': box(x, y, s * .8, s * .5, s * .7, '#a16207', '#854d0e', '#713f12'); g.fillStyle = '#1f2937'; g.beginPath(); g.arc(isoX(x - s * .5, y + s * .5), isoY(x - s * .5, y + s * .5) - u * .15, u * .3, 0, 7); g.arc(isoX(x + s * .5, y + s * .5), isoY(x + s * .5, y + s * .5) - u * .15, u * .3, 0, 7); g.fill(); break;
+    case 'chicken': g.fillStyle = '#f8fafc'; g.beginPath(); g.ellipse(sx, sy - u * .6, u * .7, u * .5, 0, 0, 7); g.fill(); g.fillStyle = '#dc2626'; g.fillRect(sx + u * .2, sy - u * 1.25, u * .3, u * .3); break;
+    case 'worker': {
+      const sw = Math.sin(o.walk || 0) * u * .25;
+      g.fillStyle = '#1e3a8a'; g.fillRect(sx - u * .35 + sw * .3, sy - u * 1, u * .25, u); g.fillRect(sx + u * .1 - sw * .3, sy - u * 1, u * .25, u);
+      g.fillStyle = '#2563eb'; g.fillRect(sx - u * .45, sy - u * 2.1, u * .9, u * 1.2);
+      g.fillStyle = '#f2c39b'; g.beginPath(); g.arc(sx, sy - u * 2.5, u * .38, 0, 7); g.fill();
+      g.fillStyle = '#fbbf24'; g.fillRect(sx - u * .42, sy - u * 2.9, u * .84, u * .2); break;
+    }
+    case 'golem': {   // box rig, swinging limbs
+      const c = RES_COL[o.res] || '#9ca3af', sw = Math.sin((o.walk || simT * 4)) * .35, lt = shade(c, 1.15), dk = shade(c, .7), b = s * .45;
+      box(x - b * .5, y + b * .2, b * .3, b * .3, b * 1.1 * (1 + sw * .2), lt, c, dk); box(x + b * .5, y - b * .2, b * .3, b * .3, b * 1.1 * (1 - sw * .2), lt, c, dk);
+      const body = (a, bb, z, hx, hy, ht) => { const p = (aa, cc, zz) => [isoX(aa, cc), isoY(aa, cc) - zz * Z]; const poly = (pts, col) => { g.fillStyle = col; g.beginPath(); g.moveTo(...pts[0]); for (const q of pts.slice(1)) g.lineTo(...q); g.closePath(); g.fill(); };
+        const A = p(a - hx, bb + hy, z), B = p(a + hx, bb + hy, z), C = p(a + hx, bb - hy, z), A2 = p(a - hx, bb + hy, z + ht), B2 = p(a + hx, bb + hy, z + ht), C2 = p(a + hx, bb - hy, z + ht), D2 = p(a - hx, bb - hy, z + ht); poly([A, B, B2, A2], c); poly([B, C, C2, B2], dk); poly([A2, B2, C2, D2], lt); };
+      body(x, y, b * 1.1, b * .9, b * .6, b * 1.4); body(x, y, b * 2.5, b * .5, b * .45, b * .8);
+      body(x - b * 1.2, y + b * .1, b * (1.4 + sw * .4), b * .25, b * .25, b * 1.1); body(x + b * 1.2, y - b * .1, b * (1.4 - sw * .4), b * .25, b * .25, b * 1.1);
+      g.fillStyle = '#fde047'; const ex = isoX(x, y + b * .5), ey = isoY(x, y + b * .5) - b * 2.9 * Z; g.fillRect(ex - u * .12, ey, u * .08, u * .06); g.fillRect(ex + u * .05, ey, u * .08, u * .06);
+      break;
+    }
+  }
+}
+function render() {
+  if (!ME) { g.setTransform(DPR, 0, 0, DPR, 0, 0); g.fillStyle = '#0b1020'; g.fillRect(0, 0, VW, VH); return; }
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  camera(); ground();
+  for (const h of HOLES) if (!h.dead) drawHole(h);
+  // falling objects, clipped so only the part above the rim or inside the hole shows
+  for (const f of FALL) {
+    const h = f.h, k = f.t / .5, x = f.x + (h.x - f.x) * k * .6, y = f.y + (h.y - f.y) * k * .6;
+    g.save(); g.beginPath(); const hx = isoX(h.x, h.y), hy = isoY(h.x, h.y);
+    g.rect(0, 0, VW, hy); g.ellipse(hx, hy, h.R * Z, h.R * Z * .5, 0, 0, Math.PI * 2); g.clip();
+    g.translate(0, k * k * f.o.s * Z * 4); g.globalAlpha = 1 - k * .5; drawObj(f.o, x, y, 1 - k * .3); g.restore();
+  }
+  // standing objects by depth
+  const vis = [], pad = 120;
+  for (const o of OBJ) { if (EATEN.has(o.id)) continue; const sx = isoX(o.x, o.y), sy = isoY(o.x, o.y); if (sx < -pad * Z - 40 || sx > VW + pad * Z + 40 || sy < -40 || sy > VH + pad * Z * 1.5 + 40) continue; vis.push(o); }
+  vis.sort((a, b) => (a.x + a.y) - (b.x + b.y));
+  for (const o of vis) drawObj(o, o.x, o.y, 1);
+  for (const h of HOLES) holeLabel(h);
+  for (const p of POP) if (p.v && p.t >= 0) { g.globalAlpha = 1 - p.t; g.font = '700 14px "Trebuchet MS",system-ui'; g.textAlign = 'center'; g.fillStyle = '#fff'; g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 3; const x = isoX(p.x, p.y), y = isoY(p.x, p.y) - 20 - p.t * 30; g.strokeText(p.v, x, y); g.fillText(p.v, x, y); g.globalAlpha = 1; }
+  if (IN.touch) { g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 3; g.beginPath(); g.arc(IN.touch.sx, IN.touch.sy, 50, 0, 7); g.stroke(); g.fillStyle = 'rgba(255,255,255,.35)'; const dx = IN.touch.x - IN.touch.sx, dy = IN.touch.y - IN.touch.sy, L = Math.min(50, Math.hypot(dx, dy)) / (Math.hypot(dx, dy) || 1); g.beginPath(); g.arc(IN.touch.sx + dx * L, IN.touch.sy + dy * L, 20, 0, 7); g.fill(); }
+  hud();
+}
+function hud() {
+  if (G.mode !== 'play') return;
+  g.textAlign = 'center'; g.font = '700 22px "Trebuchet MS",system-ui';
+  const t = Math.ceil(G.left), ts = Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+  g.lineWidth = 4; g.strokeStyle = 'rgba(0,0,0,.6)'; g.fillStyle = t <= 10 ? '#fca5a5' : '#fff'; g.strokeText(ts, VW / 2, 34); g.fillText(ts, VW / 2, 34);
+  if (G.kind === 'solo') {
+    const p = pct(); const w = Math.min(300, VW - 120), x = VW / 2 - w / 2;
+    g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(x, 44, w, 12); g.fillStyle = '#fbbf24'; g.fillRect(x, 44, w * p / 100, 12);
+    if (G.best > 0) { g.fillStyle = '#fff'; g.fillRect(x + w * G.best / 100 - 1, 41, 2, 18); }
+    g.font = '700 13px "Trebuchet MS",system-ui'; g.fillStyle = '#fff'; g.strokeText(p.toFixed(1) + '%  (best ' + G.best.toFixed(1) + '%)', VW / 2, 74); g.fillText(p.toFixed(1) + '%  (best ' + G.best.toFixed(1) + '%)', VW / 2, 74);
+  } else {
+    const board = ranking(), x = VW - 10; g.textAlign = 'right'; g.font = '700 13px "Trebuchet MS",system-ui';
+    board.slice(0, 6).forEach((h, i) => { const s = `${i + 1}. ${h.name}  ${Math.round(h.m)}`; g.fillStyle = h.me ? '#86efac' : '#fff'; g.strokeText(s, x, 22 + i * 17); g.fillText(s, x, 22 + i * 17); });
+    const mi = board.indexOf(ME); if (mi >= 6) { const s = `${mi + 1}. YOU  ${Math.round(ME.m)}`; g.fillStyle = '#86efac'; g.strokeText(s, x, 22 + 6 * 17); g.fillText(s, x, 22 + 6 * 17); }
+    if (G.live) { g.textAlign = 'left'; g.fillStyle = '#93c5fd'; const s = `LIVE · ${G.live.players.size} player${G.live.players.size === 1 ? '' : 's'}`; g.strokeText(s, EMBED ? 10 : 70, 22); g.fillText(s, EMBED ? 10 : 70, 22); }
+    if (ME.dead) { g.textAlign = 'center'; g.font = '700 20px "Trebuchet MS",system-ui'; g.fillStyle = '#fca5a5'; g.strokeText('SWALLOWED! BACK IN A MOMENT', VW / 2, VH / 2 - 40); g.fillText('SWALLOWED! BACK IN A MOMENT', VW / 2, VH / 2 - 40); }
+  }
+}
+
+// ---------------------------------------------------------------- loop
+function loop(now) {
+  const dt = Math.min(.05, (now - lastT) / 1000); lastT = now;
+  acc += dt; while (acc >= 1 / 60) { step(1 / 60); liveTick(1 / 60); acc -= 1 / 60; }
+  render(); requestAnimationFrame(loop);
+}
+showMenu();
+tell({ t: 'swallowHello' });
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
