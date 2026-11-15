@@ -243,7 +243,7 @@ function roadTap(i, j) {
   if (roadAt(i, j)) { S.roads = roadList().filter(r => r[0] !== i || r[1] !== j); ROADSET = null; save(); renderPlaceBar(); return; }
   if (!roadOk(i, j)) return toast('Roads go on empty ground');
   if (!canPay(ROAD_TILE)) return toast('Not enough: a road tile needs 4 wood, 2 stone');
-  pay(ROAD_TILE); roadList().push([i, j]); ROADSET = null;
+  pay(ROAD_TILE); roadList().push([i, j]); ROADSET = null; clearNoTree();
   if (MAP.node[j * W + i]) { MAP.node[j * W + i] = null; layerDirty = true; }
   save(); refresh(); renderPlaceBar();
 }

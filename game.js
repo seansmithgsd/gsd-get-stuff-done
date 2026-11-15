@@ -156,6 +156,8 @@ function load() {
 function migrate(s) {
   // v50: Barracks used to house AI workers — every old one becomes an Apartment of the same level (runs once per save)
   if (!s.mil) { for (const b of s.buildings || []) if (b.type === 'barracks') b.type = 'apartment'; s.mil = 1; }
+  // v58: the palisade is only the fence — it no longer holds a tile inside the village
+  for (const b of s.buildings || []) if (b.type === 'palisade') { b.i = 0; b.j = TCJ; }
   const d = newState();
   for (const k in d) if (s[k] == null) s[k] = d[k];
   for (const k in d.res) if (s.res[k] == null) s.res[k] = 0;
@@ -242,6 +244,18 @@ function genMap(seed) {
     DEER.push({ i, j, ti: i, tj: j, wait: rd() * 3 });
   }
   DEER.push({ i: TCI + 6.5, j: TCJ + 2.5, ti: TCI + 6.5, tj: TCJ + 2.5, wait: 1 });
+  if (S && S.buildings) clearNoTree();
+}
+// no-tree zones: the 3×3 tiles a building's art covers, and every road tile. Trees never grow there; any already there go.
+function noTree(i, j) {
+  if (typeof roadAt === 'function' && roadAt(i, j)) return true;
+  return S.buildings.some(b => b.type !== 'palisade' && Math.abs(b.i - i) <= 1 && Math.abs(b.j - j) <= 1);
+}
+function clearNoTree() {
+  if (!MAP || !S) return;
+  const kill = (i, j) => { if (i < 0 || j < 0 || i >= W || j >= H) return; const k = j * W + i; if (MAP.node[k] === 'tree') { MAP.node[k] = null; layerDirty = true; } if (S.planted && S.planted[k] === 'tree') delete S.planted[k]; if (S.dep && S.dep[k] && S.dep[k].n === 'tree') delete S.dep[k]; };
+  for (const b of S.buildings) if (b.type !== 'palisade') for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) kill(b.i + di, b.j + dj);
+  for (const r of (S.roads || [])) kill(r[0], r[1]);
 }
 function nodeAt(i, j) { if (j < 0 || j >= H || i < 0 || i >= W) return null; return MAP.node[j * W + i]; }
 // inside a simulation tick buildings don't move, so look them up by tile instead of scanning the list (catch-up speed)
@@ -438,6 +452,7 @@ function placeOk(i, j) {
 function hasRoom() { const R = buildRadius(); for (let j = TCJ - R; j <= TCJ + R; j++) for (let i = TCI - R; i <= TCI + R; i++) if (placeOk(i, j)) return true; return false; }
 function startBuild(type) {
   const why = buildCheck(type); if (why) return toast(why);
+  if (type === 'palisade') { PLACE = { type, at: [0, TCJ], gate: true }; return placeBuild(); }   // the fence goes round the whole village, no tile of its own
   if (!hasRoom()) return toast(`No room within ${buildRadius()} tiles of the Town Center — research the next Age or Expansion to build farther out`);
   PLACE = { type, at: null };
   setView('village'); renderPlaceBar();
@@ -473,7 +488,7 @@ function moveBuild() {
   if (!placeOk(i, j)) { PLACE.at = null; renderPlaceBar(); return toast('Can\'t build there'); }
   pay(c); PLACE = null; renderPlaceBar();
   const oi = b.i, oj = b.j;
-  b.i = i; b.j = j; b.mv = true; MAP.node[j * W + i] = null; layerDirty = true;
+  b.i = i; b.j = j; b.mv = true; MAP.node[j * W + i] = null; clearNoTree(); layerDirty = true;
   // AI workers already working this building follow it to the new spot
   for (const x of S.workers) if (x.task && x.task.target && x.task.target[0] === oi && x.task.target[1] === oj && TASKS[x.task.kind] && TASKS[x.task.kind].node === b.type) x.task.target = [i, j];
   w.task = { kind: 'build', bid: b.id, mv: true, dur: moveTime(b), prog: 0, target: [unwrapNear(i, TCI), j] };
@@ -505,11 +520,11 @@ function placeBuild() {
   if (PLACE.move != null) return moveBuild();
   const type = PLACE.type, [i, j] = PLACE.at;
   const why = buildCheck(type); if (why) { cancelPlace(); return toast(why); }
-  if (!placeOk(i, j)) { PLACE.at = null; renderPlaceBar(); return toast('Can\'t build there'); }
+  if (!PLACE.gate && !placeOk(i, j)) { PLACE.at = null; renderPlaceBar(); return toast('Can\'t build there'); }
   const D = BLD[type], c = costOf(type), w = idle()[0] || free()[0];
   pay(c); PLACE = null; renderPlaceBar();
   const b = { id: S.nextId++, type, i, j, done: false };
-  S.buildings.push(b); MAP.node[b.j * W + b.i] = null; layerDirty = true;
+  S.buildings.push(b); if (type !== 'palisade') MAP.node[b.j * W + b.i] = null; clearNoTree(); layerDirty = true;
   w.task = { kind: 'build', bid: b.id, dur: D.time, prog: 0, target: [unwrapNear(b.i, TCI), b.j] };
   w.repeat = false;
   toast(`${w.name} is building a ${D.n}`);

@@ -314,14 +314,14 @@ function passive(dt, quiet) {
   // regrowth of depleted trees / bushes
   if ((U('forestry') || hasB('orchard')) && S.dep) {
     const now = simNow();
-    for (const k in S.dep) { const d = S.dep[k]; if (now - d.t < 600000) continue; if ((d.n === 'tree' && U('forestry')) || (d.n === 'bush' && hasB('orchard'))) { if (!S.buildings.some(b => b.j * W + b.i === +k)) { MAP.node[k] = d.n; S.used[k] = 0; layerDirty = true; } delete S.dep[k]; } }
+    for (const k in S.dep) { const d = S.dep[k]; if (now - d.t < 600000) continue; if ((d.n === 'tree' && U('forestry')) || (d.n === 'bush' && hasB('orchard'))) { if (!S.buildings.some(b => b.j * W + b.i === +k) && !(d.n === 'tree' && noTree(+k % W, Math.floor(+k / W)))) { MAP.node[k] = d.n; S.used[k] = 0; layerDirty = true; } delete S.dep[k]; } }
   }
   if (S.bank > bankCap()) S.bank = bankCap();
 }
 function plantTree() {
   for (let tries = 0; tries < 60; tries++) {
     const i = (Math.random() * W) | 0, j = (Math.random() * H) | 0, k = j * W + i;
-    if (MAP.node[k] || bAt(i, j) || near(i, j, TCI, TCJ) < 3) continue;
+    if (MAP.node[k] || bAt(i, j) || noTree(i, j) || pileAt(i, j) || near(i, j, TCI, TCJ) < 3) continue;
     S.planted = S.planted || {}; S.planted[k] = 'tree'; MAP.node[k] = 'tree'; MAP.amt[k] = 8 + treeBonus(); if (S.used) S.used[k] = 0; layerDirty = true; return;
   }
 }
@@ -329,7 +329,7 @@ function expandLand() {
   const r = rng((S.seed ^ 0x1234567) >>> 0); S.planted = S.planted || {};
   for (let c = 0; c < 8; c++) {
     const type = c < 5 ? 'tree' : c < 7 ? 'rock' : 'bush', ci = (r() * W) | 0, cj = (r() * H) | 0;
-    for (let n = 0; n < 9; n++) { const i = mod(ci + Math.round((r() - .5) * 5), W), j = Math.max(0, Math.min(H - 1, Math.round(cj + (r() - .5) * 5))), k = j * W + i; if (bAt(i, j) || near(i, j, TCI, TCJ) < 3) continue; S.planted[k] = type; }
+    for (let n = 0; n < 9; n++) { const i = mod(ci + Math.round((r() - .5) * 5), W), j = Math.max(0, Math.min(H - 1, Math.round(cj + (r() - .5) * 5))), k = j * W + i; if (bAt(i, j) || near(i, j, TCI, TCJ) < 3 || (type === 'tree' && noTree(i, j))) continue; S.planted[k] = type; }
   }
   genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; }); layerDirty = true;
 }
