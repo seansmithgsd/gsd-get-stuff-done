@@ -98,10 +98,10 @@ document.addEventListener('click', e => {
     if (soldiers().length + trainQ().length >= soldierCap() || !canPay(TRAIN_COST)) return;
     pay(TRAIN_COST); const q = trainQ(), last = q.length ? q[q.length - 1].at : now; q.push({ at: Math.max(now, last) + TRAIN_MS });
     toast('Training a soldier'); sfx('build'); save(); refresh(true);
-    const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b) tileSheet(b.i, b.j);
+    const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b && t.closest('#sheet')) tileSheet(b.i, b.j);
     return;
   }
-  if (t.dataset.recall) { const s = soldiers().find(x => x.id === +t.dataset.recall); if (s) sendHome(s, now); save(); livePublish(true); const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b) tileSheet(b.i, b.j); return; }
+  if (t.dataset.recall) { const s = soldiers().find(x => x.id === +t.dataset.recall); if (s) sendHome(s, now); save(); livePublish(true); milSync(true); const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b && t.closest('#sheet')) tileSheet(b.i, b.j); else refresh(true); return; }
   if (t.dataset.hn) { HUNT_N = Math.max(1, HUNT_N + +t.dataset.hn); const g = findGolem(t.dataset.g); if (g) golemSheet(g); return; }
   if (t.dataset.callall) { for (const s of soldiers()) if (s.mode === 1 && s.gid === t.dataset.callall) sendHome(s, now); save(); livePublish(true); const g = findGolem(t.dataset.callall); if (g) golemSheet(g); return; }
   if (t.dataset.hunt) {
@@ -383,3 +383,85 @@ function drawWorldGolem(g, gm, x, y, z, t) {
     const label = `${GNAME[gm.k] || gm.k} Golem ${gm.m >= 1000 ? (gm.m / 1000).toFixed(1) + 'k' : Math.round(gm.m)}`; g.strokeText(label, x, y + u * 1.9 + 10); g.fillStyle = immuneFor(gm.k) ? '#fca5a5' : '#fde68a'; g.fillText(label, x, y + u * 1.9 + 10); }
   return u * 1.6;
 }
+
+// ---------------------------------------------------------------- Soldiers tab (same layout as the AI Workers tab)
+function soldierGroups(now) {
+  const G = { ready: [], train: trainQ(), march: [], hunt: [], back: [], heal: [] };
+  for (const s of soldiers()) {
+    if (s.mode === 1) (s.ready > now ? G.march : G.hunt).push(s);
+    else if (s.ready > now) G.back.push(s);
+    else if (s.wnd || s.hp < soldierMaxHp(s.lvl)) G.heal.push(s);
+    else G.ready.push(s);
+  }
+  return G;
+}
+let soldierSig = '';
+function renderSoldiers(force) {
+  const el = $('#v-soldiers'); if (!el || !S) return;
+  const now = sNowL(), G = soldierGroups(now), cap = soldierCap(), q = trainQ();
+  const room = soldiers().length + q.length < cap, canTrain = room && canPay(TRAIN_COST);
+  const sg = JSON.stringify([soldiers().map(s => [s.id, s.mode, s.gid, s.lvl, Math.round(s.xp || 0), Math.round(s.hp), s.wnd, Math.round((s.ready - now) / 1000)]), q.map(x => Math.round((x.at - now) / 1000)), cap, canTrain, U('axes'), U('picks'), U('age8'), U('age9'), [...LIVE.golems.keys()].join()]);
+  if (!force && sg === soldierSig) return; soldierSig = sg;
+  const nextTrain = q.length ? fmt(Math.max(0, (q[0].at - now) / 1000)) : '';
+  const huntTargets = new Map(); for (const s of [...G.march, ...G.hunt]) huntTargets.set(s.gid, (huntTargets.get(s.gid) || 0) + 1);
+  let h = `<h2>Soldiers <span class="small">${soldiers().length}/${cap} housed${q.length ? ` · ${q.length} training` : ''}</span></h2>`;
+  if (!cap) h += `<div class="card"><div class="t">Build a Barracks to train soldiers</div><div class="d">Barracks unlock in the Iron Age. Each one houses 10 soldiers per level (up to level 5). Soldiers defend your piles from golems and can hunt golems anywhere on the map.</div><div style="margin-top:6px"><button class="btn go" data-go="build">Build tab</button></div></div>`;
+  if (starving()) h += `<div class="card"><div class="t" style="color:var(--red)">No food — soldiers eat the same food as AI workers</div></div>`;
+  const tile = (k, n, c, sub, btns, alert) => `<div class="wt status${alert ? ' alert' : ''}"><canvas data-si="${k}" width="${44 * DPR}" height="${44 * DPR}"></canvas><div class="wn">${n}</div><div class="wc">${c}</div><div class="wr">${sub}</div>${btns ? `<div class="wb">${btns}</div>` : ''}</div>`;
+  h += '<div class="wgrid">';
+  h += tile('ready', 'Ready', G.ready.length, 'In the barracks · defending your piles', `<button class="btn sm" data-train ${canTrain ? '' : 'disabled'} title="Train a soldier: 100 gold, 100 steel, 60s">+ Train</button>`);
+  h += tile('train', 'Training', q.length, q.length ? `Next in ${nextTrain}` : (cap ? (room ? '100 gold · 100 steel · 60s' : 'Barracks full') : 'Needs a Barracks'), '');
+  h += tile('march', 'Marching', G.march.length, G.march.length ? 'On the road to a golem' : '—', '');
+  h += tile('hunt', 'Hunting', G.hunt.length, G.hunt.length ? 'Fighting a golem' : 'Tap a golem to send some', G.march.length + G.hunt.length ? `<button class="btn sm alt" data-recallall>Recall all</button>` : '');
+  h += tile('back', 'Returning', G.back.length, G.back.length ? 'Walking home' : '—', '');
+  h += tile('heal', 'Healing', G.heal.length, G.heal.length ? '1 HP a second in the barracks' : 'Nobody hurt', '', G.heal.some(s => s.wnd));
+  h += '</div>';
+  if (!canTrain && cap) h += whyHTML(!room ? 'Barracks full — build or upgrade a Barracks' : 'Need ' + shortBy(TRAIN_COST).join(', '));
+  // weapons
+  const imm = [U('age8') ? '' : 'Gear golems until the Industrial Age', U('age9') ? '' : 'Wire golems until the Digital Age'].filter(Boolean);
+  h += `<div class="card"><div class="t">Weapons</div><div class="d">Axes (Wood, Plank golems): <b>${SOLDIER_HIT * (1 + U('axes'))}</b> damage every 2s — Sharp Axes ${U('axes')}.<br>Picks (Stone, Coal, Iron, Steel, Gear, Wire golems): <b>${SOLDIER_HIT * (1 + U('picks'))}</b> damage every 2s — Iron Picks ${U('picks')}.<br>Each soldier level adds +10% damage and HP.${imm.length ? `<br><span style="color:var(--red)">Immune to you: ${imm.join('; ')}.</span>` : ''}</div></div>`;
+  // golems: ours to hunt, nearest first
+  const [hx, hy] = toWorld(TCI, TCJ), seen = new Map();
+  for (const g of LIVE.golems.values()) seen.set(g.id, g);
+  if (typeof WLD !== 'undefined' && WLD) for (const g of WLD.golems || []) if (!seen.has(g.id)) seen.set(g.id, { ...g, dmg: {} });
+  const gl = [...seen.values()].map(g => { const [x, y] = golemPos(g, now); return { g, d: Math.hypot(x - hx, y - hy) }; }).sort((a, b) => a.d - b.d).slice(0, 12);
+  h += `<h3>Golems</h3>`;
+  if (!gl.length) h += `<div class="card"><div class="d">No golems spotted yet. They show up in the village view and on the World tab map.</div></div>`;
+  for (const { g, d } of gl) {
+    const n = huntTargets.get(g.id) || 0, im = immuneFor(g.k);
+    h += `<div class="card"><div class="row"><div><div class="t">${GNAME[g.k] || g.k} Golem <span class="small">· ${Math.round(g.m).toLocaleString()} ${g.k}</span></div>
+      <div class="d">${Math.round(d)} tiles away · march ${fmt(d / SOLDIER_SPEED)}${g.eat ? ` · eating ${ME && g.eat === ME.id ? 'your' : 'a'} pile` : ''}${g.nf ? ` · ${g.nf} fighting` : ''}${n ? ` · <b>${n} of yours sent</b>` : ''}${im ? ` · <span style="color:var(--red)">immune until ${im}</span>` : ''}</div></div>
+      <button class="btn sm" data-gview="${g.id}">${n ? 'Manage' : 'Send'}</button></div></div>`;
+  }
+  // roster
+  h += `<h3>Roster</h3>`;
+  if (!soldiers().length) h += `<div class="card"><div class="d">${cap ? 'No soldiers yet — tap + Train.' : 'No soldiers yet.'}</div></div>`;
+  for (const s of [...soldiers()].sort((a, b) => (b.lvl || 0) - (a.lvl || 0) || a.id - b.id)) {
+    const mh = soldierMaxHp(s.lvl), f = Math.max(0, s.hp / mh), xf = Math.min(1, (s.xp || 0) / xpNeed(s.lvl || 0));
+    h += `<div class="card"><div class="row"><div style="flex:1"><div class="t">${esc(s.name)} <span class="small">· Lv ${s.lvl || 0} · ${Math.round(s.hp)}/${mh} HP · +${Math.round((dmgMul(s) - 1) * 100)}% damage</span></div>
+      <div class="d">${soldierStatus(s, now)}</div>
+      <div style="height:5px;background:rgba(0,0,0,.12);border-radius:3px;margin-top:4px"><div style="height:5px;width:${Math.round(f * 100)}%;background:${s.wnd ? '#ef4444' : '#22c55e'};border-radius:3px"></div></div>
+      <div style="height:4px;background:rgba(0,0,0,.08);border-radius:3px;margin-top:3px"><div style="height:4px;width:${Math.round(xf * 100)}%;background:#60a5fa;border-radius:3px"></div></div>
+      <div class="small">${Math.round(s.xp || 0)}/${xpNeed(s.lvl || 0)} xp to level ${(s.lvl || 0) + 1}</div></div>
+      ${s.mode === 1 ? `<button class="btn sm alt" data-recall="${s.id}">Recall</button>` : ''}</div></div>`;
+  }
+  el.innerHTML = h;
+  el.querySelectorAll('canvas[data-si]').forEach(c => {
+    const x = c.getContext('2d'); x.setTransform(DPR, 0, 0, DPR, 0, 0); x.clearRect(0, 0, 44, 44);
+    const k = c.dataset.si, old = mx; mx = x; x.translate(22, 43); x.scale(1.35, 1.35); x.translate(-22, -40);
+    try {
+      if (k === 'train') { drawSoldier(22, 38, 200, 0, false, false); x.fillStyle = "#e8b923"; x.beginPath(); x.arc(33, 15, 5, 0, 7); x.fill(); }
+      else if (k === 'heal') { drawSoldier(22, 38, 90, 0, false, true); x.fillStyle = '#ef4444'; x.fillRect(30, 13, 9, 3); x.fillRect(33, 10, 3, 9); }
+      else drawSoldier(22, 38, k.length * 40, k === 'hunt' ? 1.1 : 0, k === 'hunt', k !== 'ready');
+    } finally { mx = old; }
+  });
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-gview],[data-recallall],#v-soldiers [data-go]'); if (!t || !S) return;
+  if (t.dataset.go) return setView(t.dataset.go);
+  if (t.dataset.gview) { const g = findGolem(t.dataset.gview); if (g) golemSheet(g); return; }
+  if (t.dataset.recallall !== undefined) { const now = sNowL(); for (const s of soldiers()) if (s.mode === 1) sendHome(s, now); save(); livePublish(true); milSync(true); renderSoldiers(true); }
+});
+const _refreshMil = refresh;
+refresh = function (force) { _refreshMil(force); if (view === 'soldiers') renderSoldiers(force); };
+setInterval(() => { if (S && view === 'soldiers' && $('#sheet').hidden) renderSoldiers(false); }, 1000);
