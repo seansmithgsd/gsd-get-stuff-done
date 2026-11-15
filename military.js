@@ -507,3 +507,20 @@ document.addEventListener('click', e => {
 const _refreshMil = refresh;
 refresh = function (force) { _refreshMil(force); if (view === 'soldiers') renderSoldiers(force); };
 setInterval(() => { if (S && view === 'soldiers' && $('#sheet').hidden) renderSoldiers(false); }, 1000);
+
+// ---------------------------------------------------------------- Super tab: the Super GSD Consultants side-scroller, each level cleared = +1 AI worker
+const _setViewSuper = setView;
+setView = function (v) {
+  _setViewSuper(v);
+  const el = $('#v-super');
+  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1" title="Super GSD Consultants" allow="autoplay"></iframe>';
+  if (v === 'super') { const f = el.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
+  else if (el.querySelector('iframe')) { try { el.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
+};
+addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data || e.data.t !== 'superClear' || !S) return;
+  // one AI worker per level cleared (same rules as a puzzle recruit: waits for housing if the village is full)
+  if (S.workers.length < housing()) { addWorker(); toast(`Deal ${e.data.level} closed — +1 AI worker!`); }
+  else { S.waiting++; toast(`Deal ${e.data.level} closed — new AI worker waiting for housing`); }
+  sfx('recruit'); save(); refresh(true);
+});

@@ -15,6 +15,7 @@
   #jump{right:22px;bottom:30px;width:88px;height:88px}
   #run{right:122px;bottom:40px;width:66px;height:66px;font-size:12px}
   #run.on{background:rgba(250,204,21,.55);border-color:#facc15;color:#111}
+  @media (orientation:portrait){#wrap{align-items:flex-start;padding-top:10px}}
   #back{position:fixed;left:8px;top:8px;color:#cbd5e1;font:600 12px system-ui;text-decoration:none;opacity:.7}
 </style>
 </head>
@@ -22,6 +23,7 @@
 <div id="wrap"><canvas id="scr" width="256" height="240"></canvas></div>
 <div id="pad"><div id="stick" class="tb"><div id="knob"></div></div><div id="run" class="tb">SPRINT</div><div id="jump" class="tb">JUMP</div></div>
 <a id="back" href="/">← GSD</a>
+<script>if (location.search.includes('embed')) document.getElementById('back').style.display = 'none';</script>
 <script>
 'use strict';
 /* Super GSD Consultants — an original side-scroller in the NES style.
@@ -270,8 +272,11 @@ function stepPlayer() {
 function stepGoal() {
   if (P.goal === 1) { P.y += 2; if (P.y >= 192 - 16) { P.y = 192 - 16; P.goal = 2; P.x += 10; } }
   else if (P.goal === 2) { P.vx = 1; P.face = 1; P.x += P.vx; P.vy = Math.min(PH.maxFall, P.vy + .4375); P.y += P.vy; const h = boxHitsSolid(P.x, P.y, P.w, P.h); if (h) { P.y = h[1] * 16 - P.h; P.vy = 0; } P.anim += .15; if (P.x >= HQX * 16 + 8) { P.goal = 3; G.timer = 0; } }
-  else if (P.goal === 3) { if (G.time > 0) { const n = Math.min(G.time, 3); G.time -= n; G.score += n * 50; if (G.timer++ % 3 === 0) blip(880, 880, .03); } else { G.timer++; if (G.timer > 120) { G.lvl = (G.lvl + 1) % LEVELS.length; startLevel(); } } }
+  else if (P.goal === 3) { if (G.time > 0) { const n = Math.min(G.time, 3); G.time -= n; G.score += n * 50; if (G.timer++ % 3 === 0) blip(880, 880, .03); } else { if (!P.reported) { P.reported = true; reportClear(); } G.timer++; if (G.timer > 120) { G.lvl = (G.lvl + 1) % LEVELS.length; startLevel(); } } }
 }
+// cleared a level: tell the GSD village (it grants an AI worker) — once per clear
+function reportClear() { try { if (parent !== window) parent.postMessage({ t: 'superClear', level: LEVELS[G.lvl].name, who: G.who, score: G.score }, location.origin); } catch (e) {} }
+addEventListener('message', e => { if (e.origin === location.origin && e.data && e.data.t === 'pause') for (const k in key) key[k] = false; });
 function stepFoes() {
   for (const f of FOES) {
     if (!f.alive) { if (f.flip) { f.vy += .3; f.y += f.vy; } continue; }
@@ -404,9 +409,11 @@ function render(t) {
 // ---------------------------------------------------------------- fit to screen (integer scale when it fits) + fixed 60 Hz loop
 function fit() {
   const s = Math.min(innerWidth / 256, innerHeight / 240), k = Math.floor(s);
-  const use = k >= 2 && k / s > .85 ? k : s;   // crisp whole-number scale when it nearly fills the screen, otherwise fill it cv.style.width = Math.round(256 * use) + 'px'; cv.style.height = Math.round(240 * use) + 'px';
+  const use = k >= 2 && k / s > .85 ? k : s;   // crisp whole-number scale when it nearly fills the screen, otherwise fill it
+  cv.style.width = Math.round(256 * use) + 'px'; cv.style.height = Math.round(240 * use) + 'px';
 }
 addEventListener('resize', fit); fit();
+let lastWH = ''; setInterval(() => { const k = innerWidth + 'x' + innerHeight; if (k !== lastWH) { lastWH = k; fit(); } }, 400);   // embedded in a tab that was hidden at load
 let last = performance.now(), acc = 0;
 function loop(now) {
   acc += Math.min(250, now - last); last = now;
