@@ -17,6 +17,7 @@
   #fire{right:40px;bottom:132px;width:62px;height:62px;font-size:12px;background:rgba(234,88,12,.45);border-color:#fb923c}
   #run.on{background:rgba(250,204,21,.55);border-color:#facc15;color:#111}
   @media (orientation:portrait){#wrap{align-items:flex-start;padding-top:10px}}
+  @media (orientation:landscape) and (max-height:600px){#stick{left:max(14px,env(safe-area-inset-left));bottom:14px} #jump{right:max(14px,env(safe-area-inset-right));bottom:20px} #run{right:max(112px,calc(env(safe-area-inset-right) + 98px));bottom:118px} #fire{right:max(14px,env(safe-area-inset-right));bottom:122px}}
   #back{position:fixed;left:8px;top:8px;color:#cbd5e1;font:600 12px system-ui;text-decoration:none;opacity:.7}
 </style>
 </head>
@@ -593,7 +594,7 @@ function drawSelect(t) {
     if (sel) { g.strokeStyle = '#facc15'; g.strokeRect(x - 26, 112, 52, 60); }
   });
   txt(isTouch ? 'STICK TO PICK - JUMP TO START' : 'A / D PICK - SPACE START', 128, 202, '#cbd5e1', 'center');
-  txt(isTouch ? 'SPRINT TOGGLES RUN - STICK DOWN = ELEVATOR' : 'HOLD M SPRINT - TAP M FIRE - S ELEVATOR', 128, 214, '#94a3b8', 'center');
+  txt(isTouch ? 'SPRINT TOGGLES RUN - STICK DOWN - ELEVATOR' : 'HOLD M SPRINT - TAP M FIRE - S ELEVATOR', 128, 214, '#94a3b8', 'center');
 }
 function render(t) {
   if (G.mode === 'select') return drawSelect(t);
