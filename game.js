@@ -1150,6 +1150,7 @@ function drawMap(now) {
     const n = nodeAt(i, j); if (!NODES.includes(n)) return;
     const [x, y] = iso(i, j); nodeSprite(n, x, y, MAP.g[j * W + mod(i, W)], stageOf(i, j));
   });
+  if (typeof drawTopObjs === 'function') drawTopObjs();   // golems + their fight: always on top, never hidden by piles or trees
   mx.textAlign = 'center'; mx.font = 'bold 13px Georgia';
   flushLabels();
   if (typeof drawEdgeArrows === 'function') drawEdgeArrows(cw / ZM, ch / ZM);

@@ -141,7 +141,7 @@ function golemList(m) {
 }
 function golemDead(m) {
   const g = LIVE.golems.get(m.id); const now = sNowL();
-  if (g) { LIVE.gdeath.push({ g, at: now, pos: golemPos(g, now) }); LIVE.golems.delete(m.id); }
+  if (g) { LIVE.gdeath.push({ g, at: now, pos: golemSeen(g, now) }); LIVE.golems.delete(m.id); }
   if (S) for (const s of soldiers()) if (s.mode === 1 && s.gid === m.id) sendHome(s, now);
 }
 function applyMil(x) {
@@ -162,7 +162,7 @@ function applyMil(x) {
   if (x.kind === 'golem') {
     S.res[x.res] = Math.max(0, (S.res[x.res] || 0) - x.amt);
     biteSum[x.res] = (biteSum[x.res] || 0) + x.amt;
-    if (now - lastBiteToast > 60000) { toast(`A golem is eating your piles: −${Object.entries(biteSum).map(([k, v]) => v + ' ' + k).join(', ')}`); sfx('lose'); lastBiteToast = now; biteSum = {}; }
+    if (now - lastBiteToast > 60000) { const ks = Object.keys(biteSum); toast(`${ks.length === 1 ? 'A' + (/^[aeiou]/.test(GNAME[ks[0]].toLowerCase()) ? 'n ' : ' ') + GNAME[ks[0]] + ' Golem is' : 'Golems are'} eating your piles: −${Object.entries(biteSum).map(([k, v]) => v + ' ' + k).join(', ')} — tap it to send soldiers`); sfx('lose'); lastBiteToast = now; biteSum = {}; }
   }
 }
 const _applyLoss0 = applyLoss;
@@ -176,9 +176,16 @@ liveMsg = function (key, m) {
 
 // ---------------------------------------------------------------- tapping a golem
 let HUNT_N = 5;
+// where we draw (and tap) a golem: one eating a pile stands in front of it, toward the viewer, so it's never hidden
+const golemSeen = (g, now) => {
+  const [x, y] = golemPos(g, now); if (!g.eat) return [x, y];
+  // our own pile: stand just past its front corner
+  if (ME && g.eat === ME.id && typeof PILES !== 'undefined') { const p = PILES.find(q => q.k === g.k); if (p) return toWorld(p.i + p.side + .3, p.j + p.side + .3); }
+  return [x + 1.6, y + 1.6];
+};
 function golemAtWorld(x, y) {
   const now = sNowL(); let best = null, bd = 1e9;
-  for (const g of LIVE.golems.values()) { const [gx, gy] = golemPos(g, now), r = Math.max(1.3, golemScale(g) * 1.2), d = Math.hypot(gx - x, gy - y); if (d < r && d < bd) { bd = d; best = g; } }
+  for (const g of LIVE.golems.values()) { const [gx, gy] = golemSeen(g, now), r = Math.max(1.3, golemScale(g) * 1.2), d = Math.hypot(gx - x, gy - y); if (d < r && d < bd) { bd = d; best = g; } }
   return best;
 }
 const GNAME = { wood: 'Wood', planks: 'Plank', stone: 'Stone', coal: 'Coal', iron: 'Iron', steel: 'Steel', gears: 'Gear', wires: 'Wire' };
@@ -299,24 +306,26 @@ function drawSoldier(x, y, hue, t, swing, axe) {
   mx.fillStyle = '#cbd5e1'; if (axe) { mx.beginPath(); mx.moveTo(0, -12); mx.lineTo(5, -14); mx.lineTo(5, -8); mx.lineTo(0, -9); mx.fill(); } else { mx.fillRect(-5, -13, 10, 2); }
   mx.restore();
 }
+let TOP = [];
+function drawTopObjs() { TOP.sort((a, b) => a.d - b.d).forEach(o => o.f()); TOP = []; }
 function golemObjects(objs, t, vw, vh) {
-  const now = sNowL();
+  const now = sNowL(); TOP = [];
   for (const g of LIVE.golems.values()) {
-    const [gx, gy] = golemPos(g, now), [li, lj] = toLocal(gx, gy), [sx, sy] = iso(li, lj);
+    const [gx, gy] = golemSeen(g, now), [li, lj] = toLocal(gx, gy), [sx, sy] = iso(li, lj);
     if (sx < -250 || sx > vw + 250 || sy < -60 || sy > vh + 350) continue;
     const ex = iso(...toLocal(g.tx, g.ty))[0], face = g.eat || g.nf ? 1 : (ex < sx - 1 ? -1 : 1);
-    objs.push({ d: gx + gy - LIVE.OX - LIVE.OY, f: () => drawGolem(sx, sy, g, t, face) });
+    TOP.push({ d: li + lj, f: () => drawGolem(sx, sy, g, t, face) });   // drawn after everything: piles, trees and buildings never hide a golem
     // soldiers fighting it, in a ring
     const n = Math.min(12, g.nf || 0), s = golemScale(g), ax = GOLEM_AXE.includes(g.k);
     for (let q = 0; q < n; q++) {
       const a = q / Math.max(1, n) * Math.PI * 2 + .4, r = 1 + s * .6, pi = li + Math.cos(a) * r, pj = lj + Math.sin(a) * r * .8, [qx, qy] = iso(pi, pj);
-      objs.push({ d: pi + pj, f: () => drawSoldier(qx, qy, q * 37, t, true, ax) });
+      TOP.push({ d: pi + pj, f: () => drawSoldier(qx, qy, q * 37, t, true, ax) });
     }
   }
   // our own soldiers on the road (out to a golem, or back home)
   if (S && LIVE.golems) for (const s of soldiers()) {
     let p = null;
-    if (s.mode === 1 && s.ready > now) { const g = LIVE.golems.get(s.gid); if (!g) continue; const [gx, gy] = golemPos(g, now), [hx, hy] = toWorld(TCI, TCJ), f = 1 - (s.ready - now) / Math.max(1, s.trip); p = [hx + (gx - hx) * f, hy + (gy - hy) * f]; }
+    if (s.mode === 1 && s.ready > now) { const g = LIVE.golems.get(s.gid); if (!g) continue; const [gx, gy] = golemSeen(g, now), [hx, hy] = toWorld(TCI, TCJ), f = 1 - (s.ready - now) / Math.max(1, s.trip); p = [hx + (gx - hx) * f, hy + (gy - hy) * f]; }
     else if (s.mode === 0 && s.ready > now && s.trip) { const [hx, hy] = toWorld(TCI, TCJ), f = (s.ready - now) / Math.max(1, s.trip); p = [hx + 6 * f, hy + 6 * f]; }
     if (!p) continue;
     const [li, lj] = toLocal(...p), [qx, qy] = iso(li, lj);
@@ -328,7 +337,7 @@ function golemObjects(objs, t, vw, vh) {
   for (const d of LIVE.gdeath) {
     if (!d.v) { d.v = {}; for (const k of ['th0', 'th1', 'ar0', 'ar1', 'hip', 'tor', 'hd']) d.v[k] = [(Math.random() - .5) * 2, -Math.random() * 1.5, (Math.random() - .5) * 2]; }
     const [li, lj] = toLocal(...d.pos), [sx, sy] = iso(li, lj), f = (now - d.at) / 2600;
-    objs.push({ d: li + lj, f: () => { drawGolem(sx, sy, d.g, t, 1, { f, v: d.v }); if (f > .4) drawPile(sx, sy + 4, d.g.k, 400 * (f - .4), 1); } });
+    TOP.push({ d: li + lj, f: () => { drawGolem(sx, sy, d.g, t, 1, { f, v: d.v }); if (f > .4) drawPile(sx, sy + 4, d.g.k, 400 * (f - .4), 1); } });
   }
 }
 const _worldObjectsMil = worldObjects;
