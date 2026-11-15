@@ -283,7 +283,7 @@ function finishResearch(quiet) {
   S.upg = S.upg || {}; S.upg[id] = (S.upg[id] || 0) + 1; S.rs = null;
   // next one in the queue starts right away
   const nx = (S.rq || []).shift(); if (nx && UPGI[nx.id]) S.rs = { id: nx.id, prog: 0, dur: upgTime(UPGI[nx.id], U(nx.id)) };
-  if (id === 'tracking' || id === 'prospect' || id === 'hardwood' || id === 'deepquarry') { genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; }); }
+  if (id === 'tracking' || id === 'prospect' || id === 'hardwood' || id === 'deepquarry' || TOWN_AGES.includes(id)) { genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; }); }
   if (id === 'expansion') expandLand();
   if (u.age) { if (!quiet) modal(`<h2>${u.n}!</h2><p>${u.d}.</p><div class="btns"><button class="btn go" data-close>Onward</button></div>`); }
   if (!quiet) { toast(`${u.n} researched`); sfx('recruit'); }

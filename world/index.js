@@ -3,7 +3,7 @@
 // the zone only relays what workers are doing, keeps each village's last snapshot for offline viewing,
 // and decides who gets a shared tree / rock first. WebSocket Hibernation keeps idle zones free.
 import { DurableObject } from 'cloudflare:workers';
-import { VW, PX, PY, ZONE, plotOrigin, plotOf, inPlot, zoneOf, wildAt, REGROW_MS, GOLEM_TYPES, GOLEM_AXE, GOLEM_IND, GOLEM_DIG, GOLEM_START, GOLEM_EAT, GOLEM_GROW, GOLEM_SPEED, GOLEM_HIT, HIT_MS, SOLDIER_HIT, golemLoot, golemXp, golemPos } from './shared.js';
+import { VW, PX, PY, ZONE, WORLD_VER, vdim, zoneOrigin, plotOrigin, plotOf, inPlot, zoneOf, wildAt, REGROW_MS, GOLEM_TYPES, GOLEM_AXE, GOLEM_IND, GOLEM_DIG, GOLEM_START, GOLEM_EAT, GOLEM_GROW, GOLEM_SPEED, GOLEM_HIT, HIT_MS, SOLDIER_HIT, golemLoot, golemXp, golemPos } from './shared.js';
 
 const TICK_MS = 10000, SPAWN_GAP = 10 * 60 * 1000, CATCHUP_MS = 3600 * 1000;
 
@@ -30,7 +30,17 @@ export default {
 export class Zone extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
-    ctx.blockConcurrencyWhile(async () => { this._z = (await ctx.storage.get('z')) || null; });
+    ctx.blockConcurrencyWhile(async () => {
+      this._z = (await ctx.storage.get('z')) || null;
+      // world re-spaced (v2: 64×56 plots, villages grow with Ages): tile positions moved, so wild-land use, golems,
+      // hunters and village snapshots from the old layout are dropped once. Queued losses/rewards are kept.
+      if (((await ctx.storage.get('wv')) || 1) < WORLD_VER) {
+        const all = await ctx.storage.list();
+        const drop = [...all.keys()].filter(k => k.startsWith('w:') || k.startsWith('v:') || k.startsWith('h:') || k === 'gl' || k === 'gls' || k === 'gld' || k === 'gla');
+        for (let i = 0; i < drop.length; i += 100) await ctx.storage.delete(drop.slice(i, i + 100));
+        await ctx.storage.put('wv', WORLD_VER);
+      }
+    });
     this.intents = new Map();   // pid -> latest worker intents (memory only; resent each trip)
   }
   async fetch(req) {
@@ -84,7 +94,7 @@ export class Zone extends DurableObject {
       return;
     }
     if (m.t === 'snap' && mine) {
-      const v = { pid: who.pid, name: who.name, team: who.team, gx: who.gx, gy: who.gy, seed: m.seed | 0, b: Array.isArray(m.b) ? m.b.slice(0, 400) : [], left: m.left && typeof m.left === 'object' ? m.left : {}, n: m.n && typeof m.n === 'object' ? m.n : {}, pl: Array.isArray(m.pl) ? m.pl.slice(0, 120) : [], st: m.st && typeof m.st === 'object' ? m.st : {}, gd: m.gd && typeof m.gd === 'object' ? { n: m.gd.n | 0, lvl: m.gd.lvl | 0 } : { n: 0, lvl: 0 }, lvl: m.lvl | 0, at: now,
+      const v = { pid: who.pid, name: who.name, team: who.team, gx: who.gx, gy: who.gy, a: Math.max(0, Math.min(4, m.a | 0)), seed: m.seed | 0, b: Array.isArray(m.b) ? m.b.slice(0, 400) : [], left: m.left && typeof m.left === 'object' ? m.left : {}, n: m.n && typeof m.n === 'object' ? m.n : {}, pl: Array.isArray(m.pl) ? m.pl.slice(0, 120) : [], st: m.st && typeof m.st === 'object' ? m.st : {}, gd: m.gd && typeof m.gd === 'object' ? { n: m.gd.n | 0, lvl: m.gd.lvl | 0 } : { n: 0, lvl: 0 }, lvl: m.lvl | 0, at: now,
         sd: Array.isArray(m.sd) ? m.sd.slice(0, 260).map(cleanSd) : [], tk: m.tk && typeof m.tk === 'object' ? { ax: m.tk.ax | 0, pk: m.tk.pk | 0, ind: !!m.tk.ind, dig: !!m.tk.dig } : { ax: 0, pk: 0, ind: false, dig: false } };
       const prev = await this.ctx.storage.get('v:' + who.pid);
       v.sdh = (prev && prev.sdh) || {};
@@ -134,9 +144,9 @@ export class Zone extends DurableObject {
     if (m.t === 'claim') {
       const x = m.x | 0, y = m.y | 0, [gx, gy] = plotOf(x, y);
       if (zoneOf(gx, gy)[0] !== who.zx || zoneOf(gx, gy)[1] !== who.zy) return ws.send(JSON.stringify({ t: 'claim', id: m.id, ok: false, why: 'wrong zone' }));
-      const v = [...(await this.ctx.storage.list({ prefix: 'v:' })).values()].find(s => inPlot(x, y, s.gx, s.gy));
+      const v = [...(await this.ctx.storage.list({ prefix: 'v:' })).values()].find(s => inPlot(x, y, s.gx, s.gy, s.a));
       if (v) {
-        const [ox, oy] = plotOrigin(v.gx, v.gy), k = String((y - oy) * VW + (x - ox)), left = v.left[k] | 0;
+        const [ox, oy] = plotOrigin(v.gx, v.gy, v.a), k = String((y - oy) * vdim(v.a).vw + (x - ox)), left = v.left[k] | 0;
         if (left <= 0) return ws.send(JSON.stringify({ t: 'claim', id: m.id, ok: false, why: 'used up' }));
         v.left[k] = left - 1; await this.ctx.storage.put('v:' + v.pid, v);
         ws.send(JSON.stringify({ t: 'claim', id: m.id, ok: true }));
@@ -173,9 +183,9 @@ export class Zone extends DurableObject {
     const sp = (await this.ctx.storage.get('gls')) || 0;
     if (vs.size && gl.length < vs.size && now - sp > SPAWN_GAP && zx != null) {
       const k = GOLEM_TYPES[(Math.random() * GOLEM_TYPES.length) | 0];
-      const [ox, oy] = plotOrigin(zx * ZONE, zy * ZONE);
+      const [ox, oy] = zoneOrigin(zx, zy);
       let x = ox, y = oy;
-      for (let n = 0; n < 40; n++) { x = ox + Math.floor(Math.random() * PX * ZONE); y = oy + Math.floor(Math.random() * PY * ZONE); if (![...vs.values()].some(v => inPlot(x, y, v.gx, v.gy))) break; }
+      for (let n = 0; n < 40; n++) { x = ox + Math.floor(Math.random() * PX * ZONE); y = oy + Math.floor(Math.random() * PY * ZONE); if (![...vs.values()].some(v => inPlot(x, y, v.gx, v.gy, v.a))) break; }
       gl.push({ id: now.toString(36) + Math.floor(Math.random() * 1e4), k, m: GOLEM_START, mx: GOLEM_START, x, y, tx: x, ty: y, t0: now, sp: GOLEM_SPEED, eat: 0, acc: 0, ea: 0, dmg: {}, who: {}, nf: 0 });
       await this.ctx.storage.put('gls', now);
     }
@@ -191,12 +201,12 @@ export class Zone extends DurableObject {
           if (Math.hypot(g.tx - px, g.ty - py) < .6) {
             let best = null, bd = 1e9;
             for (const v of vs.values()) {
-              const [ox, oy] = plotOrigin(v.gx, v.gy);
+              const [ox, oy] = plotOrigin(v.gx, v.gy, v.a);
               for (const p of v.pl || []) if (p[0] === g.k && p[3] > 0) { const sd = p[4] || 1, cx = ox + p[1] + (sd - 1) / 2, cy = oy + p[2] + (sd - 1) / 2, d = Math.hypot(cx - px, cy - py); if (d < bd) { bd = d; best = { v, cx, cy }; } }
             }
             if (best && bd < .9) { g.eat = best.v.pid; g.x = g.tx = px; g.y = g.ty = py; g.t0 = t; }
             else if (best) { g.x = px; g.y = py; g.tx = best.cx; g.ty = best.cy + .8; g.t0 = t; }
-            else { const [ox, oy] = plotOrigin(zx * ZONE, zy * ZONE); g.x = px; g.y = py; g.tx = Math.max(ox, Math.min(ox + PX * ZONE - 1, px + (Math.random() - .5) * 30)); g.ty = Math.max(oy, Math.min(oy + PY * ZONE - 1, py + (Math.random() - .5) * 30)); g.t0 = t; }
+            else { const [ox, oy] = zoneOrigin(zx, zy); g.x = px; g.y = py; g.tx = Math.max(ox, Math.min(ox + PX * ZONE - 1, px + (Math.random() - .5) * 30)); g.ty = Math.max(oy, Math.min(oy + PY * ZONE - 1, py + (Math.random() - .5) * 30)); g.t0 = t; }
           }
         }
         // 2) eat: 10 a minute from the pile, grow by half of it

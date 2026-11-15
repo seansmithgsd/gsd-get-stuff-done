@@ -136,7 +136,12 @@ setTimeout(muteIcon, 0);
 
 // ---------------------------------------------------------------- state
 const SAVE_KEY = 'gsd-get-stuff-done-v1';
-const W = 32, H = 24, TCI = 16, TCJ = 12;
+// The village grid grows 4 tiles on every side per Age researched (32×24 → 64×56 at the Digital Age).
+// TCI/TCJ (Town Center tile) stay in the middle, so every tile key shifts when the town grows (see syncTownSize).
+let W = 32, H = 24, TCI = 16, TCJ = 12;
+const TOWN_AGES = ['age6', 'age7', 'age8', 'age9'];
+function setGrid(a) { W = 32 + 8 * a; H = 24 + 8 * a; TCI = 16 + 4 * a; TCJ = 12 + 4 * a; }
+const townAges = () => (S && S.upg ? TOWN_AGES.filter(a => S.upg[a]).length : 0);
 let S, ME = null, dirty = false, applied = [], SIM_BACK = 0;
 const simNow = () => Date.now() - SIM_BACK;   // during offline catch-up, the moment being simulated
 
@@ -145,7 +150,7 @@ function newState() {
     v: 1, t: Date.now(), seed: (Math.random() * 1e9) | 0,
     res: { food: 10, wood: 12, stone: 0, iron: 0, coal: 0, steel: 0, planks: 0, gears: 0, wires: 0, copper: 6, silver: 0, gold: 0 },
     bank: 0, level: 1, wins: 0, recruit: 0, waiting: 0, eatAcc: 0, nextId: 1, upg: {},
-    workers: [], buildings: [{ id: 0, type: 'tc', i: TCI, j: TCJ, done: true }], mil: 1, soldiers: [], trainQ: [],
+    workers: [], buildings: [{ id: 0, type: 'tc', i: TCI, j: TCJ, done: true }], ga: (W - 32) / 8, mil: 1, soldiers: [], trainQ: [],
   };
 }
 function load() {
@@ -156,8 +161,9 @@ function load() {
 function migrate(s) {
   // v50: Barracks used to house AI workers — every old one becomes an Apartment of the same level (runs once per save)
   if (!s.mil) { for (const b of s.buildings || []) if (b.type === 'barracks') b.type = 'apartment'; s.mil = 1; }
+  if (s.ga == null) s.ga = 0;   // v59: every save before town growth sits on the 32×24 grid
   // v58: the palisade is only the fence — it no longer holds a tile inside the village
-  for (const b of s.buildings || []) if (b.type === 'palisade') { b.i = 0; b.j = TCJ; }
+  for (const b of s.buildings || []) if (b.type === 'palisade') { b.i = 0; b.j = 12 + 4 * (s.ga || 0); }
   const d = newState();
   for (const k in d) if (s[k] == null) s[k] = d[k];
   for (const k in d.res) if (s.res[k] == null) s.res[k] = 0;
@@ -208,30 +214,54 @@ function costHTML(c) {
 // ---------------------------------------------------------------- map
 let MAP, DEER = [];
 function near(i, j, a, b) { return Math.max(Math.abs(i - a), Math.abs(j - b)); }
+function gHash(x, y, s) { let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(s | 0, 1274126177); h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
+function gNoise(x, y, s) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = gHash(xi, yi, s), b = gHash(xi + 1, yi, s), c = gHash(xi, yi + 1, s), d = gHash(xi + 1, yi + 1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
 function genMap(seed) {
+  if (S) { syncTownSize(); setGrid(S.ga || 0); }
+  // the original 32×24 village, generated exactly as it always was (saved trip counts depend on it)
+  const LW = 32, LH = 24, LI = 16, LJ = 12, OX = TCI - LI, OY = TCJ - LJ;
   const r = rng(seed);
-  const node = new Array(W * H).fill(null), g = [];
-  for (let k = 0; k < W * H; k++) g[k] = r();
+  const lnode = new Array(LW * LH).fill(null), lg = [];
+  for (let k = 0; k < LW * LH; k++) lg[k] = r();
   const place = (type, clusters, size, spread) => {
     for (let c = 0; c < clusters; c++) {
-      const ci = (r() * W) | 0, cj = (r() * H) | 0;
+      const ci = (r() * LW) | 0, cj = (r() * LH) | 0;
       for (let n = 0; n < size; n++) {
-        const i = mod(ci + Math.round((r() - .5) * spread * 2), W), j = Math.round(cj + (r() - .5) * spread * 2);
-        if (j < 0 || j >= H || near(i, j, TCI, TCJ) < 3) continue;
-        node[j * W + i] = type;
+        const i = mod(ci + Math.round((r() - .5) * spread * 2), LW), j = Math.round(cj + (r() - .5) * spread * 2);
+        if (j < 0 || j >= LH || near(i, j, LI, LJ) < 3) continue;
+        lnode[j * LW + i] = type;
       }
     }
   };
   place('tree', 16, 10, 2.5); place('bush', 9, 3, 1.2); place('rock', 8, 3, 1.2);
-  const set = (di, dj, t) => { node[(TCJ + dj) * W + mod(TCI + di, W)] = t; };
+  const set = (di, dj, t) => { lnode[(LJ + dj) * LW + mod(LI + di, LW)] = t; };
   [[4, -1], [4, 0], [5, -1]].forEach(([a, b]) => set(a, b, 'bush'));
   [[-4, -2], [-5, -2], [-4, -1], [-5, -1], [-5, 0], [-6, -1]].forEach(([a, b]) => set(a, b, 'tree'));
   [[1, 5], [2, 5], [2, 6]].forEach(([a, b]) => set(a, b, 'rock'));
-  // every tree / bush / rock holds a random number of trips
-  const ra = rng(seed ^ 0x2545f491), amt = new Array(W * H).fill(0);
-  if (S && S.planted) for (const k in S.planted) if (!node[k]) node[k] = S.planted[k];
-  if (S && U('prospect')) { const rp = rng(seed ^ 0x77aa11); for (let n = 0; n < 7; n++) { const k = ((rp() * H) | 0) * W + ((rp() * W) | 0); if (!node[k]) node[k] = 'goldrock'; } }
-  for (let k = 0; k < W * H; k++) { const n = node[k], r = ra(); if (n === 'tree') amt[k] = 6 + Math.floor(r * 10) + treeBonus(); else if (n === 'bush') amt[k] = 3 + Math.floor(r * 6); else if (n === 'rock') amt[k] = 8 + Math.floor(r * 13) + rockBonus(); else if (n === 'goldrock') amt[k] = 5; }
+  const inCore = (i, j) => i >= OX && i < OX + LW && j >= OY && j < OY + LH;
+  const toCore = k => { const i = k % W - OX, j = Math.floor(k / W) - OY; return j * LW + i; };
+  const ra = rng(seed ^ 0x2545f491), lamt = new Array(LW * LH).fill(0);
+  if (S && S.planted) for (const k in S.planted) { const i = k % W, j = Math.floor(k / W); if (inCore(i, j)) { const c = toCore(+k); if (!lnode[c]) lnode[c] = S.planted[k]; } }
+  if (S && U('prospect')) { const rp = rng(seed ^ 0x77aa11); for (let n = 0; n < 7; n++) { const k = ((rp() * LH) | 0) * LW + ((rp() * LW) | 0); if (!lnode[k]) lnode[k] = 'goldrock'; } }
+  for (let k = 0; k < LW * LH; k++) { const n = lnode[k], q = ra(); if (n === 'tree') lamt[k] = 6 + Math.floor(q * 10) + treeBonus(); else if (n === 'bush') lamt[k] = 3 + Math.floor(q * 6); else if (n === 'rock') lamt[k] = 8 + Math.floor(q * 13) + rockBonus(); else if (n === 'goldrock') lamt[k] = 5; }
+  // the full grid: the core in the middle, land added by the Ages around it
+  const node = new Array(W * H).fill(null), g = new Array(W * H), amt = new Array(W * H).fill(0);
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const k = j * W + i;
+    if (inCore(i, j)) { const c = (j - OY) * LW + (i - OX); node[k] = lnode[c]; g[k] = lg[c]; amt[k] = lamt[c]; continue; }
+    const di = i - TCI, dj = j - TCJ, h = gHash(di, dj, seed), f = gNoise(di / 4.5, dj / 4.5, seed ^ 0x51ed), q = gNoise(di / 3, dj / 3, seed ^ 0x2b3c);
+    g[k] = gHash(di, dj, seed ^ 0x9e37);
+    let n = null;
+    if (f > .58 && h < (f - .5) * 1.5) n = 'tree'; else if (q > .72 && h < (q - .62) * 1.4) n = 'rock'; else if (h > .985) n = 'bush';
+    if (S && S.planted && S.planted[k] && !n) n = S.planted[k];
+    node[k] = n;
+    const q2 = gHash(di, dj, seed ^ 0x77);
+    if (n === 'tree') amt[k] = 6 + Math.floor(q2 * 10) + treeBonus(); else if (n === 'bush') amt[k] = 3 + Math.floor(q2 * 6); else if (n === 'rock') amt[k] = 8 + Math.floor(q2 * 13) + rockBonus(); else if (n === 'goldrock') amt[k] = 5;
+  }
   MAP = { node, g, amt }; layerDirty = true;
   // saves from before regrowth tracking have used-up trees/bushes with no depletion record: backfill so Forestry/Orchard can regrow them
   if (S && S.used) for (const k in S.used) { const n = node[k]; if (S.used[k] >= amt[k] && (n === 'tree' || n === 'bush')) { S.dep = S.dep || {}; if (!S.dep[k]) S.dep[k] = { n, t: 0 }; } }
@@ -245,6 +275,27 @@ function genMap(seed) {
   }
   DEER.push({ i: TCI + 6.5, j: TCJ + 2.5, ti: TCI + 6.5, tj: TCJ + 2.5, wait: 1 });
   if (S && S.buildings) clearNoTree();
+}
+// The town grew (or shrank on prestige): move every saved grid position by d tiles on each axis.
+function syncTownSize() {
+  const A = townAges(), ga = S.ga || 0;
+  if (A === ga) { setGrid(A); return false; }
+  setGrid(ga); const oW = W;
+  setGrid(A); const d = 4 * (A - ga), nW = W, nH = H;
+  const ok = (i, j) => i >= 0 && j >= 0 && i < nW && j < nH;
+  const rekey = o => { if (!o) return o; const out = {}; for (const k in o) { const i = (+k % oW) + d, j = Math.floor(+k / oW) + d; if (ok(i, j)) out[j * nW + i] = o[k]; } return out; };
+  S.used = rekey(S.used); S.dep = rekey(S.dep); S.planted = rekey(S.planted);
+  for (const b of S.buildings) { b.i += d; b.j += d; }
+  S.buildings = S.buildings.filter(b => b.type === 'palisade' || ok(b.i, b.j));
+  for (const b of S.buildings) if (b.type === 'palisade') { b.i = 0; b.j = TCJ; }
+  if (S.roads) S.roads = S.roads.map(([i, j]) => [i + d, j + d]).filter(([i, j]) => ok(i, j));
+  for (const w of S.workers) if (w.task && Array.isArray(w.task.target)) w.task.target = [w.task.target[0] + d, w.task.target[1] + d];
+  S.ga = A; B_IDX = null;
+  if (typeof camY !== 'undefined') camY += d * TH;
+  if (typeof ROADSET !== 'undefined') ROADSET = null;
+  if (typeof liveHome === 'function') try { liveHome(); } catch (e) {}
+  layerDirty = true;
+  return true;
 }
 // no-tree zones: the 3×3 tiles a building's art covers, and every road tile. Trees never grow there; any already there go.
 function noTree(i, j) {
@@ -267,7 +318,7 @@ const SLOTS = [[2, 0], [0, 2], [-2, 0], [0, -2], [2, 2], [-2, 2], [2, -2], [-2, 
 (() => { const more = []; for (let r = 4; r <= 6; r++) for (let di = -r; di <= r; di++) for (let dj = -r; dj <= r; dj++) if (Math.max(Math.abs(di), Math.abs(dj)) === r && (di + dj) % 2 === 0 && !SLOTS.some(([a, b]) => a === di && b === dj)) more.push([di, dj]); more.sort((a, b) => Math.hypot(...a) - Math.hypot(...b)); SLOTS.push(...more); })();
 // build spots: the classic ring first, then every other tile outward from the Town Center.
 // The build radius grows with each Age and with Expansion; open ground is used before clearing trees or rocks.
-const buildRadius = () => 6 + 2 * ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length + (U('expansion') ? 3 : 0);
+const buildRadius = () => 6 + 4 * townAges() + (U('expansion') ? 3 : 0);   // the town grows 4 tiles a side per Age; so does building room
 function findSlot() {
   const free = (i, j) => i >= 1 && i < W - 1 && j >= 1 && j < H - 1 && !bAt(i, j) && !pileAt(i, j) && near(i, j, TCI, TCJ) >= 2;
   for (const [di, dj] of [...SLOTS, ...SLOTS2]) { const i = TCI + di, j = TCJ + dj; if (free(i, j) && !MAP.node[j * W + i]) return [i, j]; }
@@ -2498,7 +2549,7 @@ function drawWorld(t) {
   for (const n of WLD.wild) { const [x, y] = w2s(n.x + .5, n.y + .5, w, h); if (!on(x, y)) continue; drawWild(g, n, x, y, z); hits.push({ k: 'wild', o: n, x, y, r: Math.max(10, z * .7) }); }
   for (const v of WLD.villages) { const [x, y] = w2s(v.x + .5, v.y + .5, w, h); if (!on(x, y, 60)) continue; const r = drawVillage(g, v, x, y, z, t); hits.push({ k: 'v', o: v, x, y, r: r + 6 }); }
   for (const m of WLD.marches) { if (m.status === 'done') continue; const p = marchPos(m, sNow()).p, [x, y] = w2s(p[0] + .5, p[1] + .5, w, h); if (!on(x, y, 200)) continue; const r = drawMarch(g, m, x, y, z, t, w, h); hits.push({ k: 'm', o: m, x, y, r: r + 8 }); }
-  if (typeof drawWorldGolem === 'function') for (const gm of WLD.golems || []) { const p = golemPos(gm, sNow()), [x, y] = w2s(p[0] * 14 / 48, p[1] * 14 / 40, w, h); if (!on(x, y, 40)) continue; const r = drawWorldGolem(g, gm, x, y, z, t); hits.push({ k: 'g', o: gm, x, y, r: r + 6 }); }
+  if (typeof drawWorldGolem === 'function') for (const gm of WLD.golems || []) { const p = golemPos(gm, sNow()), [x, y] = w2s(p[0] * 14 / PX, p[1] * 14 / PY, w, h); if (!on(x, y, 40)) continue; const r = drawWorldGolem(g, gm, x, y, z, t); hits.push({ k: 'g', o: gm, x, y, r: r + 6 }); }
   // compass to home when it is off screen
   const [hx, hy] = w2s(ME.x + .5, ME.y + .5, w, h);
   if (!on(hx, hy, -10)) { const a = Math.atan2(hy - h / 2, hx - w / 2), ex = w / 2 + Math.cos(a) * (w / 2 - 22), ey = h / 2 + Math.sin(a) * (h / 2 - 22);
@@ -2781,6 +2832,7 @@ $('#v-orb').addEventListener('click', async e => {
 // ---------------------------------------------------------------- boot + loop
 S = load();
 genMap(S.seed);
+camX = (TCI - TCJ) * TW / 2; camY = (TCI + TCJ) * TH / 2;
 S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
 enforceSpotCap();
 idle().forEach(autoAssign); // idle workers get to work on load

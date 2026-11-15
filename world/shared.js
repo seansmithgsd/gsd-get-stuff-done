@@ -1,10 +1,15 @@
 // Shared between the game client (copied into game.js) and the world server. Keep both copies identical.
 // World layout: every village is a 32x24 block centred on its plot; plots sit on a 48x40-tile grid.
 // Land outside villages is shared wild land, generated from the tile coordinates alone.
-export const VW = 32, VH = 24, VTCI = 16, VTCJ = 12, PX = 48, PY = 40, ZONE = 4;
-export const plotOrigin = (gx, gy) => [gx * PX - VTCI, gy * PY - VTCJ];
-export const plotOf = (x, y) => [Math.floor((x + VTCI) / PX), Math.floor((y + VTCJ) / PY)];
-export const inPlot = (x, y, gx, gy) => { const [ox, oy] = plotOrigin(gx, gy); return x >= ox && x < ox + VW && y >= oy && y < oy + VH; };
+// A village grows 4 tiles on every side per Age (a = Ages researched, 0..4): 32×24 → 64×56. Plots sit 64×56 apart,
+// centred on the Town Center at (gx·PX, gy·PY), so even a Digital Age village never reaches its neighbours.
+export const PX = 64, PY = 56, ZONE = 4, WORLD_VER = 2;
+export const vdim = a => { a = Math.max(0, Math.min(4, a | 0)); return { vw: 32 + 8 * a, vh: 24 + 8 * a, ti: 16 + 4 * a, tj: 12 + 4 * a }; };
+export const VW = 32, VH = 24, VTCI = 16, VTCJ = 12;   // an Age-0 village
+export const plotOrigin = (gx, gy, a = 0) => { const d = vdim(a); return [gx * PX - d.ti, gy * PY - d.tj]; };
+export const plotOf = (x, y) => [Math.floor((x + PX / 2) / PX), Math.floor((y + PY / 2) / PY)];
+export const inPlot = (x, y, gx, gy, a = 0) => { const [ox, oy] = plotOrigin(gx, gy, a), d = vdim(a); return x >= ox && x < ox + d.vw && y >= oy && y < oy + d.vh; };
+export const zoneOrigin = (zx, zy) => [zx * ZONE * PX - PX / 2, zy * ZONE * PY - PY / 2];
 export const zoneOf = (gx, gy) => [Math.floor(gx / ZONE), Math.floor(gy / ZONE)];
 export function hsh(x, y, s) { let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(s | 0, 1274126177); h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
 function vnoise(x, y, s) {

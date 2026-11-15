@@ -475,8 +475,8 @@ export async function onRequest(ctx) {
         .map(v => { const f = flagsOfRow(v); delete v.flags; return { ...v, shield: now - v.created < SHIELD_MS, treaty: !!(f.treaty && now - (v.harvested_at || 0) < TREATY_MS), online: now - v.seen < 120000, palisade: !!f.palisade, banner: !!f.banner, tier: f.tier || 0 }; });
       const wild = (await env.DB.prepare('SELECT id, x, y, type, amt, max, regrow FROM wild WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?').bind(x0, x1, y0, y1).all()).results;
       const marches = (await env.DB.prepare(`SELECT ${MARCH_COLS} FROM marches WHERE status IN ('out', 'back') AND MAX(fx, tx) >= ? AND MIN(fx, tx) <= ? AND MAX(fy, ty) >= ? AND MIN(fy, ty) <= ? LIMIT 400`).bind(x0, x1, y0, y1).all()).results;
-      // golems live in world-tile coords: map unit = tile × 14 / 48 (x) and tile × 14 / 40 (y)
-      const golems = (await env.DB.prepare('SELECT id, zone, k, m, mx, x, y, tx, ty, t0, sp, eat, nf FROM golems WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? LIMIT 200').bind((x0 - 4) * 48 / 14, (x1 + 4) * 48 / 14, (y0 - 4) * 40 / 14, (y1 + 4) * 40 / 14).all()).results;
+      // golems live in world-tile coords: map unit = tile × 14 / 64 (x) and tile × 14 / 56 (y)
+      const golems = (await env.DB.prepare('SELECT id, zone, k, m, mx, x, y, tx, ty, t0, sp, eat, nf FROM golems WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? LIMIT 200').bind((x0 - 4) * 64 / 14, (x1 + 4) * 64 / 14, (y0 - 4) * 56 / 14, (y1 + 4) * 56 / 14).all()).results;
       return json({ ok: true, now, me: pub(p), villages, wild, marches, golems, box: [x0, y0, x1, y1] });
     }
     if (path === 'board' && req.method === 'GET') {

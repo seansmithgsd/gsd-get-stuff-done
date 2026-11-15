@@ -4,10 +4,12 @@
 // and the gsd-world server (Cloudflare Durable Objects) referees anything two players could both take.
 
 // --- world layout + wild land: identical copy of world/shared.js (the server runs the same code)
-const VW = 32, VH = 24, VTCI = 16, VTCJ = 12, PX = 48, PY = 40, ZONE = 4;
-const plotOrigin = (gx, gy) => [gx * PX - VTCI, gy * PY - VTCJ];
-const plotOf = (x, y) => [Math.floor((x + VTCI) / PX), Math.floor((y + VTCJ) / PY)];
-const inPlot = (x, y, gx, gy) => { const [ox, oy] = plotOrigin(gx, gy); return x >= ox && x < ox + VW && y >= oy && y < oy + VH; };
+const PX = 64, PY = 56, ZONE = 4;
+const vdim = a => { a = Math.max(0, Math.min(4, a | 0)); return { vw: 32 + 8 * a, vh: 24 + 8 * a, ti: 16 + 4 * a, tj: 12 + 4 * a }; };
+const plotOrigin = (gx, gy, a = 0) => { const d = vdim(a); return [gx * PX - d.ti, gy * PY - d.tj]; };
+const plotOf = (x, y) => [Math.floor((x + PX / 2) / PX), Math.floor((y + PY / 2) / PY)];
+const inPlot = (x, y, gx, gy, a = 0) => { const [ox, oy] = plotOrigin(gx, gy, a), d = vdim(a); return x >= ox && x < ox + d.vw && y >= oy && y < oy + d.vh; };
+const zoneOrigin = (zx, zy) => [zx * ZONE * PX - PX / 2, zy * ZONE * PY - PY / 2];
 const zoneOf = (gx, gy) => [Math.floor(gx / ZONE), Math.floor(gy / ZONE)];
 function hsh(x, y, s) { let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(s | 0, 1274126177); h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16; return (h >>> 0) / 4294967296; }
 function vnoise(x, y, s) {
@@ -46,8 +48,9 @@ const LIVE = {
 const sNowL = () => Date.now() + LIVE.skew;
 function liveHome() {
   const gx = ME && ME.x != null ? Math.round(ME.x / 14) : 0, gy = ME && ME.y != null ? Math.round(ME.y / 14) : 0;
-  if (gx !== LIVE.home[0] || gy !== LIVE.home[1]) { LIVE.chunks.clear(); }
-  LIVE.home = [gx, gy]; [LIVE.OX, LIVE.OY] = plotOrigin(gx, gy);
+  const a = (S && S.ga) || 0;
+  if (gx !== LIVE.home[0] || gy !== LIVE.home[1] || a !== LIVE.a) { LIVE.chunks.clear(); }
+  LIVE.home = [gx, gy]; LIVE.a = a; [LIVE.OX, LIVE.OY] = plotOrigin(gx, gy, a);
 }
 const toLocal = (x, y) => [x - LIVE.OX, y - LIVE.OY];
 const toWorld = (i, j) => [LIVE.OX + i, LIVE.OY + j];
@@ -57,9 +60,9 @@ function neighbourAt(x, y) {
   const [gx, gy] = plotOf(x, y);
   if (gx === LIVE.home[0] && gy === LIVE.home[1]) return null;
   const v = LIVE.byPlot.get(gx + ',' + gy);
-  return v && inPlot(x, y, gx, gy) ? v : null;
+  return v && inPlot(x, y, gx, gy, v.a) ? v : null;
 }
-const ownBlock = (x, y) => inPlot(x, y, LIVE.home[0], LIVE.home[1]);
+const ownBlock = (x, y) => inPlot(x, y, LIVE.home[0], LIVE.home[1], LIVE.a || 0);
 function wildLeft(x, y, n) {
   const u = LIVE.wild.get(x + ',' + y);
   if (!u) return n.amt;
@@ -71,7 +74,7 @@ function tileInfo(x, y) {
   if (ownBlock(x, y)) return null;
   const v = neighbourAt(x, y);
   if (v) {
-    const k = (y - v.oy) * VW + (x - v.ox), n = v.n[k], left = v.left[k] | 0;
+    const k = (y - v.oy) * v.vw + (x - v.ox), n = v.n[k], left = v.left[k] | 0;
     return n && left > 0 ? { kind: 'village', n, left, v, k } : null;
   }
   if (inPlotAny(x, y)) return null;
@@ -80,7 +83,7 @@ function tileInfo(x, y) {
   return left > 0 ? { kind: 'wild', n: n.n, left, amt: n.amt } : null;
 }
 // an empty plot (nobody lives there) is wild land too
-function inPlotAny(x, y) { const [gx, gy] = plotOf(x, y); return !!LIVE.byPlot.get(gx + ',' + gy) && inPlot(x, y, gx, gy); }
+function inPlotAny(x, y) { const [gx, gy] = plotOf(x, y), v = LIVE.byPlot.get(gx + ',' + gy); return !!v && inPlot(x, y, gx, gy, v.a); }
 
 // ---------------------------------------------------------------- drawing: ground in cached chunks, resources/buildings/workers as objects
 const CHK = 16;
@@ -89,7 +92,7 @@ function bumpChunkAt(x, y) { const k = chunkKey(Math.floor(x / CHK), Math.floor(
 function groundColour(x, y) {
   const v = neighbourAt(x, y);
   if (v) {
-    const k = (y - v.oy) * VW + (x - v.ox), g = Math.round(v.g[k] * 8) / 8, d = Math.hypot(x - v.ox - VTCI, y - v.oy - VTCJ);
+    const k = (y - v.oy) * v.vw + (x - v.ox), g = Math.round(v.g[k] * 8) / 8, d = Math.hypot(x - v.ox - v.ti, y - v.oy - v.tj);
     if (d < 2.2) return `hsl(36,${32 + g * 10}%,${50 + g * 6}%)`;
     return `hsl(${92 + g * 18},${46 + g * 10}%,${36 + g * 8}%)`;
   }
@@ -167,7 +170,7 @@ function worldObjects(objs, t, vw, vh) {
   // neighbours: buildings, name, and their workers moving live
   for (const v of LIVE.snaps.values()) {
     const [vi, vj] = toLocal(v.ox, v.oy);
-    if (v.ox + VW < x0 - 4 || v.ox > x1 + 4 || v.oy + VH < y0 - 4 || v.oy > y1 + 4) continue;
+    if (v.ox + v.vw < x0 - 4 || v.ox > x1 + 4 || v.oy + v.vh < y0 - 4 || v.oy > y1 + 4) continue;
     for (const b of v.b) {
       const bi = vi + b[1], bj = vj + b[2], [sx, sy] = iso(bi, bj);
       if (sx < -120 || sx > vw + 120 || sy < -140 || sy > vh + 60) continue;
@@ -175,13 +178,13 @@ function worldObjects(objs, t, vw, vh) {
       objs.push({ d: bi + bj, f: () => { try { drawBuilding(B, sx, sy, t); } catch (e) {} } });
     }
     for (const p of v.pl) { const sd = p[4] || 1, [sx, sy] = iso(vi + p[1] + (sd - 1) / 2, vj + p[2] + (sd - 1) / 2); if (sx > -200 && sx < vw + 200 && sy > -200 && sy < vh + 200) objs.push({ d: vi + vj + p[1] + p[2] + 2 * (sd - 1), f: () => drawPile(sx, sy, p[0], p[3], sd) }); }
-    const [tx, ty] = iso(vi + VTCI, vj + VTCJ);
-    objs.push({ d: vi + vj + VTCI + VTCJ + 2, f: () => {
+    const [tx, ty] = iso(vi + v.ti, vj + v.tj);
+    objs.push({ d: vi + vj + v.ti + v.tj + 2, f: () => {
       mx.font = `bold ${Math.round(13 / ZM)}px system-ui`; mx.textAlign = 'center'; mx.lineWidth = 3 / ZM; mx.strokeStyle = 'rgba(0,0,0,.7)';
       const label = `${v.on ? '● ' : ''}${v.name} · L${v.lvl}`; mx.strokeText(label, tx, ty - 58); mx.fillStyle = v.on ? '#bbf7d0' : '#fff'; mx.fillText(label, tx, ty - 58);
     } });
     const ws = LIVE.intents.get(v.pid); if (!ws) continue;
-    const home = [vi + VTCI, vj + VTCJ];
+    const home = [vi + v.ti, vj + v.tj];
     let k = 0;
     for (const it of Object.values(ws)) {
       const pos = intentPos(it, home, k++, now); if (!pos) continue;
@@ -320,12 +323,12 @@ function liveClaim(x, y, cb) {
 function addSnap(v) {
   if (ME && v.pid === ME.id) return;
   const old = LIVE.snaps.get(v.pid); if (old) LIVE.byPlot.delete(old.gx + ',' + old.gy);
-  [v.ox, v.oy] = plotOrigin(v.gx, v.gy);
-  const r = rng(v.seed); v.g = []; for (let k = 0; k < VW * VH; k++) v.g[k] = r();
+  Object.assign(v, vdim(v.a)); [v.ox, v.oy] = plotOrigin(v.gx, v.gy, v.a);
+  const r = rng(v.seed); v.g = []; for (let k = 0; k < v.vw * v.vh; k++) v.g[k] = r();
   v.n = v.n || {}; v.pl = v.pl || []; v.st = v.st || {}; v.gd = v.gd || { n: 0, lvl: 0 };
   LIVE.snaps.set(v.pid, v); LIVE.byPlot.set(v.gx + ',' + v.gy, v);
-  for (let y = v.oy; y < v.oy + VH; y += CHK / 2) for (let x = v.ox; x < v.ox + VW; x += CHK / 2) bumpChunkAt(x, y);
-  bumpChunkAt(v.ox + VW - 1, v.oy + VH - 1);
+  for (let y = v.oy - 8; y < v.oy + v.vh + 8; y += CHK / 2) for (let x = v.ox - 8; x < v.ox + v.vw + 8; x += CHK / 2) bumpChunkAt(x, y);
+  bumpChunkAt(v.ox + v.vw - 1, v.oy + v.vh - 1);
 }
 function liveMsg(key, m) {
   if (m.t === 'hello') {
@@ -365,8 +368,8 @@ function livePublish(force) {
   const pl = PILES.map(p => [p.k, p.i, p.j, p.amt, p.side]), st = {}; for (const k of PILE_RES) st[k] = storedOf(k);
   const gd = { n: guards(), lvl: guardLvl() };
   const ml = typeof milSnap === 'function' ? milSnap() : {};
-  const sig = JSON.stringify([b, left, S.level, pl, st, gd, ml.tk, (ml.sd || []).map(x => [x[0], x[4], x[5], x[6], x[7], Math.round(x[1] / 10)])]);
-  if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', seed: S.seed, b, left, n, lvl: S.level, pl, st, gd, ...ml }); }
+  const sig = JSON.stringify([S.ga || 0, b, left, S.level, pl, st, gd, ml.tk, (ml.sd || []).map(x => [x[0], x[4], x[5], x[6], x[7], Math.round(x[1] / 10)])]);
+  if (force || (sig !== LIVE.snapSig && Date.now() - LIVE.snapAt > 8000)) { LIVE.snapSig = sig; LIVE.snapAt = Date.now(); liveSend(key, { t: 'snap', a: S.ga || 0, seed: S.seed, b, left, n, lvl: S.level, pl, st, gd, ...ml }); }
   const now = sNowL(), out = [], seen = new Set();
   S.workers.forEach(w => {
     seen.add(w.id);
@@ -491,7 +494,7 @@ function marchObjects(objs, t, vw, vh) {
 let ARROWS = [];
 function knownVillages() {
   const out = new Map();
-  for (const v of LIVE.snaps.values()) out.set(v.pid, { id: v.pid, name: v.name, tx: v.ox + VTCI, ty: v.oy + VTCJ, on: v.on });
+  for (const v of LIVE.snaps.values()) out.set(v.pid, { id: v.pid, name: v.name, tx: v.ox + v.ti, ty: v.oy + v.tj, on: v.on });
   if (typeof ORB !== 'undefined' && ORB && ORB.players) for (const p of ORB.players) if (p.x != null && !out.has(p.id)) { const [tx, ty] = U2T(p.x, p.y); out.set(p.id, { id: p.id, name: p.name, tx, ty, on: p.online }); }
   if (ME) out.delete(ME.id);
   return [...out.values()];
