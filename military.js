@@ -336,9 +336,12 @@ function golemObjects(objs, t, vw, vh) {
     TOP.push({ d: li + lj, f: () => drawGolem(sx, sy, g, t, face) });   // drawn after everything: piles, trees and buildings never hide a golem
     // soldiers fighting it, in a ring
     const n = Math.min(12, g.nf || 0), s = golemScale(g), ax = GOLEM_AXE.includes(g.k);
-    for (let q = 0; q < n; q++) {
-      const a = q / Math.max(1, n) * Math.PI * 2 + .4, r = 1 + s * .6, pi = li + Math.cos(a) * r, pj = lj + Math.sin(a) * r * .8, [qx, qy] = iso(pi, pj);
-      TOP.push({ d: pi + pj, f: () => drawSoldier(qx, qy, q * 37, t, true, ax) });
+    // our own soldiers at this golem first (with billboards), then everyone else's
+    const mine = S ? soldiers().filter(q => q.mode === 1 && q.gid === g.id && q.ready <= now && !q.wnd) : [];
+    const ring = Math.min(14, Math.max(n, mine.length));
+    for (let q = 0; q < ring; q++) {
+      const a = q / Math.max(1, ring) * Math.PI * 2 + .4, r = 1 + s * .6, pi = li + Math.cos(a) * r, pj = lj + Math.sin(a) * r * .8, [qx, qy] = iso(pi, pj), me = mine[q];
+      TOP.push({ d: pi + pj, f: () => { drawSoldier(qx, qy, me ? me.hue : q * 37, t, true, ax); if (me) soldierBillboard(qx, qy, me); } });
     }
   }
   // our own soldiers on the road (out to a golem, or back home)
@@ -349,7 +352,21 @@ function golemObjects(objs, t, vw, vh) {
     if (!p) continue;
     const [li, lj] = toLocal(...p), [qx, qy] = iso(li, lj);
     if (qx < -30 || qx > vw + 30 || qy < -40 || qy > vh + 30) continue;
-    objs.push({ d: li + lj, f: () => drawSoldier(qx, qy, s.hue, t, false, true) });
+    TOP.push({ d: li + lj, f: () => { drawSoldier(qx, qy, s.hue, t, false, true); soldierBillboard(qx, qy, s); } });
+  }
+  // soldiers at home stand in formation in front of their barracks
+  if (S) {
+    const home = soldiers().filter(q => q.mode === 0 && q.ready <= now), bks = S.buildings.filter(b => b.done && b.type === 'barracks');
+    let k = 0;
+    for (const b of bks) {
+      const per = 10 * (b.lvl || 1);
+      for (let n2 = 0; n2 < per && k < home.length; n2++, k++) {
+        const q = home[k], col = n2 % 5, row = Math.floor(n2 / 5), pi = b.i + 1.3 + row * .8, pj = b.j - 1.4 + col * .75, [qx, qy] = iso(pi, pj);
+        if (qx < -30 || qx > vw + 30 || qy < -40 || qy > vh + 30) continue;
+        objs.push({ d: pi + pj, f: () => drawSoldier(qx, qy, q.hue, t, false, true) });
+        TOP.push({ d: pi + pj, f: () => soldierBillboard(qx, qy, q) });
+      }
+    }
   }
   // death: the rig comes apart and crumbles
   LIVE.gdeath = LIVE.gdeath.filter(d => now - d.at < 2600);
@@ -358,6 +375,17 @@ function golemObjects(objs, t, vw, vh) {
     const [li, lj] = toLocal(...d.pos), [sx, sy] = iso(li, lj), f = (now - d.at) / 2600;
     TOP.push({ d: li + lj, f: () => { drawGolem(sx, sy, d.g, t, 1, { f, v: d.v }); if (f > .4) drawPile(sx, sy + 4, d.g.k, 400 * (f - .4), 1); } });
   }
+}
+// billboard over a soldier: name + level, HP bar (red when wounded), xp sliver
+function soldierBillboard(x, y, s) {
+  const k = 1 / Math.max(.55, Math.min(1.6, ZM)), mh = soldierMaxHp(s.lvl), f = Math.max(0, Math.min(1, s.hp / mh)), xf = Math.min(1, (s.xp || 0) / xpNeed(s.lvl || 0));
+  const w = 40 * k, top = y - 31 - 17 * k;
+  mx.font = `bold ${Math.round(11 * k * 10) / 10}px system-ui`; mx.textAlign = 'center';
+  const label = `Lv${s.lvl || 0} ${s.name.replace('Soldier ', '#')}`;
+  mx.lineWidth = 2.5 * k; mx.strokeStyle = 'rgba(0,0,0,.75)'; mx.strokeText(label, x, top); mx.fillStyle = s.wnd ? '#fca5a5' : '#fff'; mx.fillText(label, x, top);
+  mx.fillStyle = 'rgba(0,0,0,.6)'; mx.fillRect(x - w / 2 - 1, top + 3 * k - 1, w + 2, 6 * k + 2);
+  mx.fillStyle = s.wnd ? '#ef4444' : f > .5 ? '#22c55e' : '#f59e0b'; mx.fillRect(x - w / 2, top + 3 * k, w * f, 4 * k);
+  mx.fillStyle = '#60a5fa'; mx.fillRect(x - w / 2, top + 7.2 * k, w * xf, 1.6 * k);
 }
 const _worldObjectsMil = worldObjects;
 worldObjects = function (objs, t, vw, vh) { _worldObjectsMil(objs, t, vw, vh); golemObjects(objs, t, vw, vh); };
