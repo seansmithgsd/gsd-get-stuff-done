@@ -108,11 +108,11 @@ document.addEventListener('click', e => {
     const g = findGolem(t.dataset.hunt); if (!g) return closeSheet();
     const [gx, gy] = golemPos(g, now), [hx, hy] = toWorld(TCI, TCJ);
     const trip = Math.round(Math.hypot(gx - hx, gy - hy) / SOLDIER_SPEED * 1000);   // no range limit: farther golems just take longer to reach
-    const pick = soldiers().filter(healthy).slice(0, HUNT_N);
+    const pick = soldiers().filter(healthy).slice(0, t.dataset.all !== undefined ? 1e9 : HUNT_N);
     if (!pick.length) return toast('No healthy soldiers in the barracks');
     for (const s of pick) { s.mode = 1; s.gid = g.id; s.gz = g.zone || golemZone(g); s.go = now; s.trip = trip; s.ready = now + trip; }
     toast(`${pick.length} soldier${pick.length > 1 ? 's' : ''} marching to the ${g.k} golem`); sfx('build');
-    save(); livePublish(true); milSync(true); golemSheet(findGolem(g.id) || g);
+    save(); livePublish(true); milSync(true); if (t.closest('#v-soldiers')) renderSoldiers(true); else golemSheet(findGolem(g.id) || g);
   }
 });
 // a golem we know about: live (from a zone socket) or from the World tab map
@@ -225,7 +225,7 @@ function golemSheet(g) {
     ${!ME ? '<div class="small" style="margin-top:8px">Sign in on the World tab to fight golems.</div>' : !soldierCap() ? '<div class="small" style="margin-top:8px">Build a Barracks (Iron Age) and train soldiers to fight golems.</div>' : `
     <div class="row" style="justify-content:flex-start;gap:8px;margin-top:8px"><span class="small">Soldiers</span><button class="btn sm alt" data-hn="-1" data-g="${g.id}">−</button><b>${HUNT_N}</b><button class="btn sm alt" data-hn="1" data-g="${g.id}">+</button><span class="small">${ready} ready</span></div>
     <div class="small" style="margin-top:6px">${(() => { const [gx, gy] = golemPos(g, now), [hx, hy] = toWorld(TCI, TCJ), d = Math.hypot(gx - hx, gy - hy); return `${Math.round(d)} tiles from your Town Center · soldiers arrive in ${fmt(d / SOLDIER_SPEED)}. Only soldiers sent out fight away from home — the barracks defends your own piles.`; })()}</div>
-    <div style="margin-top:8px">${ready ? `<button class="btn go" data-hunt="${g.id}">Send ${Math.min(HUNT_N, ready)} to hunt</button>` : '<span class="small">No healthy soldiers in the barracks.</span>'}
+    <div style="margin-top:8px">${ready ? `<button class="btn go" data-hunt="${g.id}">Send ${Math.min(HUNT_N, ready)} to hunt</button> <button class="btn go" data-hunt="${g.id}" data-all>Send all ${ready}</button>` : '<span class="small">No healthy soldiers in the barracks.</span>'}
     ${mineHunting ? ` <button class="btn alt" data-callall="${g.id}">Recall ${mineHunting}</button>` : ''}</div>`}`);
 }
 const _tileSheet0 = tileSheet;
@@ -459,7 +459,7 @@ function renderSoldiers(force) {
     const n = huntTargets.get(g.id) || 0, im = immuneFor(g.k);
     h += `<div class="card"><div class="row"><div><div class="t">${GNAME[g.k] || g.k} Golem <span class="small">· ${Math.round(g.m).toLocaleString()} ${g.k}</span></div>
       <div class="d">${Math.round(d)} tiles away · march ${fmt(d / SOLDIER_SPEED)}${g.eat ? ` · eating ${ME && g.eat === ME.id ? 'your' : 'a'} pile` : ''}${g.nf ? ` · ${g.nf} fighting` : ''}${n ? ` · <b>${n} of yours sent</b>` : ''}${im ? ` · <span style="color:var(--red)">immune until ${im}</span>` : ''}</div></div>
-      <button class="btn sm" data-gview="${g.id}">${n ? 'Manage' : 'Send'}</button></div></div>`;
+      <div style="display:flex;gap:6px">${G.ready.length ? `<button class="btn sm go" data-hunt="${g.id}" data-all>Send all ${G.ready.length}</button>` : ''}<button class="btn sm" data-gview="${g.id}">${n ? 'Manage' : 'Send'}</button></div></div></div>`;
   }
   // roster
   h += `<h3>Roster</h3>`;
