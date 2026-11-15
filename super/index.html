@@ -55,12 +55,13 @@ const META = {
   G: { p: 'ground', t: [['gnd'], ['gnd'], ['gnd'], ['gnd']] },
   B: { p: 'brick', t: [['brk'], ['brk'], ['brk'], ['brk']] },
   C: { p: 'crate', t: [['crt'], ['crt', 1], ['crt', 0, 1], ['crt', 1, 1]] },
+  P: { p: 'crate', t: [['crt'], ['crt', 1], ['crt', 0, 1], ['crt', 1, 1]] },   // holds a Coffee
   U: { p: 'used', t: [['crt'], ['crt', 1], ['crt', 0, 1], ['crt', 1, 1]] },
   S: { p: 'ground', t: [['stp'], ['stp'], ['stp'], ['stp']] },
   L: { p: 'tower', t: [['twT'], ['twT', 1], ['twB'], ['twB', 1]] },   // tower top-left/right pair is one metatile wide each
   K: { p: 'tower', t: [['twB'], ['twB', 1], ['twB'], ['twB', 1]] },
 };
-const SOLID = new Set(['G', 'B', 'C', 'U', 'S', 'L', 'K']);
+const SOLID = new Set(['G', 'B', 'C', 'P', 'U', 'S', 'L', 'K']);
 
 // ---------------------------------------------------------------- sprites: 16×16, digits = palette index, '.' = transparent
 const UPPER = {
@@ -87,6 +88,8 @@ const ENEMY = { // "Red Tape": a walking stack of paperwork tied with red tape
       '..211122222111..', '..222222222222..', '..233333333332..', '..222222222222..', '...2222222222...', '....11....11....', '....111..111....', '................'],
   pal: { 1: '#1f2937', 2: '#f8fafc', 3: '#dc2626' },
 };
+const COFFEE = ['................', '......2..2......', '.......2..2.....', '......2..2......', '...1111111111...', '...1333333331...', '...13333333311..', '...133333333131.',
+  '...133333333131.', '...13332233311..', '...1333333331...', '...1333333331...', '....11111111....', '..222222222222..', '...2222222222...', '................'];
 const COIN = ['.....1111......', '....122221.....', '...12233221....', '...12232221....', '...12232221....', '...12232221....', '...12233221....', '....122221.....', '.....1111......'];
 
 // ---------------------------------------------------------------- tile + sprite rasterising (cached canvases per palette)
@@ -111,7 +114,12 @@ function spriteCanvas(key, rows, pal) {
   rows.forEach((r, y) => { for (let x = 0; x < Math.min(16, w); x++) { const ch = r[x]; if (!ch || ch === '.') continue; g.fillStyle = pal[ch]; g.fillRect(x, y, 1, 1); } });
   cache.set(key, c); return c;
 }
-function heroCanvas(who, frame) {
+function heroCanvas(who, frame, big) {
+  if (big) {
+    const H = HERO[who], up = UPPER[who].map(r => (r + '................').slice(0, 16)), lg = LEGS[frame].map(r => (r.replace(/P/g, H.pants) + '................').slice(0, 16));
+    const rows = ['................', '................', '................', ...up.slice(0, 7), up[7], up[7], up[8], up[8], up[8], up[8], up[9], up[9], up[9], ...lg.flatMap(r => [r, r])];
+    return spriteCanvas('H:' + who + ':' + frame, rows.slice(0, 32), H.pal);
+  }
   const H = HERO[who], rows = [...UPPER[who], ...LEGS[frame].map(r => r.replace(/P/g, H.pants))].map(r => (r + '................').slice(0, 16));
   return spriteCanvas('h:' + who + ':' + frame, rows, H.pal);
 }
@@ -121,19 +129,19 @@ function heroCanvas(who, frame) {
 const LEVELS = [
   { name: '1-1', pal: 'day', time: 400, w: 176, objs: [
     ['ground', 0, 0, 45], ['ground', 48, 0, 48], ['ground', 98, 0, 43], ['ground', 144, 0, 32],
-    ['coins', 9, 10, 4], ['row', 13, 9, 3, 'B'], ['C', 14, 9], ['C', 14, 5],
+    ['coins', 9, 10, 4], ['row', 13, 9, 3, 'B'], ['P', 14, 9], ['C', 14, 5],
     ['tower', 24, 2], ['tower', 31, 3], ['coins', 33, 7, 3], ['tower', 38, 5],
     ['row', 50, 8, 7, 'B'], ['coins', 51, 7, 5], ['C', 53, 4], ['stairs', 60, 4, 1], ['stairs', 66, 3, -1],
     ['C', 74, 9], ['C', 76, 9], ['C', 78, 9], ['tower', 84, 3], ['tower', 90, 2],
-    ['row', 100, 9, 9, 'B'], ['C', 102, 9], ['C', 106, 9], ['row', 103, 5, 3, 'B'], ['C', 104, 5],
+    ['row', 100, 9, 9, 'B'], ['C', 102, 9], ['C', 106, 9], ['row', 103, 5, 3, 'B'], ['P', 104, 5],
     ['stairs', 114, 3, 1], ['row', 117, 10, 6, 'S'], ['coins', 118, 6, 5], ['tower', 127, 4], ['tower', 133, 5],
     ['stairs', 148, 6, 1], ['S', 154, 7, 2, 6], ['flag', 164], ['hq', 170],
   ], foes: [20, 34, 43, 58, 70, 80, 88, 93, 104, 110, 122, 130, 138, 156] },
   { name: '1-2', pal: 'night', time: 400, w: 190, objs: [
     ['ground', 0, 0, 40], ['ground', 43, 0, 22], ['ground', 68, 0, 10], ['ground', 81, 0, 40], ['ground', 124, 0, 66],
-    ['row', 10, 9, 5, 'C'], ['coins', 11, 6, 3], ['tower', 18, 3], ['tower', 24, 4], ['row', 30, 6, 6, 'B'], ['C', 32, 6],
+    ['row', 10, 9, 5, 'C'], ['coins', 11, 6, 3], ['tower', 18, 3], ['tower', 24, 4], ['row', 30, 6, 6, 'B'], ['P', 32, 6],
     ['stairs', 44, 4, 1], ['coins', 52, 5, 4], ['row', 56, 8, 4, 'B'], ['C', 70, 9], ['tower', 73, 3],
-    ['row', 84, 9, 10, 'B'], ['row', 86, 5, 6, 'B'], ['C', 88, 5], ['C', 90, 9], ['tower', 98, 4], ['tower', 104, 2], ['tower', 110, 4],
+    ['row', 84, 9, 10, 'B'], ['row', 86, 5, 6, 'B'], ['P', 88, 5], ['C', 90, 9], ['tower', 98, 4], ['tower', 104, 2], ['tower', 110, 4],
     ['coins', 114, 7, 5], ['stairs', 126, 5, 1], ['row', 134, 7, 4, 'C'], ['stairs', 142, 6, -1], ['tower', 152, 3],
     ['stairs', 160, 8, 1], ['S', 168, 4, 1, 9], ['flag', 178], ['hq', 182],
   ], foes: [20, 28, 34, 36, 50, 58, 60, 74, 88, 92, 96, 102, 108, 116, 118, 130, 138, 146, 150] },
@@ -164,7 +172,8 @@ const PH = {
   minWalk: 0.07421875, walkAcc: 0.037109375, runAcc: 0.0556640625, maxWalk: 1.5625, maxRun: 2.5625,
   release: 0.05078125, skid: 0.1015625, skidTurn: 0.5625, maxFall: 4.5,
   // jump: speed bands decide launch speed and the two gravities (holding jump vs not)
-  bands: [{ upTo: 1, vy: -4, gHold: 0.125, gFall: 0.4375 }, { upTo: 2.3125, vy: -4, gHold: 0.1171875, gFall: 0.375 }, { upTo: 99, vy: -5, gHold: 0.15625, gFall: 0.5625 }],
+  // launch speeds are 15% stronger than the classic -4 / -5
+  bands: [{ upTo: 1, vy: -4.6, gHold: 0.125, gFall: 0.4375 }, { upTo: 2.3125, vy: -4.6, gHold: 0.1171875, gFall: 0.375 }, { upTo: 99, vy: -5.75, gHold: 0.15625, gFall: 0.5625 }],
 };
 
 // ---------------------------------------------------------------- input: keyboard (A/D, Space, hold M) + touch (stick, jump, sprint toggle)
@@ -204,11 +213,13 @@ const SFX = { jump: () => blip(330, 760, .16), coin: () => { blip(988, 988, .06)
 
 // ---------------------------------------------------------------- game state
 const G = { mode: 'select', pick: 0, who: 'sean', lvl: 0, score: 0, coins: 0, lives: 3, time: 400, tAcc: 0, camX: 0, timer: 0, msg: '' };
-let P, FOES = [], FX = [];
+let P, FOES = [], FX = [], ITEMS = [];
 function startLevel() {
   const L = LEVELS[G.lvl]; buildLevel(L);
-  P = { x: 40, y: 192, vx: 0, vy: 0, w: 12, h: 15, onG: true, face: 1, airMax: PH.maxWalk, band: PH.bands[0], jumpHeld: false, anim: 0, dead: false, deadT: 0, goal: 0 };
+  P = { x: 40, y: 192, big: G.keepBig || false, inv: 0, vx: 0, vy: 0, w: 12, h: 15, onG: true, face: 1, airMax: PH.maxWalk, band: PH.bands[0], jumpHeld: false, anim: 0, dead: false, deadT: 0, goal: 0 };
   FOES = L.foes.map(x => ({ x: x * 16, y: 192, vx: -.5, vy: 0, w: 14, h: 14, alive: true, squash: 0, awake: false }));
+  if (P.big) { P.h = 27; P.y = 208 - 27; }
+  ITEMS = [];
   FX = []; G.camX = 0; G.time = L.time; G.tAcc = 0; G.mode = 'intro'; G.timer = 120;
 }
 function boxHitsSolid(x, y, w, h) {
@@ -218,13 +229,17 @@ function boxHitsSolid(x, y, w, h) {
 function hitBlock(tx, ty) {
   const t = tileAt(tx, ty);
   if (t === 'C') { GRID[ty][tx] = 'U'; G.coins++; G.score += 200; FX.push({ k: 'coin', x: tx * 16, y: ty * 16 - 16, t: 0 }); SFX.coin(); oneUpCheck(); }
+  else if (t === 'P') { GRID[ty][tx] = 'U'; ITEMS.push({ x: tx * 16 + 1, y: ty * 16, w: 14, h: 15, vx: 0, vy: 0, rise: 16 }); blip(520, 1040, .3, 'triangle', .1); }
+  else if (t === 'B' && !P.big) { FX.push({ k: 'bump', tx, ty, t: 0 }); SFX.bump(); }   // small consultants just bump bricks
   else if (t === 'B') { GRID[ty][tx] = ''; G.score += 50; for (let i = 0; i < 4; i++) FX.push({ k: 'bit', x: tx * 16 + (i % 2) * 8, y: ty * 16 + (i >> 1) * 8, vx: (i % 2 ? 1 : -1) * 1.2, vy: -4 + (i >> 1) * 1.5, t: 0 }); SFX.brick(); }
   else SFX.bump();
   // anything standing on the block gets knocked out
   for (const f of FOES) if (f.alive && !f.squash && Math.abs(f.x + 7 - (tx * 16 + 8)) < 14 && Math.abs(f.y + f.h - ty * 16) < 3) { f.alive = false; f.flip = true; f.vy = -3; G.score += 100; }
 }
 function oneUpCheck() { if (G.coins >= 100) { G.coins -= 100; G.lives++; SFX.one(); } }
-function die() { if (P.dead) return; P.dead = true; P.deadT = 0; P.vy = -4; P.vx = 0; SFX.die(); }
+function hurt() { if (P.inv > 0 || P.dead) return; if (P.big) { setBig(false); P.inv = 120; blip(700, 200, .4, 'square', .06); } else die(); }
+function setBig(on) { if (on === P.big) return; const foot = P.y + P.h; P.big = on; P.h = on ? 27 : 15; P.y = foot - P.h; G.keepBig = on; }
+function die() { if (P.dead) return; G.keepBig = false; P.dead = true; P.deadT = 0; P.vy = -4; P.vx = 0; SFX.die(); }
 
 function stepPlayer() {
   readInput();
@@ -248,7 +263,7 @@ function stepPlayer() {
   P.vy = Math.min(PH.maxFall, P.vy + gr);
   // move X
   P.x += P.vx;
-  if (P.x < G.camX) { P.x = G.camX; P.vx = Math.max(0, P.vx); }
+  if (P.x < 0) { P.x = 0; P.vx = Math.max(0, P.vx); }
   let h = boxHitsSolid(P.x, P.y, P.w, P.h);
   if (h) { if (P.vx > 0) P.x = h[0] * 16 - P.w; else if (P.vx < 0) P.x = h[0] * 16 + 16; P.vx = 0; }
   // move Y
@@ -276,47 +291,78 @@ function stepGoal() {
 }
 // cleared a level: tell the GSD village (it grants an AI worker) — once per clear
 function reportClear() { try { if (parent !== window) parent.postMessage({ t: 'superClear', level: LEVELS[G.lvl].name, who: G.who, score: G.score }, location.origin); } catch (e) {} }
-addEventListener('message', e => { if (e.origin === location.origin && e.data && e.data.t === 'pause') for (const k in key) key[k] = false; });
+addEventListener('message', e => { if (e.origin !== location.origin || !e.data) return; if (e.data.t === 'pause') for (const k in key) key[k] = false; if (e.data.t === 'reward') { G.reward = e.data.msg; G.rewardT = 240; } });
 function stepFoes() {
   for (const f of FOES) {
     if (!f.alive) { if (f.flip) { f.vy += .3; f.y += f.vy; } continue; }
     if (f.squash) { if (++f.squash > 30) f.alive = false; continue; }
-    if (!f.awake) { if (f.x < G.camX + 256 + 16) f.awake = true; else continue; }
+    if (!f.awake) { if (f.x < G.camX + 256 + 16 && f.x > G.camX - 32) f.awake = true; else continue; }
     f.vy = Math.min(PH.maxFall, f.vy + .3); f.x += f.vx;
     let h = boxHitsSolid(f.x, f.y, f.w, f.h); if (h) { f.x -= f.vx; f.vx = -f.vx; }
     f.y += f.vy; h = boxHitsSolid(f.x, f.y, f.w, f.h); if (h && f.vy > 0) { f.y = h[1] * 16 - f.h; f.vy = 0; }
-    if (f.y > 260 || f.x < G.camX - 64) f.alive = false;
+    if (f.y > 260) f.alive = false;
     // foes bounce off each other
     for (const o of FOES) if (o !== f && o.alive && !o.squash && o.awake && Math.abs(o.x - f.x) < 14 && Math.abs(o.y - f.y) < 14 && Math.sign(o.x - f.x) === Math.sign(f.vx)) f.vx = -f.vx;
     // player contact
     if (P.dead || P.goal) continue;
     if (P.x < f.x + f.w && P.x + P.w > f.x && P.y < f.y + f.h && P.y + P.h > f.y) {
       if (P.vy > 0 && P.y + P.h - f.y < 10) { f.squash = 1; G.score += 100; P.vy = IN.jump ? -5 : -4; P.band = PH.bands[0]; SFX.stomp(); FX.push({ k: 'pts', x: f.x, y: f.y - 8, t: 0, v: 100 }); }
-      else die();
+      else hurt();
     }
   }
 }
-function stepFX() { for (const e of FX) { e.t++; if (e.k === 'bit') { e.vy += .3; e.x += e.vx; e.y += e.vy; } } FX = FX.filter(e => e.t < (e.k === 'coin' ? 30 : e.k === 'pts' ? 40 : 90)); }
+function stepItems() {
+  for (const it of ITEMS) {
+    if (it.rise > 0) { it.y -= .5; it.rise -= .5; if (it.rise <= 0) it.vx = 1; }
+    else {
+      it.vy = Math.min(PH.maxFall, it.vy + .3); it.x += it.vx;
+      if (boxHitsSolid(it.x, it.y, it.w, it.h)) { it.x -= it.vx; it.vx = -it.vx; }
+      it.y += it.vy; const h = boxHitsSolid(it.x, it.y, it.w, it.h); if (h && it.vy > 0) { it.y = h[1] * 16 - it.h; it.vy = 0; }
+    }
+    if (!P.dead && P.x < it.x + it.w && P.x + P.w > it.x && P.y < it.y + it.h && P.y + P.h > it.y) {
+      it.gone = true; G.score += 1000; FX.push({ k: 'pts', x: it.x, y: it.y - 8, t: 0, v: 1000 });
+      if (!P.big) { setBig(true); blip(300, 900, .5, 'square', .07); } else SFX.one();
+    }
+    if (it.y > 260) it.gone = true;
+  }
+  ITEMS = ITEMS.filter(it => !it.gone);
+}
+function stepFX() { for (const e of FX) { e.t++; if (e.k === 'bit') { e.vy += .3; e.x += e.vx; e.y += e.vy; } } FX = FX.filter(e => e.t < (e.k === 'coin' ? 30 : e.k === 'pts' ? 40 : e.k === 'bump' ? 10 : 90)); }
 
 function update() {
   readInput();
   if (G.mode === 'select') {
     if ((IN.left || IN.right) && !G.lr) { G.pick = 1 - G.pick; blip(500, 500, .04); } G.lr = IN.left || IN.right;
-    if (IN.jump && !G.jh) { G.who = G.pick ? 'kat' : 'sean'; G.score = 0; G.coins = 0; G.lives = 3; G.lvl = 0; startLevel(); }
+    if (IN.jump && !G.jh) { G.who = G.pick ? 'kat' : 'sean'; G.keepBig = false; G.score = 0; G.coins = 0; G.lives = 3; G.lvl = 0; startLevel(); }
     G.jh = IN.jump; return;
   }
   if (G.mode === 'intro') { if (--G.timer <= 0) G.mode = 'play'; G.jh = IN.jump; return; }
   if (G.mode === 'over') { if (--G.timer <= 0 || (IN.jump && !G.jh && G.timer < 180)) G.mode = 'select'; G.jh = IN.jump; return; }
-  stepPlayer(); stepFoes(); stepFX();
+  stepPlayer(); stepFoes(); stepItems(); stepFX();
   if (!P.dead && !P.goal) { G.tAcc++; if (G.tAcc >= 24) { G.tAcc = 0; G.time--; if (G.time <= 0) die(); } }   // one game second ≈ 0.4 s
   // camera: only scrolls forward, keeps the player left of centre
-  const target = P.x - 112; if (target > G.camX) G.camX = Math.min(target, MAPW * 16 - 256);
+  // camera follows both ways with a small dead zone in the middle (left/right like the later console games)
+  const px = P.x + P.w / 2 - G.camX;
+  if (px > 144) G.camX += px - 144; else if (px < 104) G.camX -= 104 - px;
+  G.camX = Math.max(0, Math.min(G.camX, MAPW * 16 - 256));
+  if (P.inv > 0) P.inv--;
   G.jh = IN.jump;
 }
 
 // ---------------------------------------------------------------- drawing
 const cv = document.getElementById('scr'), g = cv.getContext('2d'); g.imageSmoothingEnabled = false;
-function txt(s, x, y, col = '#fff', align = 'left') { g.font = 'bold 8px "Courier New", monospace'; g.textAlign = align; g.textBaseline = 'top'; g.fillStyle = '#000'; g.fillText(s, x + 1, y + 1); g.fillStyle = col; g.fillText(s, x, y); }
+const FONT = {"A": [" ### ", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"], "B": ["#### ", "#   #", "#   #", "#### ", "#   #", "#   #", "#### "], "C": [" ### ", "#   #", "#    ", "#    ", "#    ", "#   #", " ### "], "D": ["#### ", "#   #", "#   #", "#   #", "#   #", "#   #", "#### "], "E": ["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#####"], "F": ["#####", "#    ", "#    ", "#### ", "#    ", "#    ", "#    "], "G": [" ### ", "#   #", "#    ", "# ###", "#   #", "#   #", " ####"], "H": ["#   #", "#   #", "#   #", "#####", "#   #", "#   #", "#   #"], "I": [" ### ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "], "J": ["  ###", "   # ", "   # ", "   # ", "#  # ", "#  # ", " ##  "], "K": ["#   #", "#  # ", "# #  ", "##   ", "# #  ", "#  # ", "#   #"], "L": ["#    ", "#    ", "#    ", "#    ", "#    ", "#    ", "#####"], "M": ["#   #", "## ##", "# # #", "# # #", "#   #", "#   #", "#   #"], "N": ["#   #", "##  #", "# # #", "#  ##", "#   #", "#   #", "#   #"], "O": [" ### ", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "], "P": ["#### ", "#   #", "#   #", "#### ", "#    ", "#    ", "#    "], "Q": [" ### ", "#   #", "#   #", "#   #", "# # #", "#  # ", " ## #"], "R": ["#### ", "#   #", "#   #", "#### ", "# #  ", "#  # ", "#   #"], "S": [" ####", "#    ", "#    ", " ### ", "    #", "    #", "#### "], "T": ["#####", "  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "  #  "], "U": ["#   #", "#   #", "#   #", "#   #", "#   #", "#   #", " ### "], "V": ["#   #", "#   #", "#   #", "#   #", "#   #", " # # ", "  #  "], "W": ["#   #", "#   #", "#   #", "# # #", "# # #", "## ##", "#   #"], "X": ["#   #", "#   #", " # # ", "  #  ", " # # ", "#   #", "#   #"], "Y": ["#   #", "#   #", " # # ", "  #  ", "  #  ", "  #  ", "  #  "], "Z": ["#####", "    #", "   # ", "  #  ", " #   ", "#    ", "#####"], "0": [" ### ", "#   #", "#  ##", "# # #", "##  #", "#   #", " ### "], "1": ["  #  ", " ##  ", "  #  ", "  #  ", "  #  ", "  #  ", " ### "], "2": [" ### ", "#   #", "    #", "   # ", "  #  ", " #   ", "#####"], "3": ["#####", "   # ", "  #  ", "   # ", "    #", "#   #", " ### "], "4": ["   # ", "  ## ", " # # ", "#  # ", "#####", "   # ", "   # "], "5": ["#####", "#    ", "#### ", "    #", "    #", "#   #", " ### "], "6": ["  ## ", " #   ", "#    ", "#### ", "#   #", "#   #", " ### "], "7": ["#####", "    #", "   # ", "  #  ", " #   ", " #   ", " #   "], "8": [" ### ", "#   #", "#   #", " ### ", "#   #", "#   #", " ### "], "9": [" ### ", "#   #", "#   #", " ####", "    #", "   # ", " ##  "], "$": ["  #  ", " ####", "# #  ", " ### ", "  # #", "#### ", "  #  "], "x": ["     ", "     ", "#   #", " # # ", "  #  ", " # # ", "#   #"], "-": ["     ", "     ", "     ", "#####", "     ", "     ", "     "], "!": ["  #  ", "  #  ", "  #  ", "  #  ", "  #  ", "     ", "  #  "], "/": ["    #", "    #", "   # ", "  #  ", " #   ", "#    ", "#    "], ".": ["     ", "     ", "     ", "     ", "     ", "     ", "  #  "]};
+// 5×7 bitmap font drawn pixel by pixel: crisp at any scale (canvas text was blurry once scaled up)
+function txt(str, x, y, col = '#fff', align = 'left', sc = 1) {
+  str = String(str).toUpperCase().replace(/X(?=\d)/g, 'x'); const adv = 6 * sc, w = str.length * adv - sc;
+  let cx = align === 'center' ? Math.round(x - w / 2) : align === 'right' ? x - w : x;
+  for (const ch of str) {
+    const gl = FONT[ch];
+    if (gl) for (let r = 0; r < 7; r++) for (let c = 0; c < 5; c++) if (gl[r][c] === '#') { g.fillStyle = '#000'; g.fillRect(cx + c * sc + sc, y + r * sc + sc, sc, sc); }
+    if (gl) for (let r = 0; r < 7; r++) for (let c = 0; c < 5; c++) if (gl[r][c] === '#') { g.fillStyle = col; g.fillRect(cx + c * sc, y + r * sc, sc, sc); }
+    cx += adv;
+  }
+}
 function drawDeco(pal, cam) {
   // far skyline (GSD office towers), parallax 0.4
   g.fillStyle = pal.far;
@@ -349,7 +395,8 @@ function drawPlayer() {
   if (!P || (G.mode === 'intro')) return;
   let frame = 'stand';
   if (P.dead) frame = 'dead'; else if (!P.onG && !P.goal) frame = 'jump'; else if (Math.abs(P.vx) > .05 || P.goal === 2) frame = ['walk1', 'walk2', 'stand'][Math.floor(P.anim) % 3];
-  const sp = heroCanvas(G.who, frame), x = Math.round(P.x - 2 - G.camX), y = Math.round(P.y - 1);
+  if (P.inv > 0 && Math.floor(P.inv / 4) % 2) return;
+  const sp = heroCanvas(G.who, frame, P.big), x = Math.round(P.x - 2 - G.camX), y = Math.round(P.y - 1 - (P.big ? 4 : 0));
   if (P.goal === 3) return;
   g.save(); if (P.face < 0) { g.translate(x + 16, y); g.scale(-1, 1); g.drawImage(sp, 0, 0); } else g.drawImage(sp, x, y); g.restore();
 }
@@ -363,12 +410,17 @@ function drawFoes() {
     else g.drawImage(sp, x, y);
   }
 }
+function drawItems() {
+  const sp = spriteCanvas('coffee', COFFEE, { 1: '#3b2414', 2: '#cbd5e1', 3: '#f8fafc' });
+  for (const it of ITEMS) g.drawImage(sp, Math.round(it.x - 1 - G.camX), Math.round(it.y - 1));
+}
 function drawFX() {
   for (const e of FX) {
     const x = e.x - G.camX;
     if (e.k === 'coin') drawCoin(x, e.y - Math.sin(e.t / 30 * Math.PI) * 30);
     else if (e.k === 'bit') { g.fillStyle = PAL[LEVELS[G.lvl].pal].brick[1]; g.fillRect(x, e.y, 6, 6); }
     else if (e.k === 'pts') txt(String(e.v), x, e.y - e.t * .5, '#fff');
+    else if (e.k === 'bump' && tileAt(e.tx, e.ty) === 'B') { const lift = Math.sin(e.t / 10 * Math.PI) * 4; g.fillStyle = PAL[LEVELS[G.lvl].pal].sky; g.fillRect(e.tx * 16 - G.camX, e.ty * 16, 16, 16); g.drawImage(metaCanvas('B', LEVELS[G.lvl].pal), Math.round(e.tx * 16 - G.camX), Math.round(e.ty * 16 - lift)); }
   }
 }
 function drawHUD() {
@@ -381,7 +433,7 @@ function drawHUD() {
 function drawSelect(t) {
   g.fillStyle = '#101830'; g.fillRect(0, 0, 256, 240);
   g.fillStyle = '#1e3a5f'; g.fillRect(0, 192, 256, 48);
-  txt('SUPER', 128, 34, '#fde68a', 'center'); g.font = 'bold 16px "Courier New", monospace'; g.textAlign = 'center'; g.fillStyle = '#000'; g.fillText('GSD CONSULTANTS', 129, 47); g.fillStyle = '#facc15'; g.fillText('GSD CONSULTANTS', 128, 46);
+  txt('SUPER', 128, 32, '#fde68a', 'center'); txt('GSD CONSULTANTS', 128, 44, '#facc15', 'center', 2);
   txt('CHOOSE YOUR CONSULTANT', 128, 84, '#fff', 'center');
   ['sean', 'kat'].forEach((who, i) => {
     const x = 72 + i * 112, sel = G.pick === i, sp = heroCanvas(who, Math.floor(t / 250) % 2 && sel ? 'walk1' : 'stand');
@@ -402,8 +454,9 @@ function render(t) {
     return;
   }
   g.fillStyle = pal.sky; g.fillRect(0, 0, 256, 240);
-  drawDeco(pal, G.camX); drawHQ(L.pal); drawTiles(pal, L.pal); drawFlag(L.pal); drawFoes(); drawFX(); drawPlayer(); drawHUD();
+  drawDeco(pal, G.camX); drawHQ(L.pal); drawTiles(pal, L.pal); drawFlag(L.pal); drawItems(); drawFoes(); drawFX(); drawPlayer(); drawHUD();
   if (P.goal === 3 && G.time <= 0) txt('DEAL CLOSED!', 128, 96, '#facc15', 'center');
+  if (G.rewardT > 0) { G.rewardT--; txt(G.reward, 128, 110, '#86efac', 'center'); }
 }
 
 // ---------------------------------------------------------------- fit to screen (integer scale when it fits) + fixed 60 Hz loop

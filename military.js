@@ -512,6 +512,7 @@ setInterval(() => { if (S && view === 'soldiers' && $('#sheet').hidden) renderSo
 const _setViewSuper = setView;
 setView = function (v) {
   _setViewSuper(v);
+  document.body.classList.toggle('insuper', v === 'super');   // village toasts don't cover the game HUD
   const el = $('#v-super');
   if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1" title="Super GSD Consultants" allow="autoplay"></iframe>';
   if (v === 'super') { const f = el.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
@@ -520,7 +521,9 @@ setView = function (v) {
 addEventListener('message', e => {
   if (e.origin !== location.origin || !e.data || e.data.t !== 'superClear' || !S) return;
   // one AI worker per level cleared (same rules as a puzzle recruit: waits for housing if the village is full)
-  if (S.workers.length < housing()) { addWorker(); toast(`Deal ${e.data.level} closed — +1 AI worker!`); }
-  else { S.waiting++; toast(`Deal ${e.data.level} closed — new AI worker waiting for housing`); }
+  if (S.workers.length < housing()) { addWorker(); toast(`Deal ${e.data.level} closed — +1 AI worker!`); flashSuper(`+1 AI WORKER`); }
+  else { S.waiting++; toast(`Deal ${e.data.level} closed — new AI worker waiting for housing`); flashSuper(`+1 AI WORKER (NEEDS HOUSING)`); }
   sfx('recruit'); save(); refresh(true);
 });
+
+function flashSuper(msg) { const f = document.querySelector('#v-super iframe'); try { f.contentWindow.postMessage({ t: 'reward', msg }, location.origin); } catch (e) {} }
