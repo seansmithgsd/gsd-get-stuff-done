@@ -187,6 +187,10 @@ function golemSheet(g) {
   const owner = g.eat ? (ME && g.eat === ME.id ? 'your' : ((LIVE.snaps.get(g.eat) || {}).name || 'a village') + "'s") : '';
   const tot = Object.values(g.dmg).reduce((a, b) => a + b, 0), mine = ME ? (g.dmg[ME.id] || 0) : 0;
   const top = Object.entries(g.dmg).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([pid, d]) => `${ME && +pid === ME.id ? 'You' : esc((LIVE.snaps.get(+pid) || {}).name || 'Village ' + pid)}: ${Math.round(d / (tot || 1) * 100)}%`).join(' · ');
+  if (g.far) return openSheet(`<div class="t">${GNAME[g.k] || g.k} Golem <span class="small">· ${Math.round(g.m).toLocaleString()} ${g.k} (biggest ${Math.round(g.mx).toLocaleString()})</span></div>
+    <div class="d">${g.eat ? `Eating a village's ${g.k} pile.` : `Roaming the wilds, looking for ${g.k} piles.`} ${g.nf ? `${g.nf} soldier${g.nf > 1 ? 's' : ''} fighting it.` : ''}</div>
+    <div class="d">Takes ${ax ? 'axes' : 'picks'}.${imm ? ` <b style="color:var(--red)">Immune to you until the ${imm}.</b>` : ''} Destroyed, it drops ${golemLoot(g.mx).toLocaleString()} ${g.k}, split by damage dealt.</div>
+    <div class="small" style="margin-top:8px">Outside your area — only villages near it can send soldiers. Zoom all the way in on it to see it walk.</div>`);
   const ready = soldiers().filter(healthy).length, mineHunting = soldiers().filter(s => s.mode === 1 && s.gid === g.id).length;
   HUNT_N = Math.max(1, Math.min(HUNT_N, Math.max(1, ready)));
   openSheet(`<div class="t">${GNAME[g.k] || g.k} Golem <span class="small">· ${Math.round(g.m).toLocaleString()} ${g.k} (biggest ${Math.round(g.mx).toLocaleString()})</span></div>
@@ -335,3 +339,19 @@ setInterval(() => {
   const sh = $('#sheet'); if (!S || sh.hidden) return;
   if (sh.querySelector('[data-train]')) { const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b && (trainQ().length || soldiers().some(s => s.mode === 1 || s.ready > sNowL() || s.hp < soldierMaxHp(s.lvl)))) tileSheet(b.i, b.j); }
 }, 1000);
+
+// ---------------------------------------------------------------- World tab map: a little golem icon (body, head, arms), sized by mass
+function drawWorldGolem(g, gm, x, y, z, t) {
+  const M = GMAT[gm.k] || GMAT.stone, s = Math.max(.6, Math.min(3, Math.cbrt(gm.m / GOLEM_START))), u = Math.max(5, z * .45) * s;
+  const p = golemPos(gm, sNow()), walking = Math.hypot(gm.tx - p[0], gm.ty - p[1]) > .05 && !gm.eat, sw = walking ? Math.sin(t / 160) * .35 : 0;
+  g.fillStyle = 'rgba(0,0,0,.3)'; g.beginPath(); g.ellipse(x + 1, y + u * 1.3, u * 1.1, u * .4, 0, 0, 7); g.fill();
+  const box = (bx, by, w, h, a) => { g.save(); g.translate(bx, by); g.rotate(a || 0); g.fillStyle = M.c[2]; g.fillRect(-w / 2 + w * .18, -h * .12, w, h); g.fillStyle = M.c[1]; g.fillRect(-w / 2, 0, w, h); g.fillStyle = M.c[0]; g.fillRect(-w / 2, 0, w, h * .25); g.restore(); };
+  box(x - u * .35, y + u * .3, u * .45, u * .95, sw); box(x + u * .35, y + u * .3, u * .45, u * .95, -sw);          // legs
+  box(x - u * .95, y - u * .75, u * .4, u * 1.05, -sw * 1.2); box(x + u * .95, y - u * .75, u * .4, u * 1.05, sw * 1.2); // arms
+  box(x, y - u * .85, u * 1.5, u * 1.25); box(x, y - u * 1.55, u * .8, u * .7);                                       // torso, head
+  g.fillStyle = M.eye; g.fillRect(x - u * .25, y - u * 1.3, u * .16, u * .12); g.fillRect(x + u * .09, y - u * 1.3, u * .16, u * .12);
+  if (gm.nf) { g.fillStyle = '#ef4444'; g.font = `bold ${Math.max(9, u * .9)}px system-ui`; g.textAlign = 'center'; g.fillText('⚔', x + u * 1.5, y - u * 1.4); }
+  if (z >= 9) { g.font = `bold ${Math.max(10, Math.min(12, z * .55))}px system-ui`; g.textAlign = 'center'; g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.7)';
+    const label = `${GNAME[gm.k] || gm.k} Golem ${gm.m >= 1000 ? (gm.m / 1000).toFixed(1) + 'k' : Math.round(gm.m)}`; g.strokeText(label, x, y + u * 1.9 + 10); g.fillStyle = immuneFor(gm.k) ? '#fca5a5' : '#fde68a'; g.fillText(label, x, y + u * 1.9 + 10); }
+  return u * 1.6;
+}

@@ -2446,6 +2446,7 @@ function drawWorld(t) {
   for (const n of WLD.wild) { const [x, y] = w2s(n.x + .5, n.y + .5, w, h); if (!on(x, y)) continue; drawWild(g, n, x, y, z); hits.push({ k: 'wild', o: n, x, y, r: Math.max(10, z * .7) }); }
   for (const v of WLD.villages) { const [x, y] = w2s(v.x + .5, v.y + .5, w, h); if (!on(x, y, 60)) continue; const r = drawVillage(g, v, x, y, z, t); hits.push({ k: 'v', o: v, x, y, r: r + 6 }); }
   for (const m of WLD.marches) { if (m.status === 'done') continue; const p = marchPos(m, sNow()).p, [x, y] = w2s(p[0] + .5, p[1] + .5, w, h); if (!on(x, y, 200)) continue; const r = drawMarch(g, m, x, y, z, t, w, h); hits.push({ k: 'm', o: m, x, y, r: r + 8 }); }
+  if (typeof drawWorldGolem === 'function') for (const gm of WLD.golems || []) { const p = golemPos(gm, sNow()), [x, y] = w2s(p[0] * 14 / 48, p[1] * 14 / 40, w, h); if (!on(x, y, 40)) continue; const r = drawWorldGolem(g, gm, x, y, z, t); hits.push({ k: 'g', o: gm, x, y, r: r + 6 }); }
   // compass to home when it is off screen
   const [hx, hy] = w2s(ME.x + .5, ME.y + .5, w, h);
   if (!on(hx, hy, -10)) { const a = Math.atan2(hy - h / 2, hx - w / 2), ex = w / 2 + Math.cos(a) * (w / 2 - 22), ey = h / 2 + Math.sin(a) * (h / 2 - 22);
@@ -2545,6 +2546,7 @@ function wTap(sx, sy) {
   if (best.k === 'v') return villageSheet(best.o);
   if (best.k === 'wild') return wildSheet(best.o);
   if (best.k === 'm') return marchSheet(best.o);
+  if (best.k === 'g') return golemSheet(LIVE.golems.get(best.o.id) || { ...best.o, dmg: {}, far: true });
 }
 const crewPicker = (max = W_CREW) => `<div class="row" style="justify-content:flex-start;gap:8px;margin-top:8px"><span class="small">Crew</span><button class="btn sm alt" data-crew="-1">−</button><b id="crew-n">${CREW_N}</b><button class="btn sm alt" data-crew="1">+</button><span class="small">of ${max}</span></div>`;
 let SHEET_FOR = null;

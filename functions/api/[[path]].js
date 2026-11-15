@@ -76,6 +76,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS marches (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, owner INTEGER NOT NULL, owner_name TEXT NOT NULL, owner_team INTEGER,
      target INTEGER NOT NULL, target_name TEXT, target_player INTEGER, fx REAL NOT NULL, fy REAL NOT NULL, tx REAL NOT NULL, ty REAL NOT NULL, crew INTEGER NOT NULL,
      start INTEGER NOT NULL, arrive INTEGER NOT NULL, back_at INTEGER NOT NULL, ret INTEGER NOT NULL, status TEXT NOT NULL, result TEXT, loot TEXT)`,
+  // roaming golems, mirrored here by the world server (world/index.js) so the World tab can draw them
+  `CREATE TABLE IF NOT EXISTS golems (id TEXT PRIMARY KEY, zone TEXT NOT NULL, k TEXT NOT NULL, m REAL NOT NULL, mx REAL NOT NULL, x REAL NOT NULL, y REAL NOT NULL, tx REAL NOT NULL, ty REAL NOT NULL, t0 INTEGER NOT NULL, sp REAL NOT NULL, eat INTEGER, nf INTEGER, at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS marches_status ON marches(status, arrive)`,
   `CREATE INDEX IF NOT EXISTS marches_owner ON marches(owner, status)`,
 ];
@@ -473,7 +475,9 @@ export async function onRequest(ctx) {
         .map(v => { const f = flagsOfRow(v); delete v.flags; return { ...v, shield: now - v.created < SHIELD_MS, treaty: !!(f.treaty && now - (v.harvested_at || 0) < TREATY_MS), online: now - v.seen < 120000, palisade: !!f.palisade, banner: !!f.banner, tier: f.tier || 0 }; });
       const wild = (await env.DB.prepare('SELECT id, x, y, type, amt, max, regrow FROM wild WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ?').bind(x0, x1, y0, y1).all()).results;
       const marches = (await env.DB.prepare(`SELECT ${MARCH_COLS} FROM marches WHERE status IN ('out', 'back') AND MAX(fx, tx) >= ? AND MIN(fx, tx) <= ? AND MAX(fy, ty) >= ? AND MIN(fy, ty) <= ? LIMIT 400`).bind(x0, x1, y0, y1).all()).results;
-      return json({ ok: true, now, me: pub(p), villages, wild, marches, box: [x0, y0, x1, y1] });
+      // golems live in world-tile coords: map unit = tile × 14 / 48 (x) and tile × 14 / 40 (y)
+      const golems = (await env.DB.prepare('SELECT id, zone, k, m, mx, x, y, tx, ty, t0, sp, eat, nf FROM golems WHERE x BETWEEN ? AND ? AND y BETWEEN ? AND ? LIMIT 200').bind((x0 - 4) * 48 / 14, (x1 + 4) * 48 / 14, (y0 - 4) * 40 / 14, (y1 + 4) * 40 / 14).all()).results;
+      return json({ ok: true, now, me: pub(p), villages, wild, marches, golems, box: [x0, y0, x1, y1] });
     }
     if (path === 'board' && req.method === 'GET') {
       const players = (await env.DB.prepare('SELECT id, name, wx x, wy y, team, score, level, bcount, created, seen, flags, harvested_at FROM players ORDER BY score DESC LIMIT 100').all()).results

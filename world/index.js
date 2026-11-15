@@ -244,6 +244,18 @@ export class Zone extends DurableObject {
     }
     for (const pid of dirty) { const v = vs.get(pid); if (v) this.broadcast({ t: 'snap', v: { ...v, on: online.has(pid) } }); }
     this.broadcast({ t: 'gol', now, list: gl.map(gPub) });
+    // mirror to D1 for the World tab map — at most every 30s, or right away when one spawns or dies
+    const prevIds = (await this.ctx.storage.get('gld')) || '', ids = gl.map(g => g.id).join(',');
+    if (zx != null && (ids !== prevIds || now - ((await this.ctx.storage.get('gla')) || 0) > 30000)) {
+      try {
+        const db = this.env.DB, zone = zx + ',' + zy;
+        await db.prepare("CREATE TABLE IF NOT EXISTS golems (id TEXT PRIMARY KEY, zone TEXT NOT NULL, k TEXT NOT NULL, m REAL NOT NULL, mx REAL NOT NULL, x REAL NOT NULL, y REAL NOT NULL, tx REAL NOT NULL, ty REAL NOT NULL, t0 INTEGER NOT NULL, sp REAL NOT NULL, eat INTEGER, nf INTEGER, at INTEGER NOT NULL)").run();
+        await db.batch([db.prepare('DELETE FROM golems WHERE zone = ?').bind(zone),
+          ...gl.map(g => db.prepare('INSERT INTO golems (id, zone, k, m, mx, x, y, tx, ty, t0, sp, eat, nf, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .bind(g.id, zone, g.k, Math.round(g.m), Math.round(g.mx), g.x, g.y, g.tx, g.ty, g.t0, g.sp, g.eat || 0, g.nf || 0, now))]);
+        await this.ctx.storage.put('gld', ids); await this.ctx.storage.put('gla', now);
+      } catch (e) { /* map mirror only — the zone keeps running */ }
+    }
     if (socks.length) await this.ctx.storage.setAlarm(now + TICK_MS);
   }
   get zx() { return this._z ? this._z[0] : null; }
