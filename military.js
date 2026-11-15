@@ -276,7 +276,7 @@ function drawGolem(x, y, g, t, face, dead) {
   // chips flying off when hit; crumbs while eating
   if (flash || (g.eat && Math.random() < .3)) { const c = (GMAT[g.k] || GMAT.stone).c[1]; mx.fillStyle = c; for (let q = 0; q < 4; q++) { const a = Math.random() * 6.28, r = u * (.5 + Math.random()); mx.fillRect(x + Math.cos(a) * r, y - 2 * u + Math.sin(a) * r * .6, 2 + s, 2 + s); } }
   if (!dead) {
-    const f = Math.max(0, Math.min(1, g.m / Math.max(1, g.mx))), top = y - 3.6 * u + legY * .1;
+    const f = Math.max(0, Math.min(1, g.m / Math.max(1, g.mx))), top = y + legY - 3.4 * u - 10;   // above the head
     mx.font = `bold ${Math.round(11 / Math.min(1, ZM) )}px system-ui`; mx.textAlign = 'center'; mx.lineWidth = 3 / ZM; mx.strokeStyle = 'rgba(0,0,0,.75)';
     const label = `${GNAME[g.k] || g.k} Golem · ${g.m >= 1000 ? (g.m / 1000).toFixed(1) + 'k' : Math.round(g.m)}`;
     mx.strokeText(label, x, top - 6); mx.fillStyle = immuneFor(g.k) ? '#fca5a5' : '#fde68a'; mx.fillText(label, x, top - 6);

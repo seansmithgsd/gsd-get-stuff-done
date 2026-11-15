@@ -174,7 +174,7 @@ function storageRows(type) {
 // ---------------------------------------------------------------- building art (rendered images; procedural drawing is the fallback)
 // Staged art: Town Center by Age, Storehouse/Granary by upgrade band (5 levels per Age).
 const BART = {}, BART_STAGED = { tc: 1, storehouse: 1, grainstore: 1, apartment: 1, barracks: 1 };
-const BART_SCALE = { tc: 2.1, townhall: 1.8, farm: 1.7, dock: 1.7, quarry2: 1.7, factory: 1.8, powerplant: 1.8, gsdtower: 2.2, moneyprinter: 2, barracks: 1.6, apartment: 1.6, wiremill: 1.6, longhouse: 1.6, market: 1.6, mine: 1.6, teamhall: 1.7, bank: 1.6, outpost: 1.6 };
+const BART_SCALE = { tc: 2.1, townhall: 1.8, farm: 1.7, dock: 1.7, quarry2: 1.7, factory: 1.8, powerplant: 1.8, gsdtower: 2.2, moneyprinter: 2, barracks: 1.85, apartment: 1.6, wiremill: 1.6, longhouse: 1.6, market: 1.6, mine: 1.6, teamhall: 1.7, bank: 1.6, outpost: 1.6 };
 function artKey(b) {
   if (!BART_STAGED[b.type]) return b.type;
   const st = b.type === 'tc' ? 1 + ['age6', 'age7', 'age8', 'age9'].filter(a => U(a)).length : (b.type === 'apartment' || b.type === 'barracks') ? Math.min(5, b.lvl || 1) : Math.min(5, Math.ceil((b.lvl || 1) / 5));
@@ -183,11 +183,11 @@ function artKey(b) {
 const ART_KEYS = new Set(["apartment_1", "apartment_2", "apartment_3", "apartment_4", "apartment_5", "barracks_1", "barracks_2", "barracks_3", "barracks_4", "barracks_5", "wiremill", "bank", "blastfurnace", "dock", "factory", "farm", "gearworks", "grainstore_1", "grainstore_2", "grainstore_3", "grainstore_4", "grainstore_5", "gsdtower", "hunt", "hut", "kiln", "longhouse", "lumber", "market", "mine", "mint", "moneyprinter", "nursery", "orchard", "outpost", "powerplant", "quarry", "quarry2", "sawmill", "smelter", "storehouse_1", "storehouse_2", "storehouse_3", "storehouse_4", "storehouse_5", "taxoffice", "tc_1", "tc_2", "tc_3", "tc_4", "tc_5", "teamhall", "townhall", "watchtower", "workshop"]);
 function artThumb(type) {   // Build-menu icon: the same art the village shows (current stage for staged buildings)
   const b = S.buildings.find(x => x.type === type) || { type, lvl: 1 }, key = artKey(b);
-  return ART_KEYS.has(key) ? `<img class="bth" src="art/b/${key}.png?v=1" alt="">` : '';
+  return ART_KEYS.has(key) ? `<img class="bth" src="art/b/${key}.png?v=${/^(apartment|barracks)_|^wiremill/.test(key) ? 51 : 1}" alt="">` : '';
 }
 function artImg(key) {
   let a = BART[key];
-  if (!a) { a = BART[key] = { img: new Image(), ok: false, bad: false }; a.img.onload = () => { a.ok = true; layerDirty = true; }; a.img.onerror = () => { a.bad = true; }; a.img.src = 'art/b/' + key + '.png?v=1'; }
+  if (!a) { a = BART[key] = { img: new Image(), ok: false, bad: false }; a.img.onload = () => { a.ok = true; layerDirty = true; }; a.img.onerror = () => { a.bad = true; }; a.img.src = 'art/b/' + key + '.png?v=' + (/^(apartment|barracks)_|^wiremill/.test(key) ? 51 : 1); }
   return a;
 }
 function drawBuildingArt(b, x, y) {

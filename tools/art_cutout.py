@@ -21,9 +21,10 @@ for f in sorted(os.listdir(src)):
     ll, _ = ndimage.label(shadow | bg)
     e2 = set(np.unique(np.concatenate([ll[0], ll[-1], ll[:, 0], ll[:, -1]]))) - {0}
     fg = fg & ~np.isin(ll, list(e2))
-    if f.startswith('bank'):
-        ys = np.where(fg.any(1))[0]; top = ys.min() + (ys.max() - ys.min()) * .35
+    if f.startswith('bank') or f.startswith('apartment'):
+        ys = np.where(fg.any(1))[0]; top = ys.min() + (ys.max() - ys.min()) * (.35 if f.startswith('bank') else .2)
         h = convex_hull_image(fg); h[int(top):] = False; fg = fg | h
+    fg = ndimage.binary_fill_holes(fg)
     a = (fg * 255).astype(np.uint8)
     ring = fg & ndimage.binary_dilation(~fg)
     a[ring] = np.clip((255 - mn[ring]) * 255 // 40, 60, 255)
