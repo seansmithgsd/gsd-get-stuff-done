@@ -1293,6 +1293,8 @@ function drawMap(now) {
       const r = mapC.getBoundingClientRect();
       if (PLACE) { if (PLACE.road) roadTap(...rawTile(e.clientX, e.clientY)); else placeTap(...rawTile(e.clientX, e.clientY)); down = null; return; }
       if (typeof edgeArrowTap === 'function' && edgeArrowTap((e.clientX - r.left) / ZM, (e.clientY - r.top) / ZM)) { down = null; return; }
+      const gh = typeof golemHit === 'function' && golemHit(e.clientX, e.clientY);
+      if (gh) { golemSheet(gh); down = null; return; }   // golems first: they stand on top of everything
       const hit = tileAt(e.clientX, e.clientY);
       if (hit && hit.ext) { if (typeof extTileSheet === 'function') extTileSheet(hit[0], hit[1]); }
       else if (hit) { if (!sendClosest(hit[0], hit[1])) tileSheet(hit[0], hit[1]); } else closeSheet();
@@ -1322,6 +1324,8 @@ function hideTip() { tipEl.style.display = 'none'; }
 function workerAtTile(type, b) { return S.workers.filter(w => w.task && ((w.task.kind === 'build' && w.task.bid === b.id) || (TASKS[w.task.kind] && TASKS[w.task.kind].node === type))).map(w => esc(w.name)); }
 function tipHTML(cx, cy) {
   const r = mapC.getBoundingClientRect(), px = (cx - r.left) / ZM, py = (cy - r.top) / ZM;
+  const gh = typeof golemHit === 'function' && golemHit(cx, cy);
+  if (gh) return golemTip(gh);
   const wk = WSCR.find(q => Math.hypot(q.x - px, q.y - py) < 12);
   if (wk && wk.w.ext) return `<b>${esc(wk.w.owner)}'s ${esc(wk.w.name)}</b><br>${esc(wk.w.label)}`;
   if (wk) {

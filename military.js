@@ -327,13 +327,27 @@ function drawSoldier(x, y, hue, t, swing, axe) {
 }
 let TOP = [];
 function drawTopObjs() { TOP.sort((a, b) => a.d - b.d).forEach(o => o.f()); TOP = []; }
+// screen boxes of the golems drawn this frame, for clicks and hover tips (same space as the worker hit list)
+let GHITS = [];
+function golemHit(cx, cy) {
+  const r = mapC.getBoundingClientRect(), px = (cx - r.left) / ZM, py = (cy - r.top) / ZM;
+  let best = null, bd = 2;
+  for (const h of GHITS) { const d = Math.hypot((px - h.x) / h.rx, (py - h.y) / h.ry); if (d < 1 && d < bd) { bd = d; best = h.g; } }
+  return best;
+}
+function golemTip(g) {
+  const imm = immuneFor(g.k), owner = g.eat ? (ME && g.eat === ME.id ? 'your' : ((LIVE.snaps.get(g.eat) || {}).name || 'a village') + "'s") : '';
+  const ready = S ? soldiers().filter(healthy).length : 0, mine = S ? soldiers().filter(s => s.mode === 1 && s.gid === g.id).length : 0;
+  return `<b>${GNAME[g.k] || g.k} Golem</b> · ${Math.round(g.m).toLocaleString()} ${g.k}<br>${g.eat ? `Eating ${owner} ${g.k} pile` : 'Roaming'}${g.nf ? ` · ${g.nf} fighting` : ''}${mine ? ` · ${mine} of yours` : ''}<br>Takes ${GOLEM_AXE.includes(g.k) ? 'axes' : 'picks'}${imm ? ` · <span class="warn">immune until the ${imm}</span>` : ''}<br><i>Click to send soldiers (${ready} ready)</i>`;
+}
 function golemObjects(objs, t, vw, vh) {
-  const now = sNowL(); TOP = [];
+  const now = sNowL(); TOP = []; GHITS = [];
   for (const g of LIVE.golems.values()) {
     const [gx, gy] = golemSeen(g, now), [li, lj] = toLocal(gx, gy), [sx, sy] = iso(li, lj);
     if (sx < -250 || sx > vw + 250 || sy < -60 || sy > vh + 350) continue;
     const ex = iso(...toLocal(g.tx, g.ty))[0], face = g.eat || g.nf ? 1 : (ex < sx - 1 ? -1 : 1);
     TOP.push({ d: li + lj, f: () => drawGolem(sx, sy, g, t, face) });   // drawn after everything: piles, trees and buildings never hide a golem
+    { const u = 15 * golemScale(g); GHITS.push({ g, x: sx, y: sy - 2 * u, rx: 1.7 * u + 6, ry: 2.6 * u + 8 }); }
     // soldiers fighting it, in a ring
     const n = Math.min(12, g.nf || 0), s = golemScale(g), ax = GOLEM_AXE.includes(g.k);
     // our own soldiers at this golem first (with billboards), then everyone else's
