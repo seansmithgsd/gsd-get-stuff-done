@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Super GSD Consultants</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1020;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas#scr{image-rendering:pixelated;image-rendering:crisp-edges;background:#000}
+  #pad{position:fixed;inset:0;pointer-events:none;display:none}
+  .tb{position:absolute;pointer-events:auto;border-radius:50%;background:rgba(255,255,255,.14);border:2px solid rgba(255,255,255,.35);color:#fff;font:700 15px system-ui;display:flex;align-items:center;justify-content:center}
+  #stick{left:22px;bottom:22px;width:132px;height:132px}
+  #knob{position:absolute;left:41px;top:41px;width:50px;height:50px;border-radius:50%;background:rgba(255,255,255,.45)}
+  #jump{right:22px;bottom:30px;width:88px;height:88px}
+  #run{right:122px;bottom:40px;width:66px;height:66px;font-size:12px}
+  #run.on{background:rgba(250,204,21,.55);border-color:#facc15;color:#111}
+  #back{position:fixed;left:8px;top:8px;color:#cbd5e1;font:600 12px system-ui;text-decoration:none;opacity:.7}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="scr" width="256" height="240"></canvas></div>
+<div id="pad"><div id="stick" class="tb"><div id="knob"></div></div><div id="run" class="tb">SPRINT</div><div id="jump" class="tb">JUMP</div></div>
+<a id="back" href="/">← GSD</a>
+<script>
+'use strict';
+/* Super GSD Consultants — an original side-scroller in the NES style.
+   How it borrows from how NES games worked (no copied art, levels or characters):
+   - 256×240 screen, 8×8 tiles, 2 bits per pixel: every tile is 4 colour indices, the actual colours come from a palette.
+     Swapping palettes reuses the same tiles for day and night levels (1-2 is 1-1's tiles in different colours).
+   - 16×16 "metatiles" are 4 tile references with flip bits, so one corner tile drawn 4 ways makes a whole crate.
+   - Levels are stored as a short object list (x, y, type, length) and expanded into a column buffer at load,
+     the way cartridges fit whole worlds into a few kilobytes.
+   - Sprites are 3 colours + transparent; the heroes are layered from shared parts (one set of legs for both).
+   - Physics runs at a fixed 60 steps a second with sub-pixel speeds, like the console's 1/256-pixel counters. */
+
+// ---------------------------------------------------------------- palettes (index 0 is transparent / background)
+const PAL = {
+  day:   { sky: '#f6c38b', far: '#e8a873', ground: ['#1e3a5f', '#2f5d8a', '#7fb3d5'], brick: ['#5a2d0c', '#c9771e', '#ffd27a'], crate: ['#3b2a10', '#e8b923', '#fff3b0'], used: ['#3b2a10', '#8a6a3a', '#b89a64'], tower: ['#1e293b', '#64748b', '#fde68a'], deco: ['#d98b55', '#fff1dc', '#ffffff'] },
+  night: { sky: '#101830', far: '#1b2648', ground: ['#121a2c', '#3a4766', '#8592b8'], brick: ['#2a0f2f', '#7a3a8a', '#d9a0e8'], crate: ['#2e1f05', '#e8b923', '#fff3b0'], used: ['#1d1a24', '#4d475e', '#7d7694'], tower: ['#0f172a', '#334155', '#fde047'], deco: ['#24305a', '#3a4a7a', '#e8ecff'] },
+};
+// ---------------------------------------------------------------- 8×8 tiles, 2bpp (digits 0-3)
+const T8 = {
+  gnd: ['23333332', '32222221', '32222221', '32222221', '32222221', '32222221', '32222221', '21111112'],
+  brk: ['33333331', '22212221', '22212221', '11111111', '33313333', '22212222', '22212222', '11111111'],
+  crt: ['11111111', '13333333', '13122222', '13222222', '13222223', '13222232', '13222322', '13223222'],
+  stp: ['33333331', '32222221', '32222221', '32222221', '32222221', '32222221', '32222221', '11111111'],
+  twT: ['00000001', '00000001', '00000113', '00011333', '01133222', '13322222', '12222222', '12233223'],
+  twB: ['12233223', '12222222', '12222222', '12233223', '12233223', '12222222', '12222222', '12233223'],
+};
+// metatiles: [tile, flipX, flipY] × 4 (TL, TR, BL, BR) + palette
+const META = {
+  G: { p: 'ground', t: [['gnd'], ['gnd'], ['gnd'], ['gnd']] },
+  B: { p: 'brick', t: [['brk'], ['brk'], ['brk'], ['brk']] },
+  C: { p: 'crate', t: [['crt'], ['crt', 1], ['crt', 0, 1], ['crt', 1, 1]] },
+  U: { p: 'used', t: [['crt'], ['crt', 1], ['crt', 0, 1], ['crt', 1, 1]] },
+  S: { p: 'ground', t: [['stp'], ['stp'], ['stp'], ['stp']] },
+  L: { p: 'tower', t: [['twT'], ['twT', 1], ['twB'], ['twB', 1]] },   // tower top-left/right pair is one metatile wide each
+  K: { p: 'tower', t: [['twB'], ['twB', 1], ['twB'], ['twB', 1]] },
+};
+const SOLID = new Set(['G', 'B', 'C', 'U', 'S', 'L', 'K']);
+
+// ---------------------------------------------------------------- sprites: 16×16, digits = palette index, '.' = transparent
+const UPPER = {
+  sean: ['......11111.....', '.....1111111....', '.....11333133...', '.....13333333...', '.....11113331...', '......1111111...', '.......11111....', '....222242222...',
+         '...22222422222..', '...32222422223..'],
+  kat:  ['......55555.....', '.....5555555....', '.....55333133...', '....553333333...', '....55533333....', '....5553333.....', '....555.33......', '....5522222.....',
+         '...552222222....', '...3.2222222.3..'],
+};
+const LEGS = {
+  stand: ['....PPPPPPP.....', '....PPPPPPP.....', '....PPP.PPP.....', '....PPP.PPP.....', '....PP...PP.....', '...111...111....'],
+  walk1: ['....PPPPPPP.....', '...PPPP.PPPP....', '..PPP....PPP....', '.PPP......PP....', '111.......PP....', '11........111...'],
+  walk2: ['....PPPPPPP.....', '.....PPPPP......', '.....PP.PP......', '......PPP.......', '......PP.P......', '.....111111.....'],
+  jump:  ['....PPPPPPP.....', '....PPPPPPPP....', '...PPP...PPPP...', '..PPP......11...', '.111.......11...', '.11.............'],
+  dead:  ['....PPPPPPP.....', '...PPPPPPPPP....', '...PP.....PP....', '...PP.....PP....', '..111.....111...', '................'],
+};
+const HERO = {
+  sean: { name: 'SEAN', pants: '2', pal: { 1: '#3b2414', 2: '#1d4ed8', 3: '#f2c39b', 4: '#f8fafc' } },
+  kat:  { name: 'KAT',  pants: '4', pal: { 1: '#3a2a20', 2: '#ec4899', 3: '#f6cfae', 4: '#f8fafc', 5: '#facc15' } },
+};
+const ENEMY = { // "Red Tape": a walking stack of paperwork tied with red tape
+  a: ['................', '...2222222222...', '..222222222222..', '..211111111112..', '..222222222222..', '..233333333332..', '..222222222222..', '..21.1222221.12.',
+      '..211122222111..', '..222222222222..', '..233333333332..', '..222222222222..', '...2222222222...', '...11......11...', '..111......111..', '................'],
+  b: ['................', '...2222222222...', '..222222222222..', '..211111111112..', '..222222222222..', '..233333333332..', '..222222222222..', '..21.1222221.12.',
+      '..211122222111..', '..222222222222..', '..233333333332..', '..222222222222..', '...2222222222...', '....11....11....', '....111..111....', '................'],
+  pal: { 1: '#1f2937', 2: '#f8fafc', 3: '#dc2626' },
+};
+const COIN = ['.....1111......', '....122221.....', '...12233221....', '...12232221....', '...12232221....', '...12232221....', '...12233221....', '....122221.....', '.....1111......'];
+
+// ---------------------------------------------------------------- tile + sprite rasterising (cached canvases per palette)
+const cache = new Map();
+function rasterTile(rows, cols, flipX, flipY) {
+  const c = document.createElement('canvas'); c.width = 8; c.height = 8; const g = c.getContext('2d');
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+    const v = +rows[flipY ? 7 - y : y][flipX ? 7 - x : x]; if (!v) continue;
+    g.fillStyle = cols[v - 1]; g.fillRect(x, y, 1, 1);
+  }
+  return c;
+}
+function metaCanvas(ch, palName) {
+  const key = ch + ':' + palName; if (cache.has(key)) return cache.get(key);
+  const M = META[ch], cols = PAL[palName][M.p], c = document.createElement('canvas'); c.width = 16; c.height = 16; const g = c.getContext('2d');
+  M.t.forEach(([n, fx, fy], q) => g.drawImage(rasterTile(T8[n], cols, fx, fy), (q % 2) * 8, (q >> 1) * 8));
+  cache.set(key, c); return c;
+}
+function spriteCanvas(key, rows, pal) {
+  if (cache.has(key)) return cache.get(key);
+  const w = Math.max(...rows.map(r => r.length)), c = document.createElement('canvas'); c.width = 16; c.height = rows.length; const g = c.getContext('2d');
+  rows.forEach((r, y) => { for (let x = 0; x < Math.min(16, w); x++) { const ch = r[x]; if (!ch || ch === '.') continue; g.fillStyle = pal[ch]; g.fillRect(x, y, 1, 1); } });
+  cache.set(key, c); return c;
+}
+function heroCanvas(who, frame) {
+  const H = HERO[who], rows = [...UPPER[who], ...LEGS[frame].map(r => r.replace(/P/g, H.pants))].map(r => (r + '................').slice(0, 16));
+  return spriteCanvas('h:' + who + ':' + frame, rows, H.pal);
+}
+
+// ---------------------------------------------------------------- levels: object lists expanded into a column buffer
+// [x, y, type, w, h]  y counts rows from the top (0..14); ground is rows 13-14
+const LEVELS = [
+  { name: '1-1', pal: 'day', time: 400, w: 176, objs: [
+    ['ground', 0, 0, 45], ['ground', 48, 0, 48], ['ground', 98, 0, 43], ['ground', 144, 0, 32],
+    ['coins', 9, 10, 4], ['row', 13, 9, 3, 'B'], ['C', 14, 9], ['C', 14, 5],
+    ['tower', 24, 2], ['tower', 31, 3], ['coins', 33, 7, 3], ['tower', 38, 5],
+    ['row', 50, 8, 7, 'B'], ['coins', 51, 7, 5], ['C', 53, 4], ['stairs', 60, 4, 1], ['stairs', 66, 3, -1],
+    ['C', 74, 9], ['C', 76, 9], ['C', 78, 9], ['tower', 84, 3], ['tower', 90, 2],
+    ['row', 100, 9, 9, 'B'], ['C', 102, 9], ['C', 106, 9], ['row', 103, 5, 3, 'B'], ['C', 104, 5],
+    ['stairs', 114, 3, 1], ['row', 117, 10, 6, 'S'], ['coins', 118, 6, 5], ['tower', 127, 4], ['tower', 133, 5],
+    ['stairs', 148, 6, 1], ['S', 154, 7, 2, 6], ['flag', 164], ['hq', 170],
+  ], foes: [20, 34, 43, 58, 70, 80, 88, 93, 104, 110, 122, 130, 138, 156] },
+  { name: '1-2', pal: 'night', time: 400, w: 190, objs: [
+    ['ground', 0, 0, 40], ['ground', 43, 0, 22], ['ground', 68, 0, 10], ['ground', 81, 0, 40], ['ground', 124, 0, 66],
+    ['row', 10, 9, 5, 'C'], ['coins', 11, 6, 3], ['tower', 18, 3], ['tower', 24, 4], ['row', 30, 6, 6, 'B'], ['C', 32, 6],
+    ['stairs', 44, 4, 1], ['coins', 52, 5, 4], ['row', 56, 8, 4, 'B'], ['C', 70, 9], ['tower', 73, 3],
+    ['row', 84, 9, 10, 'B'], ['row', 86, 5, 6, 'B'], ['C', 88, 5], ['C', 90, 9], ['tower', 98, 4], ['tower', 104, 2], ['tower', 110, 4],
+    ['coins', 114, 7, 5], ['stairs', 126, 5, 1], ['row', 134, 7, 4, 'C'], ['stairs', 142, 6, -1], ['tower', 152, 3],
+    ['stairs', 160, 8, 1], ['S', 168, 4, 1, 9], ['flag', 178], ['hq', 182],
+  ], foes: [20, 28, 34, 36, 50, 58, 60, 74, 88, 92, 96, 102, 108, 116, 118, 130, 138, 146, 150] },
+];
+let MAPW = 0, GRID = [], COINS = new Set(), FLAGX = 0, HQX = 0;
+function buildLevel(L) {
+  MAPW = L.w + 16; GRID = Array.from({ length: 15 }, () => new Array(MAPW).fill('')); COINS = new Set();
+  const set = (x, y, t) => { if (x >= 0 && x < MAPW && y >= 0 && y < 15) GRID[y][x] = t; };
+  for (const o of L.objs) {
+    const [k, x, y, a, b] = o;
+    if (k === 'ground') for (let i = 0; i < a; i++) { set(x + i, 13, 'G'); set(x + i, 14, 'G'); }
+    else if (k === 'tower') { for (let r = 0; r < y; r++) set(x, 12 - r, r === y - 1 ? 'L' : 'K'); }
+    else if (k === 'row') for (let i = 0; i < a; i++) set(x + i, y, b);
+    else if (k === 'coins') for (let i = 0; i < a; i++) COINS.add((x + i) + ',' + y);
+    else if (k === 'stairs') for (let i = 0; i < y; i++) { const hgt = a > 0 ? i + 1 : y - i; for (let r = 0; r < hgt; r++) set(x + i, 12 - r, 'S'); }
+    else if (k === 'S') for (let i = 0; i < (a || 1); i++) for (let r = 0; r < (b || 1); r++) set(x + i, y + r, 'S');
+    else if (k === 'flag') { FLAGX = x; set(x, 12, 'S'); }
+    else if (k === 'hq') HQX = x;
+    else set(x, y, k);
+  }
+  for (let x = L.w; x < MAPW; x++) { set(x, 13, 'G'); set(x, 14, 'G'); }
+}
+const tileAt = (tx, ty) => (ty < 0 || ty >= 15 || tx < 0 || tx >= MAPW) ? (ty >= 15 ? '' : (tx < 0 ? 'G' : '')) : GRID[ty][tx];
+const solidAt = (tx, ty) => SOLID.has(tileAt(tx, ty));
+
+// ---------------------------------------------------------------- physics (pixels per frame at 60 fps; sub-pixel fractions as on the NES)
+const PH = {
+  minWalk: 0.07421875, walkAcc: 0.037109375, runAcc: 0.0556640625, maxWalk: 1.5625, maxRun: 2.5625,
+  release: 0.05078125, skid: 0.1015625, skidTurn: 0.5625, maxFall: 4.5,
+  // jump: speed bands decide launch speed and the two gravities (holding jump vs not)
+  bands: [{ upTo: 1, vy: -4, gHold: 0.125, gFall: 0.4375 }, { upTo: 2.3125, vy: -4, gHold: 0.1171875, gFall: 0.375 }, { upTo: 99, vy: -5, gHold: 0.15625, gFall: 0.5625 }],
+};
+
+// ---------------------------------------------------------------- input: keyboard (A/D, Space, hold M) + touch (stick, jump, sprint toggle)
+const key = {}, IN = { left: false, right: false, jump: false, run: false }, touch = { x: 0, active: false, jump: false, runOn: false };
+addEventListener('keydown', e => { key[e.code] = true; if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault(); audioOn(); });
+addEventListener('keyup', e => { key[e.code] = false; });
+function readInput() {
+  IN.left = !!(key.KeyA || key.ArrowLeft) || (touch.active && touch.x < -.35);
+  IN.right = !!(key.KeyD || key.ArrowRight) || (touch.active && touch.x > .35);
+  IN.jump = !!(key.Space || key.KeyW || key.ArrowUp) || touch.jump;
+  IN.run = !!(key.KeyM || key.ShiftLeft) || touch.runOn;
+}
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+if (isTouch) {
+  const pad = document.getElementById('pad'), stick = document.getElementById('stick'), knob = document.getElementById('knob'), jb = document.getElementById('jump'), rb = document.getElementById('run');
+  pad.style.display = 'block';
+  let sid = null;
+  const moveStick = e => { const r = stick.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2; let dx = (e.clientX - cx) / (r.width / 2), dy = (e.clientY - cy) / (r.height / 2); const L = Math.hypot(dx, dy); if (L > 1) { dx /= L; dy /= L; } touch.x = dx; knob.style.left = (41 + dx * 40) + 'px'; knob.style.top = (41 + dy * 40) + 'px'; };
+  stick.addEventListener('pointerdown', e => { sid = e.pointerId; stick.setPointerCapture(sid); touch.active = true; moveStick(e); audioOn(); });
+  stick.addEventListener('pointermove', e => { if (e.pointerId === sid) moveStick(e); });
+  const endStick = e => { if (e.pointerId !== sid) return; sid = null; touch.active = false; touch.x = 0; knob.style.left = '41px'; knob.style.top = '41px'; };
+  stick.addEventListener('pointerup', endStick); stick.addEventListener('pointercancel', endStick);
+  jb.addEventListener('pointerdown', e => { jb.setPointerCapture(e.pointerId); touch.jump = true; audioOn(); });
+  const endJ = () => { touch.jump = false; }; jb.addEventListener('pointerup', endJ); jb.addEventListener('pointercancel', endJ);
+  rb.addEventListener('pointerdown', () => { touch.runOn = !touch.runOn; rb.classList.toggle('on', touch.runOn); });
+}
+
+// ---------------------------------------------------------------- sound: two pulse-wave blips (original, tiny)
+let AC = null;
+function audioOn() { if (!AC) try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+function blip(f0, f1, dur, type = 'square', vol = .06) {
+  if (!AC) return; const o = AC.createOscillator(), g = AC.createGain(), t = AC.currentTime;
+  o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.0005, t + dur);
+  o.connect(g); g.connect(AC.destination); o.start(t); o.stop(t + dur);
+}
+const SFX = { jump: () => blip(330, 760, .16), coin: () => { blip(988, 988, .06); setTimeout(() => blip(1319, 1319, .25), 60); }, stomp: () => blip(220, 90, .1, 'triangle', .12), bump: () => blip(140, 90, .08, 'triangle', .1), brick: () => blip(300, 60, .2, 'sawtooth', .05), die: () => blip(600, 80, .9, 'square', .05), flag: () => blip(400, 1200, .7), one: () => blip(660, 1320, .4) };
+
+// ---------------------------------------------------------------- game state
+const G = { mode: 'select', pick: 0, who: 'sean', lvl: 0, score: 0, coins: 0, lives: 3, time: 400, tAcc: 0, camX: 0, timer: 0, msg: '' };
+let P, FOES = [], FX = [];
+function startLevel() {
+  const L = LEVELS[G.lvl]; buildLevel(L);
+  P = { x: 40, y: 192, vx: 0, vy: 0, w: 12, h: 15, onG: true, face: 1, airMax: PH.maxWalk, band: PH.bands[0], jumpHeld: false, anim: 0, dead: false, deadT: 0, goal: 0 };
+  FOES = L.foes.map(x => ({ x: x * 16, y: 192, vx: -.5, vy: 0, w: 14, h: 14, alive: true, squash: 0, awake: false }));
+  FX = []; G.camX = 0; G.time = L.time; G.tAcc = 0; G.mode = 'intro'; G.timer = 120;
+}
+function boxHitsSolid(x, y, w, h) {
+  for (let ty = Math.floor(y / 16); ty <= Math.floor((y + h - 1) / 16); ty++) for (let tx = Math.floor(x / 16); tx <= Math.floor((x + w - 1) / 16); tx++) if (solidAt(tx, ty)) return [tx, ty];
+  return null;
+}
+function hitBlock(tx, ty) {
+  const t = tileAt(tx, ty);
+  if (t === 'C') { GRID[ty][tx] = 'U'; G.coins++; G.score += 200; FX.push({ k: 'coin', x: tx * 16, y: ty * 16 - 16, t: 0 }); SFX.coin(); oneUpCheck(); }
+  else if (t === 'B') { GRID[ty][tx] = ''; G.score += 50; for (let i = 0; i < 4; i++) FX.push({ k: 'bit', x: tx * 16 + (i % 2) * 8, y: ty * 16 + (i >> 1) * 8, vx: (i % 2 ? 1 : -1) * 1.2, vy: -4 + (i >> 1) * 1.5, t: 0 }); SFX.brick(); }
+  else SFX.bump();
+  // anything standing on the block gets knocked out
+  for (const f of FOES) if (f.alive && !f.squash && Math.abs(f.x + 7 - (tx * 16 + 8)) < 14 && Math.abs(f.y + f.h - ty * 16) < 3) { f.alive = false; f.flip = true; f.vy = -3; G.score += 100; }
+}
+function oneUpCheck() { if (G.coins >= 100) { G.coins -= 100; G.lives++; SFX.one(); } }
+function die() { if (P.dead) return; P.dead = true; P.deadT = 0; P.vy = -4; P.vx = 0; SFX.die(); }
+
+function stepPlayer() {
+  readInput();
+  if (P.dead) { P.deadT++; if (P.deadT > 30) { P.vy = Math.min(PH.maxFall, P.vy + .25); P.y += P.vy; } if (P.deadT > 150) { G.lives--; if (G.lives < 0) { G.mode = 'over'; G.timer = 240; } else startLevel(); } return; }
+  if (P.goal) return stepGoal();
+  const dir = (IN.right ? 1 : 0) - (IN.left ? 1 : 0), spd = Math.abs(P.vx), sgn = Math.sign(P.vx);
+  if (P.onG) {
+    const max = IN.run ? PH.maxRun : PH.maxWalk, acc = IN.run ? PH.runAcc : PH.walkAcc;
+    if (dir && sgn && dir !== sgn) { P.vx -= sgn * PH.skid; if (Math.abs(P.vx) < PH.skidTurn) P.vx = 0; P.skid = true; }      // skidding to turn round
+    else if (dir) { P.skid = false; if (spd < PH.minWalk) P.vx = dir * PH.minWalk; else if (spd < max) P.vx += dir * acc; else P.vx -= sgn * Math.min(spd - max, PH.release); P.face = dir; }
+    else { P.skid = false; if (spd <= PH.release) P.vx = 0; else P.vx -= sgn * PH.release; }
+    if (IN.jump && !P.jumpHeld) {   // launch: speed band picks height + gravity
+      P.band = PH.bands.find(b => spd < b.upTo); P.vy = P.band.vy; P.onG = false; P.airMax = spd > PH.maxWalk ? PH.maxRun : PH.maxWalk; SFX.jump();
+    }
+  } else {
+    if (dir) { const fwd = !sgn || dir === sgn, acc = spd >= PH.maxWalk ? PH.runAcc : (fwd ? PH.walkAcc : PH.release); P.vx += dir * acc; if (Math.abs(P.vx) > P.airMax) P.vx = Math.sign(P.vx) * P.airMax; }
+  }
+  P.jumpHeld = IN.jump;
+  // gravity: lighter while rising with jump held
+  const gr = (!P.onG && P.vy < 0 && IN.jump) ? P.band.gHold : P.band.gFall;
+  P.vy = Math.min(PH.maxFall, P.vy + gr);
+  // move X
+  P.x += P.vx;
+  if (P.x < G.camX) { P.x = G.camX; P.vx = Math.max(0, P.vx); }
+  let h = boxHitsSolid(P.x, P.y, P.w, P.h);
+  if (h) { if (P.vx > 0) P.x = h[0] * 16 - P.w; else if (P.vx < 0) P.x = h[0] * 16 + 16; P.vx = 0; }
+  // move Y
+  P.y += P.vy; P.onG = false;
+  h = boxHitsSolid(P.x, P.y, P.w, P.h);
+  if (h) {
+    if (P.vy > 0) { P.y = h[1] * 16 - P.h; P.vy = 0; P.onG = true; P.band = PH.bands[0]; }
+    else if (P.vy < 0) {   // head bump: the block nearest the middle of the head
+      const cx = P.x + P.w / 2, ty = h[1], cands = [Math.floor(cx / 16)].concat(solidAt(Math.floor(cx / 16), ty) ? [] : [Math.floor(P.x / 16), Math.floor((P.x + P.w - 1) / 16)]);
+      const tx = cands.find(t => solidAt(t, ty)); if (tx != null) hitBlock(tx, ty);
+      P.y = ty * 16 + 16; P.vy = 0.5;
+    }
+  } else if (boxHitsSolid(P.x, P.y + 1, P.w, P.h) && P.vy >= 0) P.onG = true;
+  // coins in the air
+  for (let ty = Math.floor(P.y / 16); ty <= Math.floor((P.y + P.h) / 16); ty++) for (let tx = Math.floor(P.x / 16); tx <= Math.floor((P.x + P.w) / 16); tx++) { const k = tx + ',' + ty; if (COINS.has(k)) { COINS.delete(k); G.coins++; G.score += 200; SFX.coin(); oneUpCheck(); } }
+  if (P.y > 240) die();
+  // flagpole
+  if (P.x + P.w >= FLAGX * 16 - 1) { P.goal = 1; P.x = FLAGX * 16 - 6; P.vx = 0; P.vy = 0; const hgt = Math.max(0, 192 - P.y); G.score += hgt > 120 ? 5000 : hgt > 80 ? 2000 : hgt > 40 ? 800 : 400; SFX.flag(); }
+  P.anim += Math.abs(P.vx) * .12 + (Math.abs(P.vx) > 0 ? .05 : 0);
+}
+function stepGoal() {
+  if (P.goal === 1) { P.y += 2; if (P.y >= 192 - 16) { P.y = 192 - 16; P.goal = 2; P.x += 10; } }
+  else if (P.goal === 2) { P.vx = 1; P.face = 1; P.x += P.vx; P.vy = Math.min(PH.maxFall, P.vy + .4375); P.y += P.vy; const h = boxHitsSolid(P.x, P.y, P.w, P.h); if (h) { P.y = h[1] * 16 - P.h; P.vy = 0; } P.anim += .15; if (P.x >= HQX * 16 + 8) { P.goal = 3; G.timer = 0; } }
+  else if (P.goal === 3) { if (G.time > 0) { const n = Math.min(G.time, 3); G.time -= n; G.score += n * 50; if (G.timer++ % 3 === 0) blip(880, 880, .03); } else { G.timer++; if (G.timer > 120) { G.lvl = (G.lvl + 1) % LEVELS.length; startLevel(); } } }
+}
+function stepFoes() {
+  for (const f of FOES) {
+    if (!f.alive) { if (f.flip) { f.vy += .3; f.y += f.vy; } continue; }
+    if (f.squash) { if (++f.squash > 30) f.alive = false; continue; }
+    if (!f.awake) { if (f.x < G.camX + 256 + 16) f.awake = true; else continue; }
+    f.vy = Math.min(PH.maxFall, f.vy + .3); f.x += f.vx;
+    let h = boxHitsSolid(f.x, f.y, f.w, f.h); if (h) { f.x -= f.vx; f.vx = -f.vx; }
+    f.y += f.vy; h = boxHitsSolid(f.x, f.y, f.w, f.h); if (h && f.vy > 0) { f.y = h[1] * 16 - f.h; f.vy = 0; }
+    if (f.y > 260 || f.x < G.camX - 64) f.alive = false;
+    // foes bounce off each other
+    for (const o of FOES) if (o !== f && o.alive && !o.squash && o.awake && Math.abs(o.x - f.x) < 14 && Math.abs(o.y - f.y) < 14 && Math.sign(o.x - f.x) === Math.sign(f.vx)) f.vx = -f.vx;
+    // player contact
+    if (P.dead || P.goal) continue;
+    if (P.x < f.x + f.w && P.x + P.w > f.x && P.y < f.y + f.h && P.y + P.h > f.y) {
+      if (P.vy > 0 && P.y + P.h - f.y < 10) { f.squash = 1; G.score += 100; P.vy = IN.jump ? -5 : -4; P.band = PH.bands[0]; SFX.stomp(); FX.push({ k: 'pts', x: f.x, y: f.y - 8, t: 0, v: 100 }); }
+      else die();
+    }
+  }
+}
+function stepFX() { for (const e of FX) { e.t++; if (e.k === 'bit') { e.vy += .3; e.x += e.vx; e.y += e.vy; } } FX = FX.filter(e => e.t < (e.k === 'coin' ? 30 : e.k === 'pts' ? 40 : 90)); }
+
+function update() {
+  readInput();
+  if (G.mode === 'select') {
+    if ((IN.left || IN.right) && !G.lr) { G.pick = 1 - G.pick; blip(500, 500, .04); } G.lr = IN.left || IN.right;
+    if (IN.jump && !G.jh) { G.who = G.pick ? 'kat' : 'sean'; G.score = 0; G.coins = 0; G.lives = 3; G.lvl = 0; startLevel(); }
+    G.jh = IN.jump; return;
+  }
+  if (G.mode === 'intro') { if (--G.timer <= 0) G.mode = 'play'; G.jh = IN.jump; return; }
+  if (G.mode === 'over') { if (--G.timer <= 0 || (IN.jump && !G.jh && G.timer < 180)) G.mode = 'select'; G.jh = IN.jump; return; }
+  stepPlayer(); stepFoes(); stepFX();
+  if (!P.dead && !P.goal) { G.tAcc++; if (G.tAcc >= 24) { G.tAcc = 0; G.time--; if (G.time <= 0) die(); } }   // one game second ≈ 0.4 s
+  // camera: only scrolls forward, keeps the player left of centre
+  const target = P.x - 112; if (target > G.camX) G.camX = Math.min(target, MAPW * 16 - 256);
+  G.jh = IN.jump;
+}
+
+// ---------------------------------------------------------------- drawing
+const cv = document.getElementById('scr'), g = cv.getContext('2d'); g.imageSmoothingEnabled = false;
+function txt(s, x, y, col = '#fff', align = 'left') { g.font = 'bold 8px "Courier New", monospace'; g.textAlign = align; g.textBaseline = 'top'; g.fillStyle = '#000'; g.fillText(s, x + 1, y + 1); g.fillStyle = col; g.fillText(s, x, y); }
+function drawDeco(pal, cam) {
+  // far skyline (GSD office towers), parallax 0.4
+  g.fillStyle = pal.far;
+  for (let i = -1; i < 12; i++) { const bx = Math.floor((i * 96 - (cam * .4) % 96)), hgt = 40 + ((i * 37 + Math.floor(cam * .4 / 96) * 13) % 5) * 12; g.fillRect(bx, 208 - hgt, 40, hgt); g.fillRect(bx + 48, 208 - hgt * .6, 30, hgt * .6); }
+  // clouds (two-tone puffs)
+  const [c1, c2] = [pal.deco[1], pal.deco[2]];
+  for (let i = 0; i < 8; i++) { const x = Math.floor(i * 150 + 30 - cam * .7) % (8 * 150); const xx = x < -60 ? x + 8 * 150 : x, yy = 30 + (i % 3) * 18; g.fillStyle = c1; g.fillRect(xx, yy + 6, 40, 10); g.fillRect(xx + 8, yy, 24, 8); g.fillStyle = c2; g.fillRect(xx + 10, yy + 2, 8, 4); g.fillRect(xx + 4, yy + 8, 10, 3); }
+}
+function drawTiles(pal, palName) {
+  const t0 = Math.floor(G.camX / 16), off = -(G.camX % 16);
+  for (let c = 0; c <= 16; c++) { const tx = t0 + c; for (let ty = 0; ty < 15; ty++) { const t = tileAt(tx, ty); if (t && META[t]) g.drawImage(metaCanvas(t, palName), Math.round(c * 16 + off), ty * 16); if (COINS.has(tx + ',' + ty)) drawCoin(c * 16 + off, ty * 16 + 3); } }
+}
+function drawCoin(x, y) { const sp = spriteCanvas('coin', COIN, { 1: '#7a4a00', 2: '#facc15', 3: '#fff7c2' }); const w = 6 + Math.abs(Math.sin(Date.now() / 160)) * 6; g.drawImage(sp, 0, 0, 16, 9, Math.round(x + 8 - w / 2 - 1), y, w, 10); }
+function drawFlag(palName) {
+  const x = FLAGX * 16 + 7 - G.camX; if (x < -40 || x > 280) return;
+  g.fillStyle = palName === 'night' ? '#cbd5e1' : '#334155'; g.fillRect(x, 40, 2, 152);
+  g.fillStyle = '#facc15'; g.fillRect(x - 2, 36, 6, 6);
+  const fy = P && P.goal ? Math.min(176, P.y) : 44;
+  g.fillStyle = '#1d4ed8'; g.beginPath(); g.moveTo(x, fy); g.lineTo(x - 22, fy + 8); g.lineTo(x, fy + 16); g.fill();
+  txt('$', x - 12, fy + 4, '#facc15');
+}
+function drawHQ(palName) {
+  const x = HQX * 16 - G.camX; if (x < -100 || x > 300) return;
+  g.fillStyle = palName === 'night' ? '#334155' : '#1e3a5f'; g.fillRect(x - 24, 112, 80, 96);
+  g.fillStyle = palName === 'night' ? '#fde68a' : '#9ec5e8'; for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) g.fillRect(x - 18 + c * 18, 120 + r * 16, 10, 8);
+  g.fillStyle = '#facc15'; g.fillRect(x - 24, 104, 80, 10); txt('GSD HQ', x + 16, 105, '#1e3a5f', 'center');
+  g.fillStyle = '#0b1020'; g.fillRect(x + 8, 180, 16, 28);
+}
+function drawPlayer() {
+  if (!P || (G.mode === 'intro')) return;
+  let frame = 'stand';
+  if (P.dead) frame = 'dead'; else if (!P.onG && !P.goal) frame = 'jump'; else if (Math.abs(P.vx) > .05 || P.goal === 2) frame = ['walk1', 'walk2', 'stand'][Math.floor(P.anim) % 3];
+  const sp = heroCanvas(G.who, frame), x = Math.round(P.x - 2 - G.camX), y = Math.round(P.y - 1);
+  if (P.goal === 3) return;
+  g.save(); if (P.face < 0) { g.translate(x + 16, y); g.scale(-1, 1); g.drawImage(sp, 0, 0); } else g.drawImage(sp, x, y); g.restore();
+}
+function drawFoes() {
+  for (const f of FOES) {
+    if (!f.alive && !f.flip) continue; if (!f.awake && f.alive) continue;
+    const x = Math.round(f.x - 1 - G.camX), y = Math.round(f.y - 2); if (x < -20 || x > 270) continue;
+    const sp = spriteCanvas('foe' + (Math.floor(Date.now() / 220) % 2 ? 'a' : 'b'), Math.floor(Date.now() / 220) % 2 ? ENEMY.a : ENEMY.b, ENEMY.pal);
+    if (f.squash) g.drawImage(sp, 0, 0, 16, 16, x, y + 10, 16, 6);
+    else if (f.flip) { g.save(); g.translate(x, y + 16); g.scale(1, -1); g.drawImage(sp, 0, 0); g.restore(); }
+    else g.drawImage(sp, x, y);
+  }
+}
+function drawFX() {
+  for (const e of FX) {
+    const x = e.x - G.camX;
+    if (e.k === 'coin') drawCoin(x, e.y - Math.sin(e.t / 30 * Math.PI) * 30);
+    else if (e.k === 'bit') { g.fillStyle = PAL[LEVELS[G.lvl].pal].brick[1]; g.fillRect(x, e.y, 6, 6); }
+    else if (e.k === 'pts') txt(String(e.v), x, e.y - e.t * .5, '#fff');
+  }
+}
+function drawHUD() {
+  const H = HERO[G.who];
+  txt(H.name, 16, 8); txt(String(G.score).padStart(6, '0'), 16, 17);
+  txt('$x' + String(G.coins).padStart(2, '0'), 88, 17, '#facc15');
+  txt('DEAL', 140, 8); txt(LEVELS[G.lvl].name, 144, 17);
+  txt('TIME', 208, 8); if (G.mode !== 'select') txt(String(Math.max(0, G.time)).padStart(3, '0'), 212, 17);
+}
+function drawSelect(t) {
+  g.fillStyle = '#101830'; g.fillRect(0, 0, 256, 240);
+  g.fillStyle = '#1e3a5f'; g.fillRect(0, 192, 256, 48);
+  txt('SUPER', 128, 34, '#fde68a', 'center'); g.font = 'bold 16px "Courier New", monospace'; g.textAlign = 'center'; g.fillStyle = '#000'; g.fillText('GSD CONSULTANTS', 129, 47); g.fillStyle = '#facc15'; g.fillText('GSD CONSULTANTS', 128, 46);
+  txt('CHOOSE YOUR CONSULTANT', 128, 84, '#fff', 'center');
+  ['sean', 'kat'].forEach((who, i) => {
+    const x = 72 + i * 112, sel = G.pick === i, sp = heroCanvas(who, Math.floor(t / 250) % 2 && sel ? 'walk1' : 'stand');
+    g.drawImage(sp, x - 16, 120, 32, 32);
+    txt(HERO[who].name, x, 158, sel ? '#facc15' : '#94a3b8', 'center');
+    if (sel) { g.strokeStyle = '#facc15'; g.strokeRect(x - 26, 112, 52, 60); }
+  });
+  txt(isTouch ? 'STICK TO PICK - JUMP TO START' : 'A / D TO PICK - SPACE TO START', 128, 204, '#cbd5e1', 'center');
+  txt(isTouch ? 'SPRINT BUTTON TOGGLES RUN' : 'HOLD M TO SPRINT', 128, 216, '#94a3b8', 'center');
+}
+function render(t) {
+  if (G.mode === 'select') return drawSelect(t);
+  const L = LEVELS[G.lvl], pal = PAL[L.pal];
+  if (G.mode === 'intro' || G.mode === 'over') {
+    g.fillStyle = '#000'; g.fillRect(0, 0, 256, 240); drawHUD();
+    if (G.mode === 'over') txt('GAME OVER', 128, 112, '#fff', 'center');
+    else { txt('DEAL ' + L.name, 128, 96, '#fff', 'center'); g.drawImage(heroCanvas(G.who, 'stand'), 100, 112); txt('x ' + G.lives, 124, 116, '#fff'); }
+    return;
+  }
+  g.fillStyle = pal.sky; g.fillRect(0, 0, 256, 240);
+  drawDeco(pal, G.camX); drawHQ(L.pal); drawTiles(pal, L.pal); drawFlag(L.pal); drawFoes(); drawFX(); drawPlayer(); drawHUD();
+  if (P.goal === 3 && G.time <= 0) txt('DEAL CLOSED!', 128, 96, '#facc15', 'center');
+}
+
+// ---------------------------------------------------------------- fit to screen (integer scale when it fits) + fixed 60 Hz loop
+function fit() {
+  const s = Math.min(innerWidth / 256, innerHeight / 240), k = Math.floor(s);
+  const use = k >= 2 && k / s > .85 ? k : s;   // crisp whole-number scale when it nearly fills the screen, otherwise fill it cv.style.width = Math.round(256 * use) + 'px'; cv.style.height = Math.round(240 * use) + 'px';
+}
+addEventListener('resize', fit); fit();
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(250, now - last); last = now;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  render(now); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
