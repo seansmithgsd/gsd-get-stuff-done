@@ -2547,7 +2547,7 @@ function wTap(sx, sy) {
   if (best.k === 'v') return villageSheet(best.o);
   if (best.k === 'wild') return wildSheet(best.o);
   if (best.k === 'm') return marchSheet(best.o);
-  if (best.k === 'g') return golemSheet(LIVE.golems.get(best.o.id) || { ...best.o, dmg: {}, far: true });
+  if (best.k === 'g') return golemSheet(findGolem(best.o.id));
 }
 const crewPicker = (max = W_CREW) => `<div class="row" style="justify-content:flex-start;gap:8px;margin-top:8px"><span class="small">Crew</span><button class="btn sm alt" data-crew="-1">−</button><b id="crew-n">${CREW_N}</b><button class="btn sm alt" data-crew="1">+</button><span class="small">of ${max}</span></div>`;
 let SHEET_FOR = null;

@@ -34,6 +34,12 @@ export class Zone extends DurableObject {
     this.intents = new Map();   // pid -> latest worker intents (memory only; resent each trip)
   }
   async fetch(req) {
+    // zone-to-zone: results of a fight somewhere else, for a player who lives in this zone
+    if (req.headers.get('x-deliver')) {
+      const { pid, list } = await req.json();
+      await this.deliver(+pid, list);
+      return new Response('ok');
+    }
     const who = JSON.parse(req.headers.get('x-who'));
     if (!this._z) { this._z = [who.zx, who.zy]; await this.ctx.storage.put('z', this._z); }
     const pair = new WebSocketPair();
@@ -65,6 +71,18 @@ export class Zone extends DurableObject {
     if (m.t === 'ping') return ws.send(JSON.stringify({ t: 'pong', now }));
     const home = zoneOf(who.gx, who.gy), mine = home[0] === who.zx && home[1] === who.zy;
     // village snapshot: buildings + how much is left on each resource (only into your own zone)
+    // soldiers sent from anywhere on the map to hunt a golem in this zone (home-zone hunters ride on the snapshot instead)
+    if (m.t === 'hunt' && !mine) {
+      const sd = Array.isArray(m.sd) ? m.sd.slice(0, 260).map(cleanSd).filter(x => x[4] === 1 && x[5]) : [];
+      const prev = await this.ctx.storage.get('h:' + who.pid);
+      if (!sd.length) { if (prev) await this.ctx.storage.delete('h:' + who.pid); return; }
+      const h = { pid: who.pid, name: who.name, home, sd, sdh: (prev && prev.sdh) || {}, at: now,
+        tk: m.tk && typeof m.tk === 'object' ? { ax: m.tk.ax | 0, pk: m.tk.pk | 0, ind: !!m.tk.ind, dig: !!m.tk.dig } : { ax: 0, pk: 0, ind: false, dig: false } };
+      if (prev && prev.sd) { const old = new Map(prev.sd.map(x => [x[0], x])); for (const x of h.sd) { const o = old.get(x[0]); if (o && now - (h.sdh[x[0]] || 0) < 20000 && o[1] < x[1]) { x[1] = o[1]; x[7] = o[7]; } } }
+      await this.ctx.storage.put('h:' + who.pid, h);
+      if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(now + 1000);
+      return;
+    }
     if (m.t === 'snap' && mine) {
       const v = { pid: who.pid, name: who.name, team: who.team, gx: who.gx, gy: who.gy, seed: m.seed | 0, b: Array.isArray(m.b) ? m.b.slice(0, 400) : [], left: m.left && typeof m.left === 'object' ? m.left : {}, n: m.n && typeof m.n === 'object' ? m.n : {}, pl: Array.isArray(m.pl) ? m.pl.slice(0, 120) : [], st: m.st && typeof m.st === 'object' ? m.st : {}, gd: m.gd && typeof m.gd === 'object' ? { n: m.gd.n | 0, lvl: m.gd.lvl | 0 } : { n: 0, lvl: 0 }, lvl: m.lvl | 0, at: now,
         sd: Array.isArray(m.sd) ? m.sd.slice(0, 260).map(cleanSd) : [], tk: m.tk && typeof m.tk === 'object' ? { ax: m.tk.ax | 0, pk: m.tk.pk | 0, ind: !!m.tk.ind, dig: !!m.tk.dig } : { ax: 0, pk: 0, ind: false, dig: false } };
@@ -144,6 +162,8 @@ export class Zone extends DurableObject {
     let gl = (await this.ctx.storage.get('gl')) || [];
     const vs = new Map([...(await this.ctx.storage.list({ prefix: 'v:' })).values()].map(v => [v.pid, v]));
     const online = new Set(socks.map(w => w.deserializeAttachment()?.pid));
+    const hunters = new Map([...(await this.ctx.storage.list({ prefix: 'h:' })).values()].map(h => [h.pid, h]));
+    const hDirty = new Set();
     const dirty = new Set(), out = new Map();   // pid -> messages for that player
     const tell = (pid, msg) => { if (!out.has(pid)) out.set(pid, []); out.get(pid).push(msg); };
     const zx = this.zx, zy = this.zy;
@@ -201,6 +221,7 @@ export class Zone extends DurableObject {
           if (x[1] <= 0 || x[7]) continue;
           if ((x[4] === 1 && x[5] === g.id && x[6] <= t) || (x[4] === 0 && g.eat === v.pid && x[6] <= t)) fighters.push({ v, x });
         }
+        for (const h of hunters.values()) for (const x of h.sd) if (x[1] > 0 && !x[7] && x[5] === g.id && x[6] <= t) fighters.push({ v: h, x, remote: true });
         g.nf = fighters.length;
         if (!fighters.length) continue;
         const ax = GOLEM_AXE.includes(g.k);
@@ -214,7 +235,7 @@ export class Zone extends DurableObject {
         const tg = fighters[0];
         tg.x[1] = Math.max(0, tg.x[1] - GOLEM_HIT * step / HIT_MS);
         if (tg.x[1] <= 0) { tg.x[7] = 1; tg.x[4] = 0; tg.x[5] = 0; }
-        tg.v.sdh = tg.v.sdh || {}; tg.v.sdh[tg.x[0]] = t; dirty.add(tg.v.pid);
+        tg.v.sdh = tg.v.sdh || {}; tg.v.sdh[tg.x[0]] = t; (tg.remote ? hDirty : dirty).add(tg.v.pid);
         tell(tg.v.pid, { kind: 'shp', id: tg.x[0], hp: Math.round(tg.x[1] * 10) / 10, wnd: tg.x[7] ? 1 : 0 });
         if (g.m <= 0) { dead.push(g); break; }
       }
@@ -227,11 +248,20 @@ export class Zone extends DurableObject {
     }
     gl = gl.filter(g => !dead.includes(g));
     for (const pid of dirty) { const v = vs.get(pid); if (v) await this.ctx.storage.put('v:' + pid, v); }
+    for (const pid of hDirty) { const h = hunters.get(pid); if (h) await this.ctx.storage.put('h:' + pid, h); }
+    for (const h of hunters.values()) if (now - h.at > 6 * 3600 * 1000) await this.ctx.storage.delete('h:' + h.pid);   // stale hunt
     await this.ctx.storage.put('gl', gl);
     // deliver: live sockets now, otherwise queued with the harvest losses
-    for (const [pid, list] of out) {
+    for (const [pid, all] of out) {
+      const lastHp = new Map(); all.forEach((x, i) => { if (x.kind === 'shp') lastHp.set(x.id, i); });
+      const list = all.filter((x, i) => x.kind !== 'shp' || lastHp.get(x.id) === i);   // only the latest health per soldier
       const owners = socks.filter(o => o.deserializeAttachment()?.pid === pid);
-      if (owners.length) for (const o of owners) { try { o.send(JSON.stringify({ t: 'loss', list })); } catch (e) {} }
+      if (owners.length) { for (const o of owners) { try { o.send(JSON.stringify({ t: 'loss', list })); } catch (e) {} } }
+      else if (hunters.has(pid) && !vs.has(pid)) {
+        // lives in another zone: hand it to that zone, which sends it live or holds it for next login
+        const [hx, hy] = hunters.get(pid).home;
+        try { await this.env.ZONE.getByName(hx + ',' + hy).fetch('https://zone/deliver', { method: 'POST', headers: { 'x-deliver': '1' }, body: JSON.stringify({ pid, list }) }); } catch (e) {}
+      }
       else {
         // offline: keep every pile bite and reward, but only the latest health for each soldier
         let q = (await this.ctx.storage.get('loss:' + pid)) || []; q.push(...list);
@@ -257,6 +287,15 @@ export class Zone extends DurableObject {
       } catch (e) { /* map mirror only — the zone keeps running */ }
     }
     if (socks.length) await this.ctx.storage.setAlarm(now + TICK_MS);
+  }
+  async deliver(pid, list) {
+    if (!Array.isArray(list) || !list.length) return;
+    const owners = this.ctx.getWebSockets().filter(o => o.deserializeAttachment()?.pid === pid);
+    if (owners.length) { for (const o of owners) { try { o.send(JSON.stringify({ t: 'loss', list })); } catch (e) {} } return; }
+    let q = (await this.ctx.storage.get('loss:' + pid)) || []; q.push(...list);
+    const lastHp = new Map(); q.forEach((x, i) => { if (x.kind === 'shp') lastHp.set(x.id, i); });
+    q = q.filter((x, i) => x.kind !== 'shp' || lastHp.get(x.id) === i);
+    await this.ctx.storage.put('loss:' + pid, q.slice(-200));
   }
   get zx() { return this._z ? this._z[0] : null; }
   get zy() { return this._z ? this._z[1] : null; }

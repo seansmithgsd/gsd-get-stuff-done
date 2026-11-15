@@ -78,7 +78,7 @@ function addSoldier() {
   soldiers().push({ id: n, name: `Soldier ${n}`, hue: (n * 53) % 360, lvl: 0, xp: 0, hp: SOLDIER_HP, wnd: false, mode: 0, gid: 0, ready: 0, trip: 0 });
 }
 const healthy = s => s.mode === 0 && !s.wnd && s.hp >= soldierMaxHp(s.lvl) && s.ready <= sNowL();
-function sendHome(s, now) { const back = s.trip || 0; s.mode = 0; s.gid = 0; s.ready = now + back; }
+function sendHome(s, now) { const back = s.trip || 0; s.mode = 0; s.gid = 0; s.gz = ''; s.ready = now + back; }
 // per tick: training finishes, wounded heal 1 HP/s once back in the barracks
 function milTick(dt) {
   if (!S) return;
@@ -102,24 +102,46 @@ document.addEventListener('click', e => {
     return;
   }
   if (t.dataset.recall) { const s = soldiers().find(x => x.id === +t.dataset.recall); if (s) sendHome(s, now); save(); livePublish(true); const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b) tileSheet(b.i, b.j); return; }
-  if (t.dataset.hn) { HUNT_N = Math.max(1, HUNT_N + +t.dataset.hn); const g = LIVE.golems.get(t.dataset.g); if (g) golemSheet(g); return; }
-  if (t.dataset.callall) { for (const s of soldiers()) if (s.mode === 1 && s.gid === t.dataset.callall) sendHome(s, now); save(); livePublish(true); const g = LIVE.golems.get(t.dataset.callall); if (g) golemSheet(g); return; }
+  if (t.dataset.hn) { HUNT_N = Math.max(1, HUNT_N + +t.dataset.hn); const g = findGolem(t.dataset.g); if (g) golemSheet(g); return; }
+  if (t.dataset.callall) { for (const s of soldiers()) if (s.mode === 1 && s.gid === t.dataset.callall) sendHome(s, now); save(); livePublish(true); const g = findGolem(t.dataset.callall); if (g) golemSheet(g); return; }
   if (t.dataset.hunt) {
-    const g = LIVE.golems.get(t.dataset.hunt); if (!g) return closeSheet();
+    const g = findGolem(t.dataset.hunt); if (!g) return closeSheet();
     const [gx, gy] = golemPos(g, now), [hx, hy] = toWorld(TCI, TCJ);
-    const trip = Math.min(180000, Math.round(Math.hypot(gx - hx, gy - hy) / SOLDIER_SPEED * 1000));
+    const trip = Math.round(Math.hypot(gx - hx, gy - hy) / SOLDIER_SPEED * 1000);   // no range limit: farther golems just take longer to reach
     const pick = soldiers().filter(healthy).slice(0, HUNT_N);
     if (!pick.length) return toast('No healthy soldiers in the barracks');
-    for (const s of pick) { s.mode = 1; s.gid = g.id; s.go = now; s.trip = trip; s.ready = now + trip; }
+    for (const s of pick) { s.mode = 1; s.gid = g.id; s.gz = g.zone || golemZone(g); s.go = now; s.trip = trip; s.ready = now + trip; }
     toast(`${pick.length} soldier${pick.length > 1 ? 's' : ''} marching to the ${g.k} golem`); sfx('build');
-    save(); livePublish(true); golemSheet(g);
+    save(); livePublish(true); milSync(true); golemSheet(findGolem(g.id) || g);
   }
 });
+// a golem we know about: live (from a zone socket) or from the World tab map
+function findGolem(id) { const g = LIVE.golems.get(id); if (g) return g; const w = typeof WLD !== 'undefined' && WLD && (WLD.golems || []).find(x => x.id === id); return w ? { ...w, dmg: w.dmg || {} } : null; }
+function golemZone(g) { const [gx, gy] = plotOf(Math.floor(g.x), Math.floor(g.y)), [zx, zy] = zoneOf(gx, gy); return zx + ',' + zy; }
+const homeZone = () => LIVE.home ? zoneOf(...LIVE.home).join(',') : '';
+// soldiers hunting outside our home zone: keep that zone's socket open and tell it who's coming
+const HUNT_SENT = new Map();
+function milSync(force) {
+  if (!ME || !S) return;
+  const hz = homeZone(), by = new Map();
+  for (const s of soldiers()) if (s.mode === 1 && s.gz && s.gz !== hz) { if (!by.has(s.gz)) by.set(s.gz, []); by.get(s.gz).push(s); }
+  const tk = milSnap().tk;
+  for (const [key, list] of by) {
+    liveOpen(key); const sock = LIVE.socks.get(key); if (sock) sock.want = Date.now();
+    const sd = list.map(sdRow), sig = JSON.stringify(sd.map(x => [x[0], x[5], x[6], x[7], Math.round(x[1] / 10)]));
+    const was = HUNT_SENT.get(key);
+    if (force || !was || was.sig !== sig || Date.now() - was.at > 60000) { if (liveSend(key, { t: 'hunt', sd, tk })) HUNT_SENT.set(key, { sig, at: Date.now() }); }
+  }
+  for (const [key] of HUNT_SENT) if (!by.has(key)) { if (liveSend(key, { t: 'hunt', sd: [], tk })) HUNT_SENT.delete(key); }
+}
+setInterval(() => milSync(false), 2000);
 
 // ---------------------------------------------------------------- what the world server hears about our soldiers
+const sdRow = s => [s.id, Math.round(s.hp * 10) / 10, soldierMaxHp(s.lvl), dmgMul(s), s.mode === 1 ? 1 : 0, s.mode === 1 ? s.gid : 0, s.ready || 0, s.wnd ? 1 : 0];
 function milSnap() {
+  const hz = homeZone();
   return {
-    sd: soldiers().map(s => [s.id, Math.round(s.hp * 10) / 10, soldierMaxHp(s.lvl), dmgMul(s), s.mode === 1 ? 1 : 0, s.mode === 1 ? s.gid : 0, s.ready || 0, s.wnd ? 1 : 0]),
+    sd: soldiers().filter(s => !(s.mode === 1 && s.gz && s.gz !== hz)).map(sdRow),   // hunters out in other zones report to that zone instead
     tk: { ax: U('axes'), pk: U('picks'), ind: !!U('age8'), dig: !!U('age9') },
   };
 }
@@ -194,10 +216,6 @@ function golemSheet(g) {
   const owner = g.eat ? (ME && g.eat === ME.id ? 'your' : ((LIVE.snaps.get(g.eat) || {}).name || 'a village') + "'s") : '';
   const tot = Object.values(g.dmg).reduce((a, b) => a + b, 0), mine = ME ? (g.dmg[ME.id] || 0) : 0;
   const top = Object.entries(g.dmg).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([pid, d]) => `${ME && +pid === ME.id ? 'You' : esc((LIVE.snaps.get(+pid) || {}).name || 'Village ' + pid)}: ${Math.round(d / (tot || 1) * 100)}%`).join(' · ');
-  if (g.far) return openSheet(`<div class="t">${GNAME[g.k] || g.k} Golem <span class="small">· ${Math.round(g.m).toLocaleString()} ${g.k} (biggest ${Math.round(g.mx).toLocaleString()})</span></div>
-    <div class="d">${g.eat ? `Eating a village's ${g.k} pile.` : `Roaming the wilds, looking for ${g.k} piles.`} ${g.nf ? `${g.nf} soldier${g.nf > 1 ? 's' : ''} fighting it.` : ''}</div>
-    <div class="d">Takes ${ax ? 'axes' : 'picks'}.${imm ? ` <b style="color:var(--red)">Immune to you until the ${imm}.</b>` : ''} Destroyed, it drops ${golemLoot(g.mx).toLocaleString()} ${g.k}, split by damage dealt.</div>
-    <div class="small" style="margin-top:8px">Outside your area — only villages near it can send soldiers. Zoom all the way in on it to see it walk.</div>`);
   const ready = soldiers().filter(healthy).length, mineHunting = soldiers().filter(s => s.mode === 1 && s.gid === g.id).length;
   HUNT_N = Math.max(1, Math.min(HUNT_N, Math.max(1, ready)));
   openSheet(`<div class="t">${GNAME[g.k] || g.k} Golem <span class="small">· ${Math.round(g.m).toLocaleString()} ${g.k} (biggest ${Math.round(g.mx).toLocaleString()})</span></div>
@@ -206,6 +224,7 @@ function golemSheet(g) {
     <div class="d">Destroyed, it drops ${golemLoot(g.mx).toLocaleString()} ${g.k}, split by damage dealt (soldier xp too).${top ? ' Damage so far — ' + top : ''}${mine ? ` (yours ${Math.round(mine)})` : ''}</div>
     ${!ME ? '<div class="small" style="margin-top:8px">Sign in on the World tab to fight golems.</div>' : !soldierCap() ? '<div class="small" style="margin-top:8px">Build a Barracks (Iron Age) and train soldiers to fight golems.</div>' : `
     <div class="row" style="justify-content:flex-start;gap:8px;margin-top:8px"><span class="small">Soldiers</span><button class="btn sm alt" data-hn="-1" data-g="${g.id}">−</button><b>${HUNT_N}</b><button class="btn sm alt" data-hn="1" data-g="${g.id}">+</button><span class="small">${ready} ready</span></div>
+    <div class="small" style="margin-top:6px">${(() => { const [gx, gy] = golemPos(g, now), [hx, hy] = toWorld(TCI, TCJ), d = Math.hypot(gx - hx, gy - hy); return `${Math.round(d)} tiles from your Town Center · soldiers arrive in ${fmt(d / SOLDIER_SPEED)}. Only soldiers sent out fight away from home — the barracks defends your own piles.`; })()}</div>
     <div style="margin-top:8px">${ready ? `<button class="btn go" data-hunt="${g.id}">Send ${Math.min(HUNT_N, ready)} to hunt</button>` : '<span class="small">No healthy soldiers in the barracks.</span>'}
     ${mineHunting ? ` <button class="btn alt" data-callall="${g.id}">Recall ${mineHunting}</button>` : ''}</div>`}`);
 }
