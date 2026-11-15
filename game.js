@@ -161,7 +161,7 @@ function migrate(s) {
   for (const k in d.res) if (s.res[k] == null) s.res[k] = 0;
   return s;
 }
-function save() { S.t = Date.now(); dirty = true; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
+function save() { S.t = CATCH && CATCH.s === S ? Date.now() - CATCH.left * 1000 : Date.now(); dirty = true; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
 
 const hasB = t => S.buildings.some(b => b.type === t && b.done);
 const countB = t => S.buildings.filter(b => b.type === t).length;
@@ -244,7 +244,9 @@ function genMap(seed) {
   DEER.push({ i: TCI + 6.5, j: TCJ + 2.5, ti: TCI + 6.5, tj: TCJ + 2.5, wait: 1 });
 }
 function nodeAt(i, j) { if (j < 0 || j >= H || i < 0 || i >= W) return null; return MAP.node[j * W + i]; }
-function bAt(i, j) { return S.buildings.find(b => b.i === i && b.j === j); }
+// inside a simulation tick buildings don't move, so look them up by tile instead of scanning the list (catch-up speed)
+let B_IDX = null;
+function bAt(i, j) { if (B_IDX) return B_IDX.get(j * W + i); return S.buildings.find(b => b.i === i && b.j === j); }
 function unwrapNear(i) { return i; }   // the village no longer wraps around: it is one block of the shared world
 
 const SLOTS = [[2, 0], [0, 2], [-2, 0], [0, -2], [2, 2], [-2, 2], [2, -2], [-2, -2], [3, 1], [1, 3], [-3, 1], [1, -3], [3, -1], [-1, 3], [-3, -1], [-1, -3], [4, 2], [2, 4], [-4, 2], [2, -4]];
@@ -345,6 +347,10 @@ function finishTask(w, quiet) {
 function fallbackBlocked(k) { return (k === 'dig' && (taskOpen('stone') || taskOpen('stone2'))) || (k === 'deadwood' && taskOpen('chop')); }
 function taskOpen(kind) { const T = TASKS[kind]; return (!T.req || reqMet(T.req)) && !!pickTarget(kind); }
 function tick(dt, quiet) {
+  B_IDX = new Map(); for (const b of S.buildings) if (!B_IDX.has(b.j * W + b.i)) B_IDX.set(b.j * W + b.i, b);
+  try { tickBody(dt, quiet); } finally { B_IDX = null; }
+}
+function tickBody(dt, quiet) {
   const eaters = S.workers.length + (S.soldiers ? S.soldiers.length : 0);
   if (eaters) {
     S.eatAcc += dt * eaters;
@@ -359,19 +365,49 @@ function tick(dt, quiet) {
   }
   while (S.waiting > 0 && S.workers.length < housing()) { S.waiting--; addWorker(); if (!quiet) toast('A waiting AI worker moved in'); }
 }
+// Offline catch-up. Short gaps run at once; long ones (hours away) run in small slices with a progress bar so the
+// page never freezes — a long synchronous catch-up locked the tab on first open (refresh did nothing).
+let CATCH = null;
+function catchReport(sec, before) {
+  if (sec <= 30) return;
+  const lines = RES.map(x => [x.n, Math.round(S.res[x.k] - before[x.k])]).filter(x => x[1] !== 0).map(([n, v]) => `<li>${v > 0 ? '+' : ''}${v} ${n}</li>`);
+  if (lines.length) modal(`<h2>While you were away</h2><div class="small">${fmt(sec)} passed</div><ul>${lines.join('')}</ul><div class="btns"><button class="btn" data-close>OK</button></div>`);
+}
+function catchBar(f, total) {
+  let el = document.getElementById('catchbar');
+  if (f == null) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'catchbar'; el.style.cssText = 'position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.55)'; el.innerHTML = '<div class="card" style="min-width:260px;max-width:86vw;text-align:center"><div class="t">Catching up</div><div class="d" id="catchtx"></div><div style="height:8px;background:rgba(0,0,0,.12);border-radius:4px;margin-top:8px"><div id="catchf" style="height:8px;width:0;background:var(--gold);border-radius:4px"></div></div></div>'; document.body.appendChild(el); }
+  document.getElementById('catchtx').textContent = `Your village kept working for ${fmt(total)} while you were away… ${Math.round(f * 100)}%`;
+  document.getElementById('catchf').style.width = Math.round(f * 100) + '%';
+}
 function catchUp(sec, report) {
   sec = Math.min(sec, MAX_OFFLINE);
+  if (!(sec > 0)) return Promise.resolve();
+  if (CATCH && CATCH.s === S) { CATCH.left += sec; CATCH.total += sec; return CATCH.p; }
   const before = { ...S.res };
-  let r = sec;
-  while (r > 0) { const d = Math.min(1, r); SIM_BACK = (r - d) * 1000; tick(d, true); r -= d; }
-  SIM_BACK = 0;
-  if (report && sec > 30) {
-    const lines = RES.map(x => [x.n, S.res[x.k] - before[x.k]]).filter(x => x[1] !== 0).map(([n, v]) => `<li>${v > 0 ? '+' : ''}${v} ${n}</li>`);
-    if (lines.length) modal(`<h2>While you were away</h2><div class="small">${fmt(sec)} passed</div><ul>${lines.join('')}</ul><div class="btns"><button class="btn" data-close>OK</button></div>`);
+  if (sec <= 120) {   // a couple of minutes: just do it
+    let r = sec;
+    while (r > 0) { const d = Math.min(1, r); SIM_BACK = (r - d) * 1000; tick(d, true); r -= d; }
+    SIM_BACK = 0;
+    if (report) catchReport(sec, before);
+    return Promise.resolve();
   }
+  const C = CATCH = { s: S, left: sec, total: sec, report, before, step: 1 };
+  C.p = new Promise(res => { C.resolve = res; });
+  const run = () => {
+    if (CATCH !== C) return;
+    if (C.s !== S) { CATCH = null; SIM_BACK = 0; catchBar(null); C.resolve(); return; }   // a different save was loaded
+    const end = performance.now() + 40;
+    while (C.left > 0 && performance.now() < end) { const d = Math.min(C.step, C.left); C.left -= d; SIM_BACK = C.left * 1000; tick(d, true); }
+    SIM_BACK = 0;
+    if (C.left > 0) { catchBar(1 - C.left / C.total, C.total); setTimeout(run, 0); return; }
+    CATCH = null; catchBar(null);
+    if (C.report) catchReport(C.total, C.before);
+    refresh(true); C.resolve();
+  };
+  catchBar(0, sec); setTimeout(run, 0);
+  return C.p;
 }
-
-// ---------------------------------------------------------------- actions
 function assign(kind) {
   const T = TASKS[kind], w = idle()[0];
   if (!w) return toast('No idle AI workers — win puzzles to recruit more');
@@ -2206,7 +2242,7 @@ async function api(path, opts = {}) {
 function loadSave(sv) {
   S = migrate(sv);
   genMap(S.seed); S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
-  catchUp((Date.now() - S.t) / 1000, true); idle().forEach(autoAssign);
+  return catchUp((Date.now() - S.t) / 1000, true).then(() => idle().forEach(autoAssign));
 }
 async function syncLogin() {
   const q = new URLSearchParams(location.search).get('login');
@@ -2731,15 +2767,16 @@ $('#v-orb').addEventListener('click', async e => {
 S = load();
 genMap(S.seed);
 S.buildings.forEach(b => { MAP.node[b.j * W + b.i] = null; });
-catchUp((Date.now() - S.t) / 1000, true);
 enforceSpotCap();
 idle().forEach(autoAssign); // idle workers get to work on load
 layout();
 refresh(true);
+catchUp((Date.now() - S.t) / 1000, true).then(() => { enforceSpotCap(); idle().forEach(autoAssign); refresh(true); });
 let lastWall = Date.now(), lastUI = 0, lastSave = 0;
 function frame(now) {
   const wall = Date.now();
   let dt = (wall - lastWall) / 1000; lastWall = wall;
+  if (CATCH) { if (dt > 0) { CATCH.left += dt; CATCH.total += dt; } requestAnimationFrame(frame); return; }   // still catching up: real time keeps adding on
   if (dt > 2) catchUp(dt, true); else if (dt > 0) tick(dt, false);
   updateDeer(Math.min(dt, .1));
   floaters.forEach(f => f.age += Math.min(dt, .1));
