@@ -514,7 +514,7 @@ setView = function (v) {
   _setViewSuper(v);
   document.body.classList.toggle('insuper', v === 'super');   // village toasts don't cover the game HUD
   const el = $('#v-super');
-  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1" title="Super GSD Consultants" allow="autoplay"></iframe>';
+  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=64" title="Super GSD Consultants" allow="autoplay"></iframe>';
   if (v === 'super') { const f = el.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (el.querySelector('iframe')) { try { el.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
 };
