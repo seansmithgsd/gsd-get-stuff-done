@@ -39,7 +39,7 @@ function fit() { DPR = Math.min(2, devicePixelRatio || 1); VW = innerWidth; VH =
 addEventListener('resize', fit); fit();
 
 // ---------------------------------------------------------------- constants
-const MAP = 1600, ROAD = 160, ROADW = 18, R0 = 8, GROW = 0.36, FIT = 0.95, TIME = 120, LIVE_ROUND = 130000, LIVE_PLAY = 120000;
+let MAP = 1600; const ROAD = 160, ROADW = 18, R0 = 8, GROW = 0.36, FIT = 0.95, TIME = 120, LIVE_ROUND = 130000, LIVE_PLAY = 120000;
 const WORLD_URL = location.hostname === 'localhost' ? 'ws://localhost:8787' : 'wss://world.gsdconsultantsllc.com';
 const BOT_NAMES = ['Ada', 'Brick', 'Clover', 'Dusty', 'Ember', 'Flint', 'Gale', 'Hazel', 'Ivo', 'Juno', 'Kip', 'Lark'];
 const HOLE_COLORS = ['#fbbf24', '#ef4444', '#22c55e', '#a855f7', '#06b6d4', '#f97316', '#ec4899', '#84cc16', '#e2e8f0', '#38bdf8'];
@@ -114,16 +114,24 @@ function moveObjs(t) {
 // ---------------------------------------------------------------- holes
 // hole: { id, name, x, y, R, m (mass swallowed), vx, vy, bot, col, dead (respawn time), me }
 const holeR = m => Math.sqrt(R0 * R0 + GROW * m);
-const speed = R => 70 + Math.min(130, R * 1.1);
+const speed = R => (70 + Math.min(130, R * 1.1)) * SPEEDK;
+let SPEEDK = 1;
+// Solo maps: each 100% unlocks the next, two blocks wider on every side; holes speed up with the map so 2 minutes stays enough
+const MAPS = 8, mapSize = lv => 1600 + 320 * (lv - 1);
 function newHole(id, name, col, x, y, extra) { return Object.assign({ id, name, col, x, y, R: R0, m: 0, tx: x, ty: y, dead: 0 }, extra || {}); }
 function spawnSpot(seed) { const r = rng(seed); return [100 + r() * (MAP - 200), 100 + r() * (MAP - 200)]; }
 
 // ---------------------------------------------------------------- game state
-const G = { mode: 'menu', kind: 'solo', t: 0, left: TIME, best: +(localStorage.getItem('swallowBest') || 0), live: null, end: null };
+let SAVE = {}; try { SAVE = JSON.parse(localStorage.getItem('swallowSave') || '{}'); } catch (e) {}
+const G = { mode: 'menu', kind: 'solo', t: 0, left: TIME, bests: SAVE.bests || { 1: +(localStorage.getItem('swallowBest') || 0) }, unlocked: SAVE.unlocked || 1, level: 1, live: null, end: null };
+G.level = G.unlocked;
+const bestOf = lv => +(G.bests[lv] || 0);
+function keep() { try { localStorage.setItem('swallowSave', JSON.stringify({ bests: G.bests, unlocked: G.unlocked })); } catch (e) {} }
 let ME = null, HOLES = [], FALL = [], POP = [];
 function start(kind) {
   G.kind = kind; G.mode = 'play'; FALL = []; POP = []; G.end = null; G.t = 0; G.left = TIME; UI.innerHTML = '';
-  if (kind === 'solo') { buildMap((Date.now() / 86400000) | 0); ME = newHole('me', 'YOU', HOLE_COLORS[0], ROAD * 3, ROAD * 3, { me: true });   /* a quiet crossroads off the town centre */ HOLES = [ME]; return; }
+  MAP = kind === 'solo' ? mapSize(G.level) : 1600; SPEEDK = MAP / 1600;
+  if (kind === 'solo') { buildMap(((Date.now() / 86400000) | 0) * 31 + G.level); ME = newHole('me', 'YOU', HOLE_COLORS[0], ROAD * 3, ROAD * 3, { me: true });   /* a quiet crossroads off the town centre */ HOLES = [ME]; return; }
   if (kind === 'classic') {
     buildMap((Math.random() * 1e9) | 0); const [x, y] = spawnSpot(Math.random() * 1e9);
     ME = newHole('me', 'YOU', HOLE_COLORS[0], x, y, { me: true }); HOLES = [ME];
@@ -253,10 +261,11 @@ function pct() { let m = 0; for (const o of OBJ) if (EATEN.has(o.id)) m += o.m; 
 function finish() {
   if (G.mode !== 'play') return; G.mode = 'end';
   if (G.kind === 'solo') {
-    const p = Math.floor(pct() * 10) / 10, prev = G.best, win = p >= 100 || p > prev;
-    if (p > G.best) { G.best = p; localStorage.setItem('swallowBest', String(p)); }
-    G.end = { p, prev, win };
-    tell({ t: 'swallowSolo', pct: p });
+    const lv = G.level, p = Math.floor(pct() * 10) / 10, prev = bestOf(lv), win = p >= 100 || p > prev;
+    if (p > prev) G.bests[lv] = p;
+    const unlock = p >= 100 && lv === G.unlocked && lv < MAPS; if (unlock) G.unlocked = lv + 1;
+    keep(); G.end = { p, prev, win, lv, unlock };
+    tell({ t: 'swallowSolo', pct: p, level: lv });
   } else {
     const board = ranking(), rank = board.findIndex(h => h.me) + 1, played = G.live ? (Date.now() - G.live.joinedAt) / 1000 : TIME;
     G.end = { board, rank, win: rank === 1 && played >= 60, short: rank === 1 && played < 60 };
@@ -267,7 +276,10 @@ function finish() {
 function tell(msg) { try { if (parent !== window) parent.postMessage(msg, location.origin); } catch (e) {} }
 addEventListener('message', e => {
   if (e.origin !== location.origin || !e.data) return;
-  if (e.data.t === 'best') { G.best = Math.max(G.best, +e.data.v || 0); if (G.mode === 'menu') showMenu(); }
+  if (e.data.t === 'best') {   // the account save is the record; keep the higher of it and this device
+    const b = e.data.bests || {}; for (const k in b) G.bests[k] = Math.max(bestOf(k), +b[k] || 0);
+    const was = G.unlocked; G.unlocked = Math.min(MAPS, Math.max(G.unlocked, +e.data.unlocked || 1)); if (G.level === was) G.level = G.unlocked; keep(); if (G.mode === 'menu') showMenu();
+  }
   if (e.data.t === 'reward') { G.reward = e.data.msg; const r = document.getElementById('rw'); if (r) r.textContent = e.data.msg; }
   if (e.data.t === 'pause') IN.keys = {};
 });
@@ -277,18 +289,22 @@ const ranking = () => HOLES.slice().sort((a, b) => b.m - a.m);
 function showMenu() {
   G.mode = 'menu';
   UI.innerHTML = `<div class="card"><h1>SWALLOW</h1><p>Steer the sinkhole. Anything that fits falls in, and every bite makes you bigger.</p>
-    <button id="bSolo">SOLO RUN</button><p class="small">2 minutes · swallow the whole village · best ${G.best.toFixed(1)}%<br>Win: 100% or beat your best = +1 AI worker</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:10px"><button id="bPrev" style="width:48px;margin:0" ${G.level <= 1 ? 'disabled' : ''}>◀</button><button id="bSolo" style="margin:0;flex:1">SOLO RUN · MAP ${G.level}</button><button id="bNext" style="width:48px;margin:0" ${G.level >= G.unlocked ? 'disabled' : ''}>▶</button></div>
+    <p class="small">2 minutes · swallow the whole village · map ${G.level} best ${bestOf(G.level).toFixed(1)}%<br>Win: 100% or beat your best = +1 AI worker · 100% unlocks a bigger map (${G.unlocked}/${MAPS} unlocked)</p>
     <button id="bClassic" class="alt">CLASSIC</button><p class="small">2 minutes vs other holes · biggest hole wins +1 AI worker<br>${navigator.onLine ? 'Signed-in players meet live; computer holes fill the room' : 'Offline: computer holes only'}</p>
     <p class="small">${matchMedia('(pointer: coarse)').matches ? 'Drag anywhere to steer' : 'Point the mouse where to go · or WASD / arrows'}</p></div>`;
   document.getElementById('bSolo').onclick = () => start('solo');
+  document.getElementById('bPrev').onclick = () => { G.level = Math.max(1, G.level - 1); showMenu(); };
+  document.getElementById('bNext').onclick = () => { G.level = Math.min(G.unlocked, G.level + 1); showMenu(); };
   document.getElementById('bClassic').onclick = () => liveJoin();
 }
 function showEnd() {
   const E = G.end; let h = '';
-  if (G.kind === 'solo') h = `<h1>${E.p >= 100 ? 'ALL GONE!' : E.p.toFixed(1) + '%'}</h1><p>${E.p >= 100 ? 'You swallowed the whole village.' : E.win ? 'New personal best! (was ' + E.prev.toFixed(1) + '%)' : 'Personal best: ' + G.best.toFixed(1) + '%'}</p>${E.win ? '<p id="rw" style="color:#86efac;font-weight:700">' + (EMBED ? '+1 AI WORKER' : 'WIN!') + '</p>' : ''}`;
+  if (G.kind === 'solo') h = `<h1>${E.p >= 100 ? 'ALL GONE!' : E.p.toFixed(1) + '%'}</h1><p>Map ${E.lv} · ${E.p >= 100 ? 'You swallowed the whole village.' : E.win ? 'New personal best! (was ' + E.prev.toFixed(1) + '%)' : 'Personal best: ' + bestOf(E.lv).toFixed(1) + '%'}</p>${E.unlock ? '<p style="color:#fbbf24;font-weight:700">MAP ' + (E.lv + 1) + ' UNLOCKED — bigger village!</p>' : E.p >= 100 && E.lv === MAPS ? '<p style="color:#fbbf24;font-weight:700">Biggest map beaten!</p>' : ''}${E.win ? '<p id="rw" style="color:#86efac;font-weight:700">' + (EMBED ? '+1 AI WORKER' : 'WIN!') + '</p>' : ''}`;
   else h = `<h1>${E.rank === 1 ? 'BIGGEST HOLE!' : '#' + E.rank}</h1>${E.win ? '<p id="rw" style="color:#86efac;font-weight:700">' + (EMBED ? '+1 AI WORKER' : 'WIN!') + '</p>' : E.short ? '<p>Joined late: play at least 60 seconds of a round to win a worker.</p>' : ''}
     <table>${E.board.slice(0, 8).map((x, i) => `<tr class="${x.me ? 'me' : ''}"><td>${i + 1}</td><td>${esc(x.name)}${x.bot ? ' <span class="small">(cpu)</span>' : ''}</td><td class="n">${Math.round(x.m)}</td></tr>`).join('')}</table>`;
-  UI.innerHTML = `<div class="card">${h}<button id="bAgain">${G.kind === 'solo' ? 'RUN AGAIN' : G.live ? 'NEXT ROUND' : 'PLAY AGAIN'}</button><button id="bMenu" class="alt">MENU</button></div>`;
+  UI.innerHTML = `<div class="card">${h}${E.unlock ? '<button id="bNextMap">PLAY MAP ' + (E.lv + 1) + '</button>' : ''}<button id="bAgain">${G.kind === 'solo' ? 'RUN MAP ' + E.lv + ' AGAIN' : G.live ? 'NEXT ROUND' : 'PLAY AGAIN'}</button><button id="bMenu" class="alt">MENU</button></div>`;
+  if (E.unlock) document.getElementById('bNextMap').onclick = () => { G.level = E.lv + 1; start('solo'); };
   document.getElementById('bAgain').onclick = () => { if (G.kind === 'solo') start('solo'); else if (G.live) liveWaitNext(); else liveJoin(); };
   document.getElementById('bMenu').onclick = () => { liveClose(); showMenu(); };
 }
@@ -372,7 +388,7 @@ function liveTick(dt) {
 let Z = 1, CX = 0, CY = 0;
 const isoX = (x, y) => (x - y) * .7071 * Z + CX, isoY = (x, y) => (x + y) * .3536 * Z + CY;
 function camera() {
-  const want = Math.min(VW, VH) / (230 + ME.R * 7.5);
+  const want = Math.min(VW, VH) / (230 + ME.R * 7.5) * 1.2;   // 20% closer than the first build
   Z += (want - Z) * .06;
   CX = VW / 2 - (ME.x - ME.y) * .7071 * Z; CY = VH / 2 - (ME.x + ME.y) * .3536 * Z;
 }
@@ -484,8 +500,8 @@ function hud() {
   if (G.kind === 'solo') {
     const p = pct(); const w = Math.min(300, VW - 120), x = VW / 2 - w / 2;
     g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(x, 44, w, 12); g.fillStyle = '#fbbf24'; g.fillRect(x, 44, w * p / 100, 12);
-    if (G.best > 0) { g.fillStyle = '#fff'; g.fillRect(x + w * G.best / 100 - 1, 41, 2, 18); }
-    g.font = '700 13px "Trebuchet MS",system-ui'; g.fillStyle = '#fff'; g.strokeText(p.toFixed(1) + '%  (best ' + G.best.toFixed(1) + '%)', VW / 2, 74); g.fillText(p.toFixed(1) + '%  (best ' + G.best.toFixed(1) + '%)', VW / 2, 74);
+    const pb = bestOf(G.level); if (pb > 0) { g.fillStyle = '#fff'; g.fillRect(x + w * pb / 100 - 1, 41, 2, 18); }
+    g.font = '700 13px "Trebuchet MS",system-ui'; g.fillStyle = '#fff'; const lbl = 'MAP ' + G.level + ' · ' + p.toFixed(1) + '%  (best ' + pb.toFixed(1) + '%)'; g.strokeText(lbl, VW / 2, 74); g.fillText(lbl, VW / 2, 74);
   } else {
     const board = ranking(), x = VW - 10; g.textAlign = 'right'; g.font = '700 13px "Trebuchet MS",system-ui';
     board.slice(0, 6).forEach((h, i) => { const s = `${i + 1}. ${h.name}  ${Math.round(h.m)}`; g.fillStyle = h.me ? '#86efac' : '#fff'; g.strokeText(s, x, 22 + i * 17); g.fillText(s, x, 22 + i * 17); });

@@ -515,11 +515,11 @@ setView = function (v) {
   document.body.classList.toggle('insuper', v === 'super' || v === 'swallow');   // village toasts don't cover the minigame HUD
   if (!document.getElementById('superExit')) { const b = document.createElement('button'); b.id = 'superExit'; b.textContent = '◀ VILLAGE'; b.onclick = () => setView('village'); document.body.appendChild(b); }
   const el = $('#v-super');
-  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=68" title="Super GSD Consultants" allow="autoplay"></iframe>';
+  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=69" title="Super GSD Consultants" allow="autoplay"></iframe>';
   if (v === 'super') { const f = el.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (el.querySelector('iframe')) { try { el.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
   const sw = $('#v-swallow');
-  if (v === 'swallow' && !sw.querySelector('iframe')) sw.innerHTML = '<iframe src="swallow/?embed=1&v=68" title="Swallow" allow="autoplay"></iframe>';
+  if (v === 'swallow' && !sw.querySelector('iframe')) sw.innerHTML = '<iframe src="swallow/?embed=1&v=69" title="Swallow" allow="autoplay"></iframe>';
   if (v === 'swallow') { const f = sw.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (sw.querySelector('iframe')) { try { sw.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
 };
@@ -542,10 +542,13 @@ function swallowWorker(why) {
 addEventListener('message', e => {
   if (e.origin !== location.origin || !e.data || !S) return;
   const d = e.data;
-  if (d.t === 'swallowHello') swallowMsg({ t: 'best', v: S.swBest || 0 });
+  if (!S.swBestL) { S.swBestL = { 1: S.swBest || 0 }; S.swMaps = (S.swBest || 0) >= 100 ? 2 : 1; }   // one map → numbered maps
+  if (d.t === 'swallowHello') swallowMsg({ t: 'best', bests: S.swBestL, unlocked: S.swMaps });
   else if (d.t === 'swallowSolo') {
-    const p = Math.max(0, Math.min(100, +d.pct || 0)), prev = S.swBest || 0;
-    if (p >= 100 || p > prev) { S.swBest = Math.max(prev, p); swallowWorker(p >= 100 ? 'Swallowed the whole village' : `Swallow personal best ${p.toFixed(1)}%`); }
+    const lv = Math.max(1, Math.min(8, d.level | 0 || 1)), p = Math.max(0, Math.min(100, +d.pct || 0)), prev = S.swBestL[lv] || 0;
+    if (lv > S.swMaps) return;
+    if (p >= 100 && lv === S.swMaps && lv < 8) S.swMaps = lv + 1;
+    if (p >= 100 || p > prev) { S.swBestL[lv] = Math.max(prev, p); swallowWorker(p >= 100 ? `Swallowed all of map ${lv}` : `Swallow map ${lv} best ${p.toFixed(1)}%`); }
   } else if (d.t === 'swallowClassic' && d.rank === 1) swallowWorker('Biggest hole in Swallow');
 });
 function flashSuper(msg) { const f = document.querySelector('#v-super iframe'); try { f.contentWindow.postMessage({ t: 'reward', msg }, location.origin); } catch (e) {} }
