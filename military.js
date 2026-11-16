@@ -9,6 +9,10 @@ const GOLEM_AXE = ['wood', 'planks'], GOLEM_IND = ['gears'], GOLEM_DIG = ['wires
 const GOLEM_START = 10000, HIT_MS = 2000, SOLDIER_HP = 50, SOLDIER_HIT = 5, GOLEM_HIT = 5, SOLDIER_SPEED = 1;
 const golemLoot = mx => Math.round(7500 + mx * .5);
 const soldierMaxHp = lvl => Math.round(SOLDIER_HP * (1 + .1 * (lvl | 0)));
+// Archers (unlocked by clearing Z Route level 100): same cost and barracks room, 40 HP, 4 damage every 2s from range —
+// a golem only swings at archers when no front-line soldier is fighting it
+const ARCHER_HP = 40, ARCHER_HIT = 4;
+const smax = s => Math.round((s.arch ? ARCHER_HP : SOLDIER_HP) * (1 + .1 * (s.lvl | 0)));
 const golemPos = (g, now) => { const dx = g.tx - g.x, dy = g.ty - g.y, L = Math.hypot(dx, dy), d = Math.min(L, Math.max(0, now - g.t0) / 1000 * g.sp); return L ? [g.x + dx / L * d, g.y + dy / L * d] : [g.x, g.y]; };
 
 const TRAIN_COST = { gold: 100, steel: 100 }, TRAIN_MS = 60000, SOLDIER_MAX_LVL = 10;
@@ -46,14 +50,14 @@ function levelRows(type) {
 }
 
 // ---------------------------------------------------------------- soldiers
-function soldierDmg(s, k) { const ax = GOLEM_AXE.includes(k); return SOLDIER_HIT * (1 + (ax ? U('axes') : U('picks'))) * dmgMul(s); }
+function soldierDmg(s, k) { if (s.arch) return ARCHER_HIT * dmgMul(s); const ax = GOLEM_AXE.includes(k); return SOLDIER_HIT * (1 + (ax ? U('axes') : U('picks'))) * dmgMul(s); }
 function immuneFor(k) { return GOLEM_IND.includes(k) && !U('age8') ? 'Industrial Age' : GOLEM_DIG.includes(k) && !U('age9') ? 'Digital Age' : ''; }
 function soldierStatus(s, now) {
   const g = s.gid && LIVE.golems.get(s.gid);
   if (s.mode === 1) return s.ready > now ? `Marching to the ${g ? g.k : ''} golem · ${fmt((s.ready - now) / 1000)}` : `Hunting the ${g ? g.k : ''} golem`;
   if (s.ready > now) return `Returning · ${fmt((s.ready - now) / 1000)}`;
-  if (s.wnd) return `Wounded — healing (${fmt(soldierMaxHp(s.lvl) - s.hp)})`;
-  if (s.hp < soldierMaxHp(s.lvl)) return 'Healing';
+  if (s.wnd) return `Wounded — healing (${fmt(smax(s) - s.hp)})`;
+  if (s.hp < smax(s)) return 'Healing';
   return 'Ready in the barracks';
 }
 function barracksHTML() {
@@ -64,28 +68,28 @@ function barracksHTML() {
     Axes: ${SOLDIER_HIT * (1 + U('axes'))} damage every 2s (Sharp Axes ${U('axes')}) · Picks: ${SOLDIER_HIT * (1 + U('picks'))} every 2s (Iron Picks ${U('picks')}).</div>`;
   if (q.length) h += `<div class="small">Next soldier ready in ${fmt((q[0].at - now) / 1000)}</div>`;
   h += `<div class="cost">${costHTML(TRAIN_COST)} · ${fmt(TRAIN_MS / 1000)}</div>
-    <div style="margin-top:6px"><button class="btn go" data-train ${ok ? '' : 'disabled'}>Train a soldier</button>${ok ? '' : whyHTML(!room ? 'Barracks full — build or upgrade a Barracks' : 'Need ' + shortBy(TRAIN_COST).join(', '))}</div>`;
+    <div style="margin-top:6px"><button class="btn go" data-train ${ok ? '' : 'disabled'}>Train a soldier</button>${S.archersUnlocked ? ` <button class="btn go" data-train="archer" ${ok ? '' : 'disabled'}>Train an archer</button>` : ''}${ok ? '' : whyHTML(!room ? 'Barracks full — build or upgrade a Barracks' : 'Need ' + shortBy(TRAIN_COST).join(', '))}</div>`;
   for (const s of soldiers()) {
-    const mh = soldierMaxHp(s.lvl), f = Math.max(0, s.hp / mh);
+    const mh = smax(s), f = Math.max(0, s.hp / mh);
     h += `<div class="row" style="margin-top:6px"><div style="flex:1"><div class="d"><b>${esc(s.name)}</b> · Lv ${s.lvl || 0} · ${Math.round(s.xp || 0)}/${xpNeed(s.lvl || 0)} xp · ${soldierStatus(s, now)}</div>
       <div style="height:5px;background:rgba(0,0,0,.35);border-radius:3px;margin-top:3px"><div style="height:5px;width:${Math.round(f * 100)}%;background:${s.wnd ? '#ef4444' : '#22c55e'};border-radius:3px"></div></div></div>
       ${s.mode === 1 ? `<button class="btn sm alt" data-recall="${s.id}">Recall</button>` : ''}</div>`;
   }
   return h;
 }
-function addSoldier() {
+function addSoldier(arch) {
   const n = (S.sNext = (S.sNext || 0) + 1);
-  soldiers().push({ id: n, name: `Soldier ${n}`, hue: (n * 53) % 360, lvl: 0, xp: 0, hp: SOLDIER_HP, wnd: false, mode: 0, gid: 0, ready: 0, trip: 0 });
+  soldiers().push({ id: n, name: `${arch ? 'Archer' : 'Soldier'} ${n}`, hue: (n * 53) % 360, lvl: 0, xp: 0, hp: arch ? ARCHER_HP : SOLDIER_HP, wnd: false, mode: 0, gid: 0, ready: 0, trip: 0, arch: arch ? 1 : 0 });
 }
-const healthy = s => s.mode === 0 && !s.wnd && s.hp >= soldierMaxHp(s.lvl) && s.ready <= sNowL();
+const healthy = s => s.mode === 0 && !s.wnd && s.hp >= smax(s) && s.ready <= sNowL();
 function sendHome(s, now) { const back = s.trip || 0; s.mode = 0; s.gid = 0; s.gz = ''; s.ready = now + back; }
 // per tick: training finishes, wounded heal 1 HP/s once back in the barracks
 function milTick(dt) {
   if (!S) return;
   const now = simNow() + (LIVE.skew || 0), q = trainQ();
-  while (q.length && q[0].at <= now && soldiers().length < soldierCap()) { q.shift(); addSoldier(); if (!SIM_BACK) { toast('A soldier finished training'); sfx('recruit'); } }
+  while (q.length && q[0].at <= now && soldiers().length < soldierCap()) { const a = q.shift().arch; addSoldier(a); if (!SIM_BACK) { toast(a ? 'An archer finished training' : 'A soldier finished training'); sfx('recruit'); } }
   for (const s of soldiers()) {
-    const mh = soldierMaxHp(s.lvl);
+    const mh = smax(s);
     if (s.mode === 0 && s.ready <= now && s.hp < mh) { s.hp = Math.min(mh, s.hp + dt); if (s.hp >= mh) s.wnd = false; }
   }
 }
@@ -96,8 +100,9 @@ document.addEventListener('click', e => {
   const now = sNowL();
   if (t.dataset.train !== undefined) {
     if (soldiers().length + trainQ().length >= soldierCap() || !canPay(TRAIN_COST)) return;
-    pay(TRAIN_COST); const q = trainQ(), last = q.length ? q[q.length - 1].at : now; q.push({ at: Math.max(now, last) + TRAIN_MS });
-    toast('Training a soldier'); sfx('build'); save(); refresh(true);
+    const arch = t.dataset.train === 'archer' && S.archersUnlocked;
+    pay(TRAIN_COST); const q = trainQ(), last = q.length ? q[q.length - 1].at : now; q.push({ at: Math.max(now, last) + TRAIN_MS, arch: arch ? 1 : 0 });
+    toast(arch ? 'Training an archer' : 'Training a soldier'); sfx('build'); save(); refresh(true);
     const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b && t.closest('#sheet')) tileSheet(b.i, b.j);
     return;
   }
@@ -137,7 +142,7 @@ function milSync(force) {
 setInterval(() => milSync(false), 2000);
 
 // ---------------------------------------------------------------- what the world server hears about our soldiers
-const sdRow = s => [s.id, Math.round(s.hp * 10) / 10, soldierMaxHp(s.lvl), dmgMul(s), s.mode === 1 ? 1 : 0, s.mode === 1 ? s.gid : 0, s.ready || 0, s.wnd ? 1 : 0];
+const sdRow = s => [s.id, Math.round(s.hp * 10) / 10, smax(s), dmgMul(s), s.mode === 1 ? 1 : 0, s.mode === 1 ? s.gid : 0, s.ready || 0, s.wnd ? 1 : 0, s.arch ? 1 : 0];
 function milSnap() {
   const hz = homeZone();
   return {
@@ -177,7 +182,7 @@ function applyMil(x) {
   if (x.kind === 'gain') {
     S.res[x.res] = (S.res[x.res] || 0) + x.amt;
     const team = soldiers().filter(s => (x.ids || []).includes(s.id)), each = team.length ? x.xp / team.length : 0;
-    for (const s of team) { s.xp = (s.xp || 0) + each; while ((s.lvl || 0) < SOLDIER_MAX_LVL && s.xp >= xpNeed(s.lvl || 0)) { s.xp -= xpNeed(s.lvl || 0); s.lvl = (s.lvl || 0) + 1; s.hp = soldierMaxHp(s.lvl); toast(`${s.name} reached level ${s.lvl}`); } }
+    for (const s of team) { s.xp = (s.xp || 0) + each; while ((s.lvl || 0) < SOLDIER_MAX_LVL && s.xp >= xpNeed(s.lvl || 0)) { s.xp -= xpNeed(s.lvl || 0); s.lvl = (s.lvl || 0) + 1; s.hp = smax(s); toast(`${s.name} reached level ${s.lvl}`); } }
     toast(`Golem destroyed! ${x.share}% of the damage was yours: +${x.amt} ${x.res}, +${x.xp} soldier xp`); sfx('win');
     return;
   }
@@ -314,12 +319,19 @@ function drawGolem(x, y, g, t, face, dead) {
   }
 }
 // a soldier: worker body, red tunic, helmet, axe or pick
-function drawSoldier(x, y, hue, t, swing, axe) {
+function drawSoldier(x, y, hue, t, swing, axe, arch) {
   const bob = swing ? Math.abs(Math.sin(t * 6 + hue)) * 2 : 0;
   mx.fillStyle = 'rgba(0,0,0,.28)'; mx.beginPath(); mx.ellipse(x + 2, y, 7, 3, 0, 0, 7); mx.fill();
   mx.fillStyle = lg(mx, x - 5, 0, x + 5, 0, [[0, '#f87171'], [1, '#7f1d1d']]); mx.beginPath(); mx.roundRect(x - 5, y - 15 - bob, 10, 12, 3); mx.fill();
   mx.fillStyle = rg(mx, x - 1, y - 20 - bob, 5, '#f8dcc0', '#e8c39a', '#b8875a'); mx.beginPath(); mx.arc(x, y - 19 - bob, 4.5, 0, 7); mx.fill();
   mx.fillStyle = '#94a3b8'; mx.beginPath(); mx.arc(x, y - 20.5 - bob, 4.8, Math.PI, 0); mx.fill();
+  if (arch) {   // archer: green tunic overlay, bow held up
+    mx.fillStyle = '#15803d'; mx.beginPath(); mx.roundRect(x - 5, y - 15 - bob, 10, 12, 3); mx.fill();
+    const dr = swing ? (Math.sin(t * 3 + hue) + 1) * 1.5 : 0;
+    mx.strokeStyle = '#7c4a1e'; mx.lineWidth = 1.8; mx.beginPath(); mx.arc(x + 6, y - 13 - bob, 7, -1.2, 1.2); mx.stroke();
+    mx.strokeStyle = '#e5e7eb'; mx.lineWidth = .8; mx.beginPath(); mx.moveTo(x + 6 + Math.cos(-1.2) * 7, y - 13 - bob + Math.sin(-1.2) * 7); mx.lineTo(x + 5 - dr, y - 13 - bob); mx.lineTo(x + 6 + Math.cos(1.2) * 7, y - 13 - bob + Math.sin(1.2) * 7); mx.stroke();
+    return;
+  }
   const a = swing ? -1.2 + Math.sin(t * 7 + hue) * 1.1 : -.3;
   mx.save(); mx.translate(x + 4, y - 11 - bob); mx.rotate(a); mx.strokeStyle = '#6b4220'; mx.lineWidth = 2; mx.beginPath(); mx.moveTo(0, 0); mx.lineTo(0, -12); mx.stroke();
   mx.fillStyle = '#cbd5e1'; if (axe) { mx.beginPath(); mx.moveTo(0, -12); mx.lineTo(5, -14); mx.lineTo(5, -8); mx.lineTo(0, -9); mx.fill(); } else { mx.fillRect(-5, -13, 10, 2); }
@@ -355,7 +367,7 @@ function golemObjects(objs, t, vw, vh) {
     const ring = Math.min(14, Math.max(n, mine.length));
     for (let q = 0; q < ring; q++) {
       const a = q / Math.max(1, ring) * Math.PI * 2 + .4, r = 1 + s * .6, pi = li + Math.cos(a) * r, pj = lj + Math.sin(a) * r * .8, [qx, qy] = iso(pi, pj), me = mine[q];
-      TOP.push({ d: pi + pj, f: () => { drawSoldier(qx, qy, me ? me.hue : q * 37, t, true, ax); if (me) soldierBillboard(qx, qy, me); } });
+      TOP.push({ d: pi + pj, f: () => { drawSoldier(qx, qy, me ? me.hue : q * 37, t, true, ax, me && me.arch); if (me) soldierBillboard(qx, qy, me); } });
     }
   }
   // our own soldiers on the road (out to a golem, or back home)
@@ -366,7 +378,7 @@ function golemObjects(objs, t, vw, vh) {
     if (!p) continue;
     const [li, lj] = toLocal(...p), [qx, qy] = iso(li, lj);
     if (qx < -30 || qx > vw + 30 || qy < -40 || qy > vh + 30) continue;
-    TOP.push({ d: li + lj, f: () => { drawSoldier(qx, qy, s.hue, t, false, true); soldierBillboard(qx, qy, s); } });
+    TOP.push({ d: li + lj, f: () => { drawSoldier(qx, qy, s.hue, t, false, true, s.arch); soldierBillboard(qx, qy, s); } });
   }
   // soldiers at home stand in formation in front of their barracks
   if (S) {
@@ -377,7 +389,7 @@ function golemObjects(objs, t, vw, vh) {
       for (let n2 = 0; n2 < per && k < home.length; n2++, k++) {
         const q = home[k], col = n2 % 5, row = Math.floor(n2 / 5), pi = b.i + 1.3 + row * .8, pj = b.j - 1.4 + col * .75, [qx, qy] = iso(pi, pj);
         if (qx < -30 || qx > vw + 30 || qy < -40 || qy > vh + 30) continue;
-        objs.push({ d: pi + pj, f: () => drawSoldier(qx, qy, q.hue, t, false, true) });
+        objs.push({ d: pi + pj, f: () => drawSoldier(qx, qy, q.hue, t, false, true, q.arch) });
         TOP.push({ d: pi + pj, f: () => soldierBillboard(qx, qy, q) });
       }
     }
@@ -392,10 +404,10 @@ function golemObjects(objs, t, vw, vh) {
 }
 // billboard over a soldier: name + level, HP bar (red when wounded), xp sliver
 function soldierBillboard(x, y, s) {
-  const k = 1 / Math.max(.55, Math.min(1.6, ZM)), mh = soldierMaxHp(s.lvl), f = Math.max(0, Math.min(1, s.hp / mh)), xf = Math.min(1, (s.xp || 0) / xpNeed(s.lvl || 0));
+  const k = 1 / Math.max(.55, Math.min(1.6, ZM)), mh = smax(s), f = Math.max(0, Math.min(1, s.hp / mh)), xf = Math.min(1, (s.xp || 0) / xpNeed(s.lvl || 0));
   const w = 40 * k, top = y - 31 - 17 * k;
   mx.font = `bold ${Math.round(11 * k * 10) / 10}px system-ui`; mx.textAlign = 'center';
-  const label = `Lv${s.lvl || 0} ${s.name.replace('Soldier ', '#')}`;
+  const label = `Lv${s.lvl || 0} ${s.arch ? '🏹' : ''}${s.name.replace(/^(Soldier|Archer) /, '#')}`;
   mx.lineWidth = 2.5 * k; mx.strokeStyle = 'rgba(0,0,0,.75)'; mx.strokeText(label, x, top); mx.fillStyle = s.wnd ? '#fca5a5' : '#fff'; mx.fillText(label, x, top);
   mx.fillStyle = 'rgba(0,0,0,.6)'; mx.fillRect(x - w / 2 - 1, top + 3 * k - 1, w + 2, 6 * k + 2);
   mx.fillStyle = s.wnd ? '#ef4444' : f > .5 ? '#22c55e' : '#f59e0b'; mx.fillRect(x - w / 2, top + 3 * k, w * f, 4 * k);
@@ -407,7 +419,7 @@ worldObjects = function (objs, t, vw, vh) { _worldObjectsMil(objs, t, vw, vh); g
 // the barracks sheet keeps its timers fresh while it's open
 setInterval(() => {
   const sh = $('#sheet'); if (!S || sh.hidden) return;
-  if (sh.querySelector('[data-train]')) { const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b && (trainQ().length || soldiers().some(s => s.mode === 1 || s.ready > sNowL() || s.hp < soldierMaxHp(s.lvl)))) tileSheet(b.i, b.j); }
+  if (sh.querySelector('[data-train]')) { const b = S.buildings.find(x => x.type === 'barracks' && x.done); if (b && (trainQ().length || soldiers().some(s => s.mode === 1 || s.ready > sNowL() || s.hp < smax(s)))) tileSheet(b.i, b.j); }
 }, 1000);
 
 // ---------------------------------------------------------------- World tab map: a little golem icon (body, head, arms), sized by mass
@@ -432,7 +444,7 @@ function soldierGroups(now) {
   for (const s of soldiers()) {
     if (s.mode === 1) (s.ready > now ? G.march : G.hunt).push(s);
     else if (s.ready > now) G.back.push(s);
-    else if (s.wnd || s.hp < soldierMaxHp(s.lvl)) G.heal.push(s);
+    else if (s.wnd || s.hp < smax(s)) G.heal.push(s);
     else G.ready.push(s);
   }
   return G;
@@ -451,7 +463,7 @@ function renderSoldiers(force) {
   if (starving()) h += `<div class="card"><div class="t" style="color:var(--red)">No food — soldiers eat the same food as AI workers</div></div>`;
   const tile = (k, n, c, sub, btns, alert) => `<div class="wt status${alert ? ' alert' : ''}"><canvas data-si="${k}" width="${44 * DPR}" height="${44 * DPR}"></canvas><div class="wn">${n}</div><div class="wc">${c}</div><div class="wr">${sub}</div>${btns ? `<div class="wb">${btns}</div>` : ''}</div>`;
   h += '<div class="wgrid">';
-  h += tile('ready', 'Ready', G.ready.length, 'In the barracks · defending your piles', `<button class="btn sm" data-train ${canTrain ? '' : 'disabled'} title="Train a soldier: 100 gold, 100 steel, 60s">+ Train</button>`);
+  h += tile('ready', 'Ready', G.ready.length, 'In the barracks · defending your piles', `<button class="btn sm" data-train ${canTrain ? '' : 'disabled'} title="Train a soldier: 100 gold, 100 steel, 60s">+ Train</button>${S.archersUnlocked ? `<button class="btn sm" data-train="archer" ${canTrain ? '' : 'disabled'} title="Train an archer: 100 gold, 100 steel, 60s">+ Archer</button>` : ''}`);
   h += tile('train', 'Training', q.length, q.length ? `Next in ${nextTrain}` : (cap ? (room ? '100 gold · 100 steel · 60s' : 'Barracks full') : 'Needs a Barracks'), '');
   h += tile('march', 'Marching', G.march.length, G.march.length ? 'On the road to a golem' : '—', '');
   h += tile('hunt', 'Hunting', G.hunt.length, G.hunt.length ? 'Fighting a golem' : 'Tap a golem to send some', G.march.length + G.hunt.length ? `<button class="btn sm alt" data-recallall>Recall all</button>` : '');
@@ -461,7 +473,7 @@ function renderSoldiers(force) {
   if (!canTrain && cap) h += whyHTML(!room ? 'Barracks full — build or upgrade a Barracks' : 'Need ' + shortBy(TRAIN_COST).join(', '));
   // weapons
   const imm = [U('age8') ? '' : 'Gear golems until the Industrial Age', U('age9') ? '' : 'Wire golems until the Digital Age'].filter(Boolean);
-  h += `<div class="card"><div class="t">Weapons</div><div class="d">Axes (Wood, Plank golems): <b>${SOLDIER_HIT * (1 + U('axes'))}</b> damage every 2s — Sharp Axes ${U('axes')}.<br>Picks (Stone, Coal, Iron, Steel, Gear, Wire golems): <b>${SOLDIER_HIT * (1 + U('picks'))}</b> damage every 2s — Iron Picks ${U('picks')}.<br>Each soldier level adds +10% damage and HP.${imm.length ? `<br><span style="color:var(--red)">Immune to you: ${imm.join('; ')}.</span>` : ''}</div></div>`;
+  h += `<div class="card"><div class="t">Weapons</div><div class="d">Axes (Wood, Plank golems): <b>${SOLDIER_HIT * (1 + U('axes'))}</b> damage every 2s — Sharp Axes ${U('axes')}.<br>Picks (Stone, Coal, Iron, Steel, Gear, Wire golems): <b>${SOLDIER_HIT * (1 + U('picks'))}</b> damage every 2s — Iron Picks ${U('picks')}.<br>Each soldier level adds +10% damage and HP.${S.archersUnlocked ? `<br>Bows (Archers, every golem): <b>${ARCHER_HIT}</b> damage every 2s, 40 HP — golems only hit archers when no front-line soldier is fighting.` : '<br><span class="small">Clear all 100 levels of Z Route to unlock Archers.</span>'}${imm.length ? `<br><span style="color:var(--red)">Immune to you: ${imm.join('; ')}.</span>` : ''}</div></div>`;
   // golems: ours to hunt, nearest first
   const [hx, hy] = toWorld(TCI, TCJ), seen = new Map();
   for (const g of LIVE.golems.values()) seen.set(g.id, g);
@@ -479,7 +491,7 @@ function renderSoldiers(force) {
   h += `<h3>Roster</h3>`;
   if (!soldiers().length) h += `<div class="card"><div class="d">${cap ? 'No soldiers yet — tap + Train.' : 'No soldiers yet.'}</div></div>`;
   for (const s of [...soldiers()].sort((a, b) => (b.lvl || 0) - (a.lvl || 0) || a.id - b.id)) {
-    const mh = soldierMaxHp(s.lvl), f = Math.max(0, s.hp / mh), xf = Math.min(1, (s.xp || 0) / xpNeed(s.lvl || 0));
+    const mh = smax(s), f = Math.max(0, s.hp / mh), xf = Math.min(1, (s.xp || 0) / xpNeed(s.lvl || 0));
     h += `<div class="card"><div class="row"><div style="flex:1"><div class="t">${esc(s.name)} <span class="small">· Lv ${s.lvl || 0} · ${Math.round(s.hp)}/${mh} HP · +${Math.round((dmgMul(s) - 1) * 100)}% damage</span></div>
       <div class="d">${soldierStatus(s, now)}</div>
       <div style="height:5px;background:rgba(0,0,0,.12);border-radius:3px;margin-top:4px"><div style="height:5px;width:${Math.round(f * 100)}%;background:${s.wnd ? '#ef4444' : '#22c55e'};border-radius:3px"></div></div>
@@ -515,15 +527,15 @@ setView = function (v) {
   document.body.classList.toggle('insuper', v === 'super' || v === 'swallow' || v === 'zroute');   // village toasts don't cover the minigame HUD
   if (!document.getElementById('superExit')) { const b = document.createElement('button'); b.id = 'superExit'; b.textContent = '◀ VILLAGE'; b.onclick = () => setView('village'); document.body.appendChild(b); }
   const el = $('#v-super');
-  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=70" title="Super GSD Consultants" allow="autoplay"></iframe>';
+  if (v === 'super' && !el.querySelector('iframe')) el.innerHTML = '<iframe src="super/?embed=1&v=71" title="Super GSD Consultants" allow="autoplay"></iframe>';
   if (v === 'super') { const f = el.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (el.querySelector('iframe')) { try { el.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
   const sw = $('#v-swallow');
-  if (v === 'swallow' && !sw.querySelector('iframe')) sw.innerHTML = '<iframe src="swallow/?embed=1&v=70" title="Swallow" allow="autoplay"></iframe>';
+  if (v === 'swallow' && !sw.querySelector('iframe')) sw.innerHTML = '<iframe src="swallow/?embed=1&v=71" title="Swallow" allow="autoplay"></iframe>';
   if (v === 'swallow') { const f = sw.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (sw.querySelector('iframe')) { try { sw.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
   const zr = $('#v-zroute');
-  if (v === 'zroute' && !zr.querySelector('iframe')) zr.innerHTML = '<iframe src="zroute/?embed=1&v=70" title="Z Route: Redemption" allow="autoplay"></iframe>';
+  if (v === 'zroute' && !zr.querySelector('iframe')) zr.innerHTML = '<iframe src="zroute/?embed=1&v=71" title="Z Route: Redemption" allow="autoplay"></iframe>';
   if (v === 'zroute') { const f = zr.querySelector('iframe'); setTimeout(() => { try { f.focus(); f.contentWindow.focus(); } catch (e) {} }, 50); }
   else if (zr.querySelector('iframe')) { try { zr.querySelector('iframe').contentWindow.postMessage({ t: 'pause' }, location.origin); } catch (e) {} }
 };

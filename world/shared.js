@@ -35,6 +35,7 @@ export const GOLEM_AXE = ['wood', 'planks'];                 // everything else 
 export const GOLEM_IND = ['gears'], GOLEM_DIG = ['wires'];   // immune until Industrial / Digital Age
 export const GOLEM_START = 10000, GOLEM_EAT = 10 / 60, GOLEM_GROW = .5, GOLEM_SPEED = .25;   // per second; tiles per second
 export const GOLEM_HIT = 5, HIT_MS = 2000, SOLDIER_HP = 50, SOLDIER_HIT = 5, SOLDIER_SPEED = 1;
+export const ARCHER_HP = 40, ARCHER_HIT = 4;   // Archers: unlocked by clearing Z Route level 100
 export const golemLoot = mx => Math.round(7500 + mx * .5);
 export const golemXp = mx => Math.round(mx / 100);
 export const soldierMaxHp = lvl => Math.round(SOLDIER_HP * (1 + .1 * (lvl | 0)));

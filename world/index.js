@@ -3,7 +3,7 @@
 // the zone only relays what workers are doing, keeps each village's last snapshot for offline viewing,
 // and decides who gets a shared tree / rock first. WebSocket Hibernation keeps idle zones free.
 import { DurableObject } from 'cloudflare:workers';
-import { VW, PX, PY, ZONE, WORLD_VER, vdim, zoneOrigin, plotOrigin, plotOf, inPlot, zoneOf, wildAt, REGROW_MS, GOLEM_TYPES, GOLEM_AXE, GOLEM_IND, GOLEM_DIG, GOLEM_START, GOLEM_EAT, GOLEM_GROW, GOLEM_SPEED, GOLEM_HIT, HIT_MS, SOLDIER_HIT, golemLoot, golemXp, golemPos } from './shared.js';
+import { VW, PX, PY, ZONE, WORLD_VER, vdim, zoneOrigin, plotOrigin, plotOf, inPlot, zoneOf, wildAt, REGROW_MS, GOLEM_TYPES, GOLEM_AXE, GOLEM_IND, GOLEM_DIG, GOLEM_START, GOLEM_EAT, GOLEM_GROW, GOLEM_SPEED, GOLEM_HIT, HIT_MS, SOLDIER_HIT, ARCHER_HIT, golemLoot, golemXp, golemPos } from './shared.js';
 
 const TICK_MS = 10000, SPAWN_GAP = 10 * 60 * 1000, CATCHUP_MS = 3600 * 1000;
 
@@ -243,11 +243,11 @@ export class Zone extends DurableObject {
         for (const { v, x } of fighters) {
           const tk = v.tk || {};
           if ((GOLEM_IND.includes(g.k) && !tk.ind) || (GOLEM_DIG.includes(g.k) && !tk.dig)) continue;
-          const d = SOLDIER_HIT * (1 + (ax ? tk.ax | 0 : tk.pk | 0)) * (x[3] || 1) * step / HIT_MS;
+          const d = (x[8] ? ARCHER_HIT : SOLDIER_HIT * (1 + (ax ? tk.ax | 0 : tk.pk | 0))) * (x[3] || 1) * step / HIT_MS;   // archers: bows, no axe/pick bonus
           g.m -= d; g.dmg[v.pid] = (g.dmg[v.pid] || 0) + d; (g.who[v.pid] = g.who[v.pid] || []); if (!g.who[v.pid].includes(x[0])) g.who[v.pid].push(x[0]);
         }
-        // the golem swings at one soldier
-        const tg = fighters[0];
+        // the golem swings at one soldier — front-line first; archers only when nobody else is in reach
+        const tg = fighters.find(f => !f.x[8]) || fighters[0];
         tg.x[1] = Math.max(0, tg.x[1] - GOLEM_HIT * step / HIT_MS);
         if (tg.x[1] <= 0) { tg.x[7] = 1; tg.x[4] = 0; tg.x[5] = 0; }
         tg.v.sdh = tg.v.sdh || {}; tg.v.sdh[tg.x[0]] = t; (tg.remote ? hDirty : dirty).add(tg.v.pid);
@@ -323,7 +323,7 @@ export class Zone extends DurableObject {
 }
 
 // soldier roster entry from a client: [id, hp, maxHp, dmgMul, mode (0 home / 1 hunt), golemId, readyAt, wounded]
-function cleanSd(x) { if (!Array.isArray(x)) return [0, 0, 0, 1, 0, 0, 0, 0]; return [x[0] | 0, Math.max(0, Math.min(500, +x[1] || 0)), Math.max(1, Math.min(500, +x[2] || 50)), Math.max(1, Math.min(3, +x[3] || 1)), x[4] === 1 ? 1 : 0, typeof x[5] === 'string' ? x[5].slice(0, 20) : 0, +x[6] || 0, x[7] ? 1 : 0]; }
+function cleanSd(x) { if (!Array.isArray(x)) return [0, 0, 0, 1, 0, 0, 0, 0]; return [x[0] | 0, Math.max(0, Math.min(500, +x[1] || 0)), Math.max(1, Math.min(500, +x[2] || 50)), Math.max(1, Math.min(3, +x[3] || 1)), x[4] === 1 ? 1 : 0, typeof x[5] === 'string' ? x[5].slice(0, 20) : 0, +x[6] || 0, x[7] ? 1 : 0, x[8] ? 1 : 0]; }
 const gPub = g => [g.id, g.k, Math.round(g.m), Math.round(g.mx), +g.x.toFixed(2), +g.y.toFixed(2), +g.tx.toFixed(2), +g.ty.toFixed(2), g.t0, g.sp, g.eat || 0, g.nf || 0, Object.fromEntries(Object.entries(g.dmg).map(([k, v]) => [k, Math.round(v)]))];
 
 // ---------------------------------------------------------------- Swallow (hole minigame) Classic room
