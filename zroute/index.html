@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Z Route: Redemption</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b1020;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .card{pointer-events:auto;background:rgba(15,23,42,.92);border:2px solid #84cc16;border-radius:16px;padding:16px 20px;color:#e2e8f0;text-align:center;max-width:min(92vw,440px);box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  .card h1{margin:0 0 4px;font-size:30px;letter-spacing:2px;color:#a3e635}
+  .card h2{margin:0 0 8px;font-size:20px;color:#fde68a}
+  .card p{margin:6px 0;font-size:14px;color:#cbd5e1}
+  .card button{display:block;width:100%;margin:10px 0 0;padding:12px;border-radius:10px;border:0;font:700 16px inherit;font-family:inherit;cursor:pointer;background:#65a30d;color:#fff}
+  .card button.alt{background:#334155}
+  .card .small{font-size:12px;color:#94a3b8}
+  .picks{display:flex;gap:8px;margin-top:8px}
+  .pick{flex:1;pointer-events:auto;background:#1e293b;border:2px solid #475569;border-radius:12px;padding:10px 6px;color:#e2e8f0;cursor:pointer;font-family:inherit}
+  .pick b{display:block;font-size:15px;color:#fde68a;margin:4px 0}
+  .pick span{font-size:12px;color:#cbd5e1}
+  .pick i{font-style:normal;font-size:26px}
+  .pick:hover{border-color:#a3e635}
+  #back{position:fixed;left:8px;top:8px;color:#cbd5e1;font:600 12px system-ui;text-decoration:none;opacity:.7;z-index:3}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="ui"></div>
+<a id="back" href="/">← GSD</a>
+<script>
+'use strict';
+/* Z Route: Redemption — a squad of archers holds the lane while the village's AI workers come shambling down it in droves.
+   Steer left and right; the squad shoots on its own. Gates in the lane and level-up cards make the squad stronger, and
+   everything earned carries into the next level. 100 levels, denser every time; level 100 unlocks Archers for the village.
+   A failed level is retried with the squad as it was when that level started. */
+const EMBED = new URLSearchParams(location.search).has('embed');
+if (EMBED) document.getElementById('back').style.display = 'none';
+const cv = document.getElementById('cv'), g = cv.getContext('2d'), UI = document.getElementById('ui');
+const LW = 360, LH = 640;                 // the lane, in logical pixels
+let VW = 0, VH = 0, DPR = 1, SC = 1, OX = 0, TOP = 0;   // TOP: extra lane shown above on tall screens
+function fit() { DPR = Math.min(2, devicePixelRatio || 1); VW = innerWidth; VH = innerHeight; cv.width = Math.round(VW * DPR); cv.height = Math.round(VH * DPR); SC = Math.min(VW / LW, VH / LH); if (VW / SC > LW * 1.6) SC = Math.min(VH / LH, VW / (LW * 1.6)); OX = (VW / SC - LW) / 2; TOP = Math.max(0, VH / SC - LH); }
+addEventListener('resize', fit); fit();
+
+// ---------------------------------------------------------------- level tuning
+let HPK = 1;
+const LEVELS = 100, RUN = 55;             // seconds of spawning per level, then the finish line
+const ZS = L => ({
+  rate: .7 + L * .16 + L * L * .0014,     // zombies per second
+  hp: (1 + (L - 1) * .5 + (L - 1) * (L - 1) * .9) * (1 + 2.4 * Math.min(1, Math.max(0, (L - 10) / 15)) - Math.max(0, L - 60) * .045) * HPK,   // tuned with a full 1-100 autopilot run
+  speed: 26 + Math.min(34, L * .3),       // px per second down the lane
+  brute: L >= 5 ? Math.min(.12, .02 + L * .001) : 0,
+  boss: L % 10 === 0,
+});
+const SQUAD_Y = 540, MAX_ARCHERS = 24;
+
+// ---------------------------------------------------------------- the squad's kit (carries between levels)
+const KIT0 = { archers: 1, rate: 1.3, dmg: 1, multi: 1, extra: 0, dbl: 0, expl: 0, pierce: 0, lvl: 1, xp: 0 };
+const CARDS = [
+  { id: 'rapid', ic: '⚡', t: 'Rapid Fire', d: '+0.25 shots per second', ok: k => k.rate < 4, f: k => { k.rate = Math.min(4, k.rate + .25); } },
+  { id: 'multi', ic: '🔱', t: 'Multishot', d: '+1 arrow in a fan', ok: k => k.multi < 5, f: k => { k.multi++; } },
+  { id: 'extra', ic: '➕', t: 'Gain Shot', d: '+1 straight arrow', ok: k => k.extra < 2, f: k => { k.extra++; } },
+  { id: 'dbl', ic: '🎯', t: 'Double Tap', d: k => k.dbl ? 'Double tap arrows hit harder' : 'Every volley fires twice', ok: k => k.dbl < 3, f: k => { k.dbl++; } },
+  { id: 'expl', ic: '💥', t: 'Explosive Shot', d: k => k.expl ? 'Bigger, more frequent blasts' : 'Some arrows explode', ok: k => k.expl < 6, f: k => { k.expl++; } },
+  { id: 'pierce', ic: '🗡️', t: 'Piercing', d: 'Arrows pass through +1 zombie', ok: k => k.pierce < 4, f: k => { k.pierce++; } },
+  { id: 'dmg', ic: '🏹', t: 'Heavy Arrows', d: '+0.3 damage', ok: () => true, f: k => { k.dmg += .3; } },
+  { id: 'arch', ic: '🧝', t: 'Recruit', d: '+1 archer', ok: k => k.archers < MAX_ARCHERS, f: k => { k.archers = Math.min(MAX_ARCHERS, k.archers + 1); } },
+];
+const xpNeed = lvl => Math.round(8 * Math.pow(lvl, 1.6));
+
+// ---------------------------------------------------------------- save (the village save is the record; this device keeps a copy)
+let SAVE = { done: 0, kit: Object.assign({}, KIT0) };
+try { const s = JSON.parse(localStorage.getItem('zrSave') || 'null'); if (s && s.kit) SAVE = s; } catch (e) {}
+function keep() { try { localStorage.setItem('zrSave', JSON.stringify(SAVE)); } catch (e) {} tell({ t: 'zrSave', save: SAVE }); }
+function tell(m) { try { if (parent !== window) parent.postMessage(m, location.origin); } catch (e) {} }
+addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data) return;
+  if (e.data.t === 'zrState' && e.data.save && e.data.save.kit) { const s = e.data.save; if ((s.done | 0) >= SAVE.done) { SAVE = s; try { localStorage.setItem('zrSave', JSON.stringify(SAVE)); } catch (er) {} } if (G.mode === 'menu') showMenu(); }
+  if (e.data.t === 'reward') { const r = document.getElementById('rw'); if (r) r.textContent = e.data.msg; }
+  if (e.data.t === 'pause') { IN.keys = {}; if (G.mode === 'play') pauseMenu(); }
+});
+
+// ---------------------------------------------------------------- state
+const G = { mode: 'menu', L: 1, t: 0, dist: 0, spawnAcc: 0, gateT: 0, kit: null, startKit: null, kills: 0 };
+let Z = [], A = [], FX = [], GATES = [], BOSS = null, SQX = LW / 2;
+function startLevel(L) {
+  G.L = L; G.t = 0; G.spawnAcc = 0; G.gateT = 3; G.kills = 0; G.mode = 'play'; G.finish = false; G.fireT = 0;
+  G.kit = JSON.parse(JSON.stringify(SAVE.kit)); G.startKit = JSON.parse(JSON.stringify(SAVE.kit));
+  Z = []; A = []; FX = []; GATES = []; BOSS = null; SQX = LW / 2; UI.innerHTML = '';
+  G.rng = rngOf(L * 9973 + 7);
+}
+function rngOf(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+
+// ---------------------------------------------------------------- input: drag / mouse / A-D
+const IN = { keys: {}, drag: null, mouseX: null };
+addEventListener('keydown', e => { IN.keys[e.code] = true; if (e.code === 'Escape' || e.code === 'KeyP') { if (G.mode === 'play') pauseMenu(); } });
+addEventListener('keyup', e => { IN.keys[e.code] = false; });
+const toLane = cx => cx / SC - OX;
+cv.addEventListener('pointerdown', e => { audioOn(); if (e.pointerType === 'mouse') return; IN.drag = { id: e.pointerId, x: e.clientX, sq: SQX }; });
+cv.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') { IN.mouseX = toLane(e.clientX); return; } if (IN.drag && e.pointerId === IN.drag.id) IN.drag.cur = e.clientX; });
+const endDrag = e => { if (IN.drag && e.pointerId === IN.drag.id) IN.drag = null; };
+cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') IN.mouseX = null; });
+function steer(dt) {
+  const k = IN.keys, kx = (k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0);
+  let want = SQX;
+  if (kx) want = SQX + kx * 260 * dt;
+  else if (IN.drag && IN.drag.cur != null) want = IN.drag.sq + (IN.drag.cur - IN.drag.x) / SC * 1.3;
+  else if (IN.mouseX != null) want = IN.mouseX;
+  const half = squadHalf(), lo = 24 + half, hi = LW - 24 - half;
+  const mv = Math.max(-320 * dt, Math.min(320 * dt, want - SQX));
+  SQX = Math.max(lo, Math.min(hi, SQX + mv));
+}
+
+// ---------------------------------------------------------------- sound
+let AC = null;
+function audioOn() { if (!AC) try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+addEventListener('keydown', audioOn);
+const lastS = {};
+function snd(k, f0, f1, dur, type = 'square', vol = .04, gap = 40) {
+  if (!AC || performance.now() - (lastS[k] || 0) < gap) return; lastS[k] = performance.now();
+  const o = AC.createOscillator(), v = AC.createGain(), t = AC.currentTime; o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  v.gain.setValueAtTime(vol, t); v.gain.exponentialRampToValueAtTime(.0005, t + dur); o.connect(v); v.connect(AC.destination); o.start(t); o.stop(t + dur + .02);
+}
+
+// ---------------------------------------------------------------- squad formation
+function squadPos() {   // rows of up to 6, centred on SQX
+  const n = G.kit.archers, out = [], per = 6;
+  for (let i = 0; i < n; i++) { const row = Math.floor(i / per), inRow = Math.min(per, n - row * per), col = i % per; out.push([SQX + (col - (inRow - 1) / 2) * 15, SQUAD_Y + row * 14]); }
+  return out;
+}
+const squadHalf = () => (Math.min(6, G.kit.archers) - 1) / 2 * 15 + 6;
+
+// ---------------------------------------------------------------- spawning
+function spawnZombie(brute) {
+  const S = ZS(G.L), r = G.rng;
+  Z.push({ x: 26 + r() * (LW - 52), y: -TOP - 20 - r() * 40, hp: S.hp * (brute ? 8 : 1), max: S.hp * (brute ? 8 : 1), sp: S.speed * (brute ? .7 : .85 + r() * .3), r: brute ? 11 : 7, brute, ph: r() * 6.28, hit: 0 });
+}
+function spawnBoss() { const S = ZS(G.L); BOSS = { x: LW / 2, y: -TOP - 40, hp: S.hp * 160, max: S.hp * 160, sp: 18, r: 26, ph: 0, hit: 0, boss: true }; Z.push(BOSS); }
+function rollGate() {
+  // two choices side by side; values grow with the level
+  const r = G.rng, L = G.L, k = G.kit;
+  const pool = [
+    () => ({ t: '+1 ARCHER', f: kk => { kk.archers = Math.min(MAX_ARCHERS, kk.archers + 1); }, ok: k.archers < MAX_ARCHERS && r() < .3 }),
+    () => ({ t: 'FIRE RATE +0.05', f: kk => { kk.rate = Math.min(4, kk.rate + .05); }, ok: k.rate < 4 }),
+    () => ({ t: 'DAMAGE +0.1', f: kk => { kk.dmg += .1; }, ok: true }),
+    () => ({ t: 'XP +' + (10 + L * 2), f: (kk, s) => { gainXP(s.n); }, n: 10 + L * 2, ok: true }),
+  ];
+  const pick = () => { for (let i = 0; i < 10; i++) { const o = pool[Math.floor(r() * pool.length)](); if (o.ok) return o; } return pool[2](); };
+  const a = pick(); let b = pick(); for (let i = 0; i < 6 && b.t === a.t; i++) b = pick();
+  GATES.push({ y: -TOP - 30, opts: [a, b], used: false });
+}
+
+// ---------------------------------------------------------------- XP and level-up cards
+function gainXP(n) {
+  const k = G.kit; k.xp += n;
+  if (k.xp >= xpNeed(k.lvl) && G.mode === 'play') { k.xp -= xpNeed(k.lvl); k.lvl++; cardPick(); }
+}
+function cardPick() {
+  G.mode = 'cards'; const k = G.kit, avail = CARDS.filter(c => c.ok(k)), r = Math.random, pick = [];
+  while (pick.length < 3 && avail.length) pick.push(avail.splice(Math.floor(r() * avail.length), 1)[0]);
+  UI.innerHTML = `<div class="card"><h2>LEVEL UP! (${k.lvl})</h2><p class="small">Pick one</p><div class="picks">${pick.map((c, i) => `<button class="pick" data-i="${i}"><i>${c.ic}</i><b>${c.t}</b><span>${typeof c.d === 'function' ? c.d(k) : c.d}</span></button>`).join('')}</div></div>`;
+  UI.querySelectorAll('.pick').forEach(b => b.onclick = () => { pick[+b.dataset.i].f(k); snd('card', 500, 1000, .2, 'triangle', .08, 0); UI.innerHTML = ''; G.mode = 'play'; if (k.xp >= xpNeed(k.lvl)) gainXP(0); });
+}
+
+// ---------------------------------------------------------------- shooting
+function fire() {
+  const k = G.kit, pos = squadPos(), dmg = k.dmg * (1 + k.dbl * .15);
+  for (const [x, y] of pos) {
+    for (let m = 0; m < k.multi; m++) { const a = (m - (k.multi - 1) / 2) * .12; shoot(x, y - 8, a, dmg); }
+    for (let e = 0; e < k.extra; e++) shoot(x + (e % 2 ? 4 : -4) * (1 + (e >> 1)), y - 8, 0, dmg);
+  }
+  snd('bow', 900, 500, .05, 'triangle', .025, 70);
+}
+function shoot(x, y, ang, dmg) {
+  const k = G.kit, ex = k.expl > 0 && Math.random() < .04 + k.expl * .03;
+  A.push({ x, y, vx: Math.sin(ang) * 520, vy: -Math.cos(ang) * 520, dmg, pierce: k.pierce, ex, hitSet: null });
+}
+
+// ---------------------------------------------------------------- simulation
+function hurtZ(z, dmg) { z.hp -= dmg; z.hit = .08; if (z.hp <= 0 && !z.dead) { z.dead = true; G.kills++; gainXP(z.boss ? 60 : z.brute ? 4 : 1); FX.push({ k: 'pop', x: z.x, y: z.y, t: 0, r: z.r }); snd('pop', 220, 90, .08, 'triangle', .05, 30); } }
+function explode(x, y) { const k = G.kit, R = 18 + k.expl * 3; FX.push({ k: 'boom', x, y, t: 0, r: R }); snd('boom', 140, 40, .25, 'sawtooth', .06, 60); for (const z of Z) if (!z.dead && Math.hypot(z.x - x, z.y - y) < R + z.r) hurtZ(z, k.dmg * (.4 + k.expl * .1)); }
+// zombies bucketed by column so thousands of arrows stay cheap
+const COLW = 24, NCOL = Math.ceil(LW / COLW) + 1;
+function step(dt) {
+  if (G.mode !== 'play') return;
+  const S = ZS(G.L), k = G.kit;
+  G.t += dt; steer(dt);
+  // spawning
+  if (G.t < RUN) {
+    G.spawnAcc += dt * S.rate * (1 + .6 * Math.sin(G.t * .7)) * (G.t < 6 ? G.t / 6 : 1);   // comes in waves
+    while (G.spawnAcc >= 1) { G.spawnAcc--; spawnZombie(G.rng() < S.brute); }
+    if ((G.gateT -= dt) <= 0) { G.gateT = 6; rollGate(); }
+  } else if (S.boss && !BOSS) spawnBoss();
+  // fire
+  G.fireT -= dt; const iv = 1 / k.rate;
+  if (G.fireT <= 0) { G.fireT += iv; fire(); if (k.dbl) G.dblT = .07; }
+  if (G.dblT > 0 && (G.dblT -= dt) <= 0) fire();
+  // zombies walk toward the squad, shuffle side to side
+  const pos = squadPos();
+  for (const z of Z) {
+    if (z.dead) continue; z.ph += dt * 3; z.hit = Math.max(0, z.hit - dt);
+    z.y += z.sp * dt; const pull = z.y > 300 ? (SQX - z.x) * .35 : Math.sin(z.ph) * 10; z.x += Math.max(-30, Math.min(30, pull)) * dt;
+    if (z.y > SQUAD_Y - 30) for (let i = pos.length - 1; i >= 0; i--) { const [ax, ay] = pos[i]; if (Math.hypot(ax - z.x, ay - z.y) < z.r + 6) { loseArcher(i, ax, ay); if (!z.boss) { z.dead = true; } else z.y -= 30; break; } }
+    if (z.y > LH + 30) { z.dead = true; }
+  }
+  // arrows
+  const cols = Array.from({ length: NCOL }, () => []);
+  for (const z of Z) if (!z.dead && z.y > -60) { const c0 = Math.max(0, Math.floor((z.x - z.r) / COLW)), c1 = Math.min(NCOL - 1, Math.floor((z.x + z.r) / COLW)); for (let c = c0; c <= c1; c++) cols[c].push(z); }
+  for (const a of A) {
+    a.x += a.vx * dt; a.y += a.vy * dt; if (a.y < -TOP - 40 || a.x < -10 || a.x > LW + 10) { a.gone = true; continue; }
+    const col = cols[Math.max(0, Math.min(NCOL - 1, Math.floor(a.x / COLW)))];
+    for (const z of col) {
+      if (z.dead || (a.hitSet && a.hitSet.has(z))) continue;
+      const dx = z.x - a.x, dy = z.y - a.y; if (dx * dx + dy * dy > (z.r + 3) ** 2) continue;
+      hurtZ(z, a.dmg); if (a.ex) explode(a.x, a.y);
+      if (a.pierce > 0) { a.pierce--; (a.hitSet || (a.hitSet = new Set())).add(z); } else { a.gone = true; break; }
+    }
+  }
+  A = A.filter(a => !a.gone); Z = Z.filter(z => !z.dead || z === BOSS);
+  if (BOSS && BOSS.dead) { BOSS.gone = true; }
+  // gates
+  for (const gt of GATES) {
+    gt.y += 70 * dt;
+    if (!gt.used && gt.y >= SQUAD_Y - 10) { gt.used = true; const o = gt.opts[SQX < LW / 2 ? 0 : 1]; o.f(G.kit, o); FX.push({ k: 'txt', x: SQX, y: SQUAD_Y - 40, t: 0, s: o.t }); snd('gate', 600, 1200, .2, 'triangle', .08, 0); }
+  }
+  GATES = GATES.filter(gt => gt.y < LH + 40);
+  for (const f of FX) f.t += dt; FX = FX.filter(f => f.t < (f.k === 'txt' ? 1.2 : .4));
+  G.dist += dt * 70;
+  // finish: all spawned, field clear (boss down on every 10th level)
+  if (G.t >= RUN && Z.filter(z => !z.dead).length === 0 && (!S.boss || (BOSS && BOSS.dead))) clearLevel();
+}
+function loseArcher(i, x, y) {
+  G.kit.archers--; FX.push({ k: 'hurt', x, y, t: 0, r: 10 }); snd('hurt', 300, 80, .3, 'sawtooth', .07, 0);
+  if (G.kit.archers <= 0) failLevel();
+}
+
+// ---------------------------------------------------------------- level end
+function clearLevel() {
+  if (G.mode !== 'play') return; G.mode = 'clear';
+  const L = G.L, first = L > SAVE.done;
+  SAVE.kit = G.kit; if (first) SAVE.done = L; keep();
+  if (first) tell({ t: 'zrClear', level: L });
+  UI.innerHTML = `<div class="card"><h1>LEVEL ${L} CLEAR</h1><p>${G.kills} zombies down · ${G.kit.archers} archer${G.kit.archers === 1 ? '' : 's'} standing</p>
+    ${first ? `<p id="rw" style="color:#86efac;font-weight:700">${EMBED ? '+1 AI WORKER' : 'FIRST CLEAR!'}</p>` : '<p class="small">Already cleared — no worker this time</p>'}
+    ${L === LEVELS ? '<p style="color:#fde68a;font-weight:700">ALL 100 LEVELS! ARCHERS UNLOCKED FOR YOUR VILLAGE</p>' : ''}
+    ${L < LEVELS ? `<button id="bNext">LEVEL ${L + 1} ▶</button>` : ''}<button id="bMenu" class="alt">MENU</button></div>`;
+  snd('win', 400, 1200, .6, 'square', .06, 0);
+  if (L < LEVELS) document.getElementById('bNext').onclick = () => { G.pickL = L + 1; startLevel(L + 1); };
+  document.getElementById('bMenu').onclick = showMenu;
+}
+function failLevel() {
+  G.mode = 'fail';
+  UI.innerHTML = `<div class="card"><h1 style="color:#fca5a5">OVERRUN</h1><p>Level ${G.L} · ${G.kills} zombies down</p><p class="small">Retry starts with your squad as it was at the start of this level</p>
+    <button id="bRetry">RETRY LEVEL ${G.L}</button><button id="bMenu" class="alt">MENU</button></div>`;
+  document.getElementById('bRetry').onclick = () => startLevel(G.L);
+  document.getElementById('bMenu').onclick = showMenu;
+}
+function pauseMenu() {
+  G.mode = 'pause';
+  UI.innerHTML = `<div class="card"><h1>PAUSED</h1><p>Level ${G.L}</p><button id="bGo">RESUME</button><button id="bRetry" class="alt">RESTART LEVEL</button><button id="bMenu" class="alt">MENU</button></div>`;
+  document.getElementById('bGo').onclick = () => { UI.innerHTML = ''; G.mode = 'play'; };
+  document.getElementById('bRetry').onclick = () => startLevel(G.L);
+  document.getElementById('bMenu').onclick = showMenu;
+}
+function kitLine(k) { return `${k.archers} archer${k.archers === 1 ? '' : 's'} · ${k.rate.toFixed(1)} shots/s · ×${k.multi}${k.extra ? '+' + k.extra : ''} arrows${k.dbl ? ' · double tap ' + k.dbl : ''}${k.expl ? ' · explosive ' + k.expl : ''}${k.pierce ? ' · pierce ' + k.pierce : ''} · dmg ${k.dmg.toFixed(1)}`; }
+function showMenu() {
+  G.mode = 'menu'; const next = Math.min(LEVELS, SAVE.done + 1);
+  if (!G.pickL || G.pickL > next) G.pickL = next;
+  UI.innerHTML = `<div class="card"><h1>Z ROUTE</h1><h2>REDEMPTION</h2><p>The AI workers have turned. Hold the lane.</p>
+    <p class="small">Levels cleared: ${SAVE.done}/${LEVELS} · first clear of each level = +1 AI worker · clear all 100 to unlock Archers</p>
+    <p class="small">Squad: ${kitLine(SAVE.kit)}</p>
+    <div style="display:flex;gap:8px;margin-top:10px"><button id="bPrev" class="alt" style="width:48px;margin:0" ${G.pickL <= 1 ? 'disabled' : ''}>◀</button><button id="bPlay" style="margin:0;flex:1">${G.pickL <= SAVE.done ? 'REPLAY' : 'PLAY'} LEVEL ${G.pickL}</button><button id="bNextL" class="alt" style="width:48px;margin:0" ${G.pickL >= next ? 'disabled' : ''}>▶</button></div>
+    <p class="small">Replaying a cleared level pays no worker but keeps everything the squad earns</p>
+    <p class="small">${matchMedia('(pointer: coarse)').matches ? 'Drag left / right to move the squad' : 'Move the mouse, or A / D · P pauses'}. Run through a gate to take its bonus.</p></div>`;
+  document.getElementById('bPlay').onclick = () => startLevel(G.pickL);
+  document.getElementById('bPrev').onclick = () => { G.pickL = Math.max(1, G.pickL - 1); showMenu(); };
+  document.getElementById('bNextL').onclick = () => { G.pickL = Math.min(next, G.pickL + 1); showMenu(); };
+}
+
+// ---------------------------------------------------------------- drawing
+function lane() {
+  g.fillStyle = '#2f6b2a'; g.fillRect(-OX, -TOP, LW + OX * 2, LH + TOP);
+  const off = G.dist % 40;
+  g.fillStyle = '#7a5a3a'; g.fillRect(14, -TOP, LW - 28, LH + TOP);
+  g.fillStyle = '#8a6a48'; for (let y = -40 - Math.ceil(TOP / 40) * 40 + off; y < LH; y += 40) { g.fillRect(40, y, 6, 14); g.fillRect(LW - 46, y + 20, 6, 14); g.fillRect(LW / 2 - 2, y + 10, 4, 10); }
+  g.fillStyle = '#5b3a1e'; for (let y = -40 - Math.ceil(TOP / 40) * 40 + off; y < LH; y += 40) { g.fillRect(6, y, 6, 22); g.fillRect(LW - 12, y, 6, 22); }
+  // trees beside the lane (wide screens)
+  for (let y = -80 - Math.ceil(TOP / 80) * 80 + (G.dist % 80); y < LH + 40; y += 80) for (const sx of [-30, -70, LW + 30, LW + 70]) { if (sx < -OX + 10 || sx > LW + OX - 10) continue; g.fillStyle = '#1f4d1d'; g.beginPath(); g.arc(sx, y + (sx > 0 ? 40 : 0), 18, 0, 7); g.fill(); }
+}
+function drawZombie(z) {
+  // an AI worker gone bad: blue work shirt, yellow hard hat, green skin, arms out
+  const s = z.r / 7, x = z.x, y = z.y, sw = Math.sin(z.ph * 2) * 2 * s;
+  g.save(); g.translate(x, y); if (z.boss) g.scale(1.6, 1.6);
+  g.fillStyle = '#1e3a8a'; g.fillRect(-4 * s + sw * .3, 2 * s, 3 * s, 6 * s); g.fillRect(1 * s - sw * .3, 2 * s, 3 * s, 6 * s);
+  g.fillStyle = z.hit > 0 ? '#fff' : z.brute ? '#1d4ed8' : '#2563eb'; g.fillRect(-5 * s, -5 * s, 10 * s, 8 * s);
+  g.fillStyle = z.hit > 0 ? '#fff' : '#84cc16'; g.fillRect(-8 * s, -4 * s + sw * .5, 3 * s, 2 * s); g.fillRect(5 * s, -4 * s - sw * .5, 3 * s, 2 * s);
+  g.fillRect(-3 * s, -10 * s, 6 * s, 5 * s);
+  g.fillStyle = '#facc15'; g.fillRect(-4 * s, -12 * s, 8 * s, 3 * s);
+  g.fillStyle = '#7f1d1d'; g.fillRect(-2 * s, -8 * s, 1.2 * s, 1.2 * s); g.fillRect(1 * s, -8 * s, 1.2 * s, 1.2 * s);
+  g.restore();
+  if ((z.brute || z.boss) && z.hp < z.max) { const w = z.boss ? 60 : 20; g.fillStyle = '#000'; g.fillRect(x - w / 2, y - z.r * (z.boss ? 1.9 : 1.6), w, 3); g.fillStyle = '#ef4444'; g.fillRect(x - w / 2, y - z.r * (z.boss ? 1.9 : 1.6), w * Math.max(0, z.hp / z.max), 3); }
+}
+function drawArcher(x, y, t) {
+  g.fillStyle = '#3f2a14'; g.fillRect(x - 3, y + 2, 2, 5); g.fillRect(x + 1, y + 2, 2, 5);
+  g.fillStyle = '#15803d'; g.fillRect(x - 4, y - 5, 8, 8);
+  g.fillStyle = '#f2c39b'; g.fillRect(x - 2, y - 9, 4, 4);
+  g.fillStyle = '#166534'; g.beginPath(); g.moveTo(x - 4, y - 7); g.lineTo(x, y - 13); g.lineTo(x + 4, y - 7); g.fill();
+  g.strokeStyle = '#a16207'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y - 8, 6, Math.PI * 1.15, Math.PI * 1.85); g.stroke();
+  g.strokeStyle = '#e5e7eb'; g.lineWidth = .7; g.beginPath(); g.moveTo(x - 5, y - 11); g.lineTo(x + 5, y - 11); g.stroke();
+}
+function render() {
+  g.setTransform(DPR, 0, 0, DPR, 0, 0); g.fillStyle = '#0b1020'; g.fillRect(0, 0, VW, VH);
+  g.setTransform(DPR * SC, 0, 0, DPR * SC, OX * SC * DPR, TOP * SC * DPR);
+  lane();
+  if (!G.kit) return;
+  for (const gt of GATES) {
+    if (gt.used && gt.y > SQUAD_Y + 20) continue;
+    gt.opts.forEach((o, i) => {
+      const x0 = i ? LW / 2 + 3 : 17, w = LW / 2 - 20, sel = !gt.used && Math.abs(gt.y - SQUAD_Y) < 120 && (SQX < LW / 2 ? 0 : 1) === i;
+      g.fillStyle = sel ? 'rgba(132,204,22,.55)' : 'rgba(56,189,248,.4)'; g.fillRect(x0, gt.y - 14, w, 28);
+      g.strokeStyle = sel ? '#bef264' : '#7dd3fc'; g.lineWidth = 2; g.strokeRect(x0, gt.y - 14, w, 28);
+      g.fillStyle = '#fff'; g.font = '700 12px "Trebuchet MS",system-ui'; g.textAlign = 'center'; g.fillText(o.t, x0 + w / 2, gt.y + 4);
+    });
+  }
+  Z.slice().sort((a, b) => a.y - b.y).forEach(z => { if (!z.dead) drawZombie(z); });
+  g.strokeStyle = '#fef3c7'; g.lineWidth = 1.5; g.beginPath();
+  for (const a of A) { const L = 7 / Math.hypot(a.vx, a.vy); g.moveTo(a.x, a.y); g.lineTo(a.x - a.vx * L, a.y - a.vy * L); } g.stroke();
+  g.fillStyle = '#fb923c'; for (const a of A) if (a.ex) g.fillRect(a.x - 1.5, a.y - 1.5, 3, 3);
+  if (G.mode !== 'menu') { const pos = squadPos(); pos.sort((a, b) => a[1] - b[1]).forEach(([x, y]) => drawArcher(x, y)); }
+  for (const f of FX) {
+    const k = f.t / .4;
+    if (f.k === 'boom') { g.fillStyle = `rgba(251,146,60,${.35 * (1 - k)})`; g.beginPath(); g.arc(f.x, f.y, f.r * (.4 + k * .6), 0, 7); g.fill(); }
+    else if (f.k === 'pop') { g.fillStyle = `rgba(132,204,22,${1 - k})`; for (let i = 0; i < 5; i++) { const a = i * 1.26; g.fillRect(f.x + Math.cos(a) * k * 14, f.y + Math.sin(a) * k * 14, 2, 2); } }
+    else if (f.k === 'hurt') { g.strokeStyle = `rgba(239,68,68,${1 - k})`; g.lineWidth = 2; g.beginPath(); g.arc(f.x, f.y, 6 + k * 20, 0, 7); g.stroke(); }
+    else if (f.k === 'txt') { g.globalAlpha = 1 - f.t / 1.2; g.fillStyle = '#bef264'; g.font = '700 14px "Trebuchet MS",system-ui'; g.textAlign = 'center'; g.fillText(f.s, f.x, f.y - f.t * 30); g.globalAlpha = 1; }
+  }
+  if (G.mode === 'menu') return;
+  // HUD
+  const k = G.kit, prog = Math.min(1, G.t / RUN);
+  g.save(); g.translate(0, -TOP); g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(20, 10, LW - 40, 8); g.fillStyle = '#a3e635'; g.fillRect(20, 10, (LW - 40) * prog, 8);
+  g.font = '700 13px "Trebuchet MS",system-ui'; g.textAlign = 'left'; g.fillStyle = '#fff';
+  g.fillText('LEVEL ' + G.L + (ZS(G.L).boss ? ' · BOSS' : ''), 20, 34); g.textAlign = 'right'; g.fillText('🧝 ' + k.archers + '  ✖ ' + G.kills, LW - 20, 34); g.restore();
+  g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(20, LH - 14, LW - 40, 6); g.fillStyle = '#fde68a'; g.fillRect(20, LH - 14, (LW - 40) * Math.min(1, k.xp / xpNeed(k.lvl)), 6);
+  g.textAlign = 'left'; g.font = '700 11px "Trebuchet MS",system-ui'; g.fillStyle = '#fde68a'; g.fillText('LV ' + k.lvl, 20, LH - 18);
+  if (G.t >= RUN && ZS(G.L).boss && BOSS && !BOSS.dead) { g.textAlign = 'center'; g.font = '700 14px "Trebuchet MS",system-ui'; g.fillStyle = '#fca5a5'; g.fillText('THE FOREMAN', LW / 2, 54 - TOP); }
+}
+
+// ---------------------------------------------------------------- loop
+let last = performance.now(), acc = 0;
+function loop(now) { const dt = Math.min(.05, (now - last) / 1000); last = now; acc += dt; while (acc >= 1 / 60) { step(1 / 60); acc -= 1 / 60; } render(); requestAnimationFrame(loop); }
+showMenu(); tell({ t: 'zrHello' }); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
